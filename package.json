@@ -1,0 +1,38 @@
+{
+  "name": "@pauleschwarz/visual-qa",
+  "version": "0.1.0",
+  "description": "Visual QA - autonomous visual and contextual QA runtime for running web applications.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Paul Schwarz",
+  "bin": {
+    "visual-qa": "bin/visual-qa.mjs"
+  },
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "schemas",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "fixture": "node fixture/server.mjs",
+    "selftest": "node test/e2e-fixture.mjs",
+    "verify": "npm run test && npm run selftest",
+    "verity": "pi-verity"
+  },
+  "dependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@pauleschwarz/pi-verity": "github:pauleschwarz/pi-verity#main",
+    "pixelmatch": "^7.2.0",
+    "playwright": "^1.62.1",
+    "pngjs": "^7.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
