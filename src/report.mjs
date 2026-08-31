@@ -6,6 +6,59 @@
 
 const SEVERITIES = ["critical", "high", "medium", "low"];
 
+/**
+ * The machine summary agents consume: verdict, counts, the top findings,
+ * and where the full evidence lives. Deliberately small - an agent wants
+ * the next actions, not the whole report.
+ */
+export function summarizeReport(report) {
+  const issues = report.issues || [];
+  const bySeverity = {};
+  for (const issue of issues)
+    bySeverity[issue.severity] = (bySeverity[issue.severity] || 0) + 1;
+  return {
+    verdict: report.verdict,
+    run_id: report.run_id ?? null,
+    complete: report.complete ?? null,
+    limit_reason: report.coverage?.limit_reason ?? null,
+    coverage: {
+      states: report.coverage?.states ?? 0,
+      actions: report.coverage?.actions ?? 0,
+      viewports: report.coverage?.viewports_covered ?? [],
+    },
+    issue_count: issues.length,
+    by_severity: bySeverity,
+    issues: issues.slice(0, 10).map((issue) => ({
+      id: issue.issue_id,
+      type: issue.type,
+      severity: issue.severity,
+      title: issue.title,
+      detail: issue.detail,
+    })),
+    phases: report.phases ?? {},
+    artifacts: {
+      report_json: "report.json",
+      report_md: "report.md",
+      screenshots: "screenshots/",
+      vision: "vision/",
+      fixes: "fixes/",
+      intent: "intent/",
+      verify: "verify/",
+    },
+  };
+}
+
+export function renderSummaryLines(summary) {
+  const lines = [];
+  lines.push(`Visual QA ${summary.verdict} | issues=${summary.issue_count}`);
+  if (summary.limit_reason) lines.push(`coverage limit: ${summary.limit_reason}`);
+  for (const [phase, info] of Object.entries(summary.phases || {}))
+    lines.push(`  ${phase}: ${JSON.stringify(info)}`);
+  for (const issue of summary.issues)
+    lines.push(`${issue.severity.toUpperCase()} ${issue.id}: ${issue.title}`);
+  return lines;
+}
+
 function truncate(text, max = 160) {
   const flat = String(text ?? "").replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
