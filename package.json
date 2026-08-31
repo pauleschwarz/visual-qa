@@ -21,7 +21,7 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "fixture": "node fixture/server.mjs",
-    "selftest": "node test/e2e-fixture.mjs",
+    "selftest": "node --test test/e2e-fixture.mjs test/run-pipeline.e2e.mjs",
     "verify": "npm run test && npm run selftest",
     "verity": "pi-verity"
   },

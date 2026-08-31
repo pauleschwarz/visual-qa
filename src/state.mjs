@@ -11,7 +11,10 @@ const VOLATILE = [
   [/\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?Z?\b/g, "<ts>"],
   [/\b\d{2}[.:/]\d{2}[.:/]\d{2,4}\b/g, "<date>"],
   [/\b\d{1,2}:\d{2}(:\d{2})?\s?(am|pm)?\b/gi, "<time>"],
-  [/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>"],
+  [
+    /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+    "<uuid>",
+  ],
   [/\b[0-9a-f]{16,}\b/gi, "<hex>"],
   [/\beyJ[\w-]+\.[\w-]+\.[\w-]+/g, "<jwt>"],
   [/\b\d{6,}\b/g, "<num>"],
@@ -20,7 +23,26 @@ const VOLATILE = [
 export function scrubVolatile(text = "") {
   let out = String(text);
   for (const [re, token] of VOLATILE) out = out.replace(re, token);
-  return out.replace(/\s+/g, " ").trim();
+  return out
+    .replace(
+      /\b(csrf|token|timestamp|ts|nonce|session)=([^&\s]*)/gi,
+      "$1=[VOLATILE]",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * True when raw resolves to the same origin as baseUrl. Off-origin pages are
+ * not the system under test: exploring them yields foreign findings that no
+ * change to this codebase can fix, and burns the runtime budget.
+ */
+export function sameOrigin(raw, baseUrl) {
+  try {
+    return new URL(raw, baseUrl).origin === new URL(baseUrl).origin;
+  } catch {
+    return false;
+  }
 }
 
 /** Normalize a URL: drop origin noise, volatile query values, hash-only jumps. */
@@ -39,7 +61,10 @@ export function normalizeUrl(raw, baseUrl) {
   });
   const params = [...u.searchParams.keys()].sort();
   const query = params.length ? `?${params.join("&")}` : "";
-  return `${segments.join("/") || "/"}${query}`;
+  // Keep the scrubbed fragment: hash routing is real navigation, and dropping
+  // it makes every in-page route transition look like a no-op.
+  const hash = u.hash ? `#${scrubVolatile(u.hash.slice(1))}` : "";
+  return `${segments.join("/") || "/"}${query}${hash}`;
 }
 
 /**
@@ -63,7 +88,8 @@ export function foldAria(snapshot, { maxDepth = 6, maxSiblings = 3 } = {}) {
     const n = (runs.get(key) || 0) + 1;
     runs.set(key, n);
     if (n > maxSiblings) {
-      if (n === maxSiblings + 1) kept.push(`${" ".repeat(depth * 2)}${role} ...repeated`);
+      if (n === maxSiblings + 1)
+        kept.push(`${" ".repeat(depth * 2)}${role} ...repeated`);
       continue;
     }
     kept.push(`${" ".repeat(depth * 2)}${body}`);
@@ -75,21 +101,43 @@ export function foldAria(snapshot, { maxDepth = 6, maxSiblings = 3 } = {}) {
  * Build the state fingerprint. Signals are deliberately explicit so a diff of
  * two state records tells you *why* they were considered different.
  */
-export function buildState({ url, baseUrl, aria, headings, controls, dialogOpen, viewport }) {
+export function buildState({
+  url,
+  baseUrl,
+  aria,
+  headings,
+  controls,
+  dialogOpen,
+  viewport,
+  theme = "",
+}) {
   const signals = {
     route: normalizeUrl(url, baseUrl),
     dialog: dialogOpen ? "open" : "closed",
+    theme: scrubVolatile(theme || "") || "default",
     viewport: viewport || "desktop",
-    headings: (headings || []).slice(0, 8).map(scrubVolatile),
-    controls: [...new Set((controls || []).map((c) => `${c.role}:${scrubVolatile(c.name)}`))]
+    headings_count: (headings || []).length,
+    headings: (headings || []).slice(0, 12).map(scrubVolatile),
+    controls_count: (controls || []).length,
+    controls: [
+      ...new Set(
+        (controls || []).map((c) => {
+          const pressed =
+            c.pressed == null || c.pressed === "" ? "" : `p=${c.pressed}`;
+          const current =
+            c.current == null || c.current === "" ? "" : `c=${c.current}`;
+          return `${c.role}:${scrubVolatile(c.name)}:${c.id || ""}:${c.testId || ""}:${c.href || ""}:${pressed}:${current}`;
+        }),
+      ),
+    ]
       .sort()
-      .slice(0, 40),
+      .slice(0, 100),
     structure: foldAria(aria),
   };
   const id = createHash("sha1")
     .update(JSON.stringify(signals))
     .digest("hex")
     .slice(0, 12);
-  const label = `${signals.route}${dialogOpen ? "#dialog" : ""}:${signals.viewport}`;
+  const label = `${signals.route}${dialogOpen ? "#dialog" : ""}:${signals.theme}:${signals.viewport}`;
   return { state_id: `${label}@${id}`, label, signals };
 }

@@ -5,9 +5,13 @@ export const MODES = ["off", "changed", "full"];
 export const DEFAULT_BOUNDS = {
   max_states: 40,
   max_depth: 6,
-  max_actions_per_state: 8,
+  max_actions_per_state: 6,
   max_total_actions: 160,
-  max_runtime_ms: 180_000,
+  // Coherent with the other bounds: 40 states x 6 actions x ~3s/action plus
+  // scan overhead lands near 15 minutes. The previous 180s default could not
+  // cover even a fraction of max_states, so real runs always ended
+  // COVERAGE_INCOMPLETE by wall clock, not by graph size.
+  max_runtime_ms: 900_000,
   max_agent_calls: 0, // deterministic slice: agents opt-in only
   max_retries_per_action: 2,
 };
@@ -19,7 +23,11 @@ export const DEFAULT_VIEWPORTS = [
 
 // Side-effect policy. Destructive actions are refused unless the environment is
 // explicitly declared isolated in config - never inferred.
-export const RISK = { SAFE: "SAFE", MUTATING: "MUTATING", DESTRUCTIVE: "DESTRUCTIVE" };
+export const RISK = {
+  SAFE: "SAFE",
+  MUTATING: "MUTATING",
+  DESTRUCTIVE: "DESTRUCTIVE",
+};
 
 const DESTRUCTIVE_RE =
   /\b(delete|remove|destroy|purge|wipe|drop|deactivate|cancel subscription|unsubscribe|pay|purchase|checkout|buy|order now|send email|invite|logout|log out|sign out|reset|clear all|loesch|lösch|kündig|deaktiv|bezahl|kaufen)\b/i;
@@ -35,18 +43,20 @@ export function classifyRisk(label = "", tag = "") {
 }
 
 export const SECRET_KEYS =
-  /^(authorization|cookie|set-cookie|x-api-key|x-auth-token|proxy-authorization|api-key)$/i;
+  /^(authorization|cookie|set-cookie|x-api-key|x-auth-token|proxy-authorization|api-key|password|passphrase|secret)$/i;
 const SECRET_VALUE =
   /(bearer\s+[\w.-]+|eyJ[\w-]+\.[\w-]+\.[\w-]+|sk-[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{20,})/gi;
 
 /** Redact secrets from any structure before it reaches evidence on disk. */
 export function redact(value) {
   if (value == null) return value;
-  if (typeof value === "string") return value.replace(SECRET_VALUE, "[REDACTED]");
+  if (typeof value === "string")
+    return value.replace(SECRET_VALUE, "[REDACTED]");
   if (Array.isArray(value)) return value.map(redact);
   if (typeof value === "object") {
     const out = {};
     for (const [k, v] of Object.entries(value)) {
+      SECRET_KEYS.lastIndex = 0;
       out[k] = SECRET_KEYS.test(k) ? "[REDACTED]" : redact(v);
     }
     return out;
@@ -61,14 +71,33 @@ export function resolveConfig(input = {}) {
     baseUrl: input.baseUrl,
     outDir: input.outDir || ".qa",
     bounds: { ...DEFAULT_BOUNDS, ...(input.bounds || {}) },
-    viewports: input.viewports || DEFAULT_VIEWPORTS,
+    viewports:
+      Array.isArray(input.viewports) && input.viewports.length
+        ? input.viewports
+        : DEFAULT_VIEWPORTS,
     // Only an explicit declaration unlocks mutating/destructive actions.
     isolatedEnvironment: input.isolatedEnvironment === true,
-    allowMutating: input.isolatedEnvironment === true && input.allowMutating !== false,
-    allowDestructive: input.isolatedEnvironment === true && input.allowDestructive === true,
+    allowMutating:
+      input.isolatedEnvironment === true && input.allowMutating !== false,
+    allowDestructive:
+      input.isolatedEnvironment === true && input.allowDestructive === true,
     intent: input.intent || null,
     baselineDir: input.baselineDir || null,
     autofix: input.autofix === "verified" ? "verified" : false,
+    // Where fixable document-level defects (title, lang) are applied.
+    // Without a fixDir the fix stage only plans, never edits.
+    fixDir: input.fixDir || null,
+    slopChecks: input.slopChecks !== false,
+    securityChecks: input.securityChecks !== false,
     trace: input.trace !== false,
+    stable_frames: Number.isInteger(input.stable_frames)
+      ? input.stable_frames
+      : 2,
+    stable_gap_ms: Number.isInteger(input.stable_gap_ms)
+      ? input.stable_gap_ms
+      : 30,
+    navigation_timeout_ms: Number.isInteger(input.navigation_timeout_ms)
+      ? input.navigation_timeout_ms
+      : 15_000,
   };
 }
