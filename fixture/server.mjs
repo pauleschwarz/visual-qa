@@ -22,6 +22,7 @@ document.querySelector('#close').onclick=()=>details.close();
 document.querySelector('#search').onclick=()=>{result.textContent=query.value?'Results for '+query.value:'Please enter a query';};
 document.querySelector('#crash').onclick=()=>{throw new Error('seeded fixture runtime failure');};
 document.querySelector('#save').onclick=()=>{fetch('/api/fail').then(()=>{});};
+document.querySelector('#order').onsubmit=(e)=>{e.preventDefault();orderState.textContent='Order submitted';};
 // dead button intentionally has no handler; broken link intentionally returns 404.
 </script></main></body></html>`;
 

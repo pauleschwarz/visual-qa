@@ -37,7 +37,7 @@ export function renderMarkdownReport(report) {
     );
   if (phases.fix)
     phaseLines.push(
-      `- fix: ${phases.fix.applied?.length ?? 0} applied${phases.fix.skipped?.length ? `, skipped: ${phases.fix.skipped.join(", ")}` : ""}`,
+      `- fix: ${phases.fix.applied?.length ?? 0} applied${phases.fix.skipped?.length ? `, skipped: ${phases.fix.skipped.map((entry) => (typeof entry === "string" ? entry : `${entry.kind}:${entry.reason}`)).join(", ")}` : ""}`,
     );
   if (phases.verify)
     phaseLines.push(

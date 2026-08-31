@@ -111,3 +111,29 @@ test("vision review stays skipped without budget or key", async () => {
     delete process.env.VQA_VISION_API_KEY;
   }
 });
+
+test("armed review without screenshot pairs reports skipped_no_pairs", async () => {
+  process.env.VQA_VISION_API_KEY = "test-key";
+  try {
+    const result = await runVisionReview({
+      report: {
+        evidence: [
+          {
+            action_id: "state1:button:Save::0",
+            observation: { status: "skipped" },
+            // No before/after screenshots: skipped actions carry none.
+          },
+        ],
+      },
+      config: { bounds: { max_agent_calls: 2 }, outDir: undefined },
+      fetchImpl: async () => {
+        throw new Error("must not be called");
+      },
+    });
+    assert.equal(result.status, "skipped_no_pairs");
+    assert.deepEqual(result.issues, []);
+    assert.equal(result.attempted, 0);
+  } finally {
+    delete process.env.VQA_VISION_API_KEY;
+  }
+});
