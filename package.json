@@ -31,6 +31,7 @@
     "bin",
     "src",
     "schemas",
+    "docs",
     "README.md",
     "LICENSE"
   ],

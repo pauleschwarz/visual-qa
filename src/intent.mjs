@@ -375,3 +375,32 @@ export async function runIntentChecks(page, intents = [], { viewport } = {}) {
   });
   return out;
 }
+
+/**
+ * Dry-run one parsed intent against the static sources under fixDir:
+ * is the target present, and in which file would the patch land? No browser,
+ * no writes - this is the catalog check a harness calls before a real run.
+ */
+export async function dryRunIntent(intent, fixDir) {
+  if (!intent) return { parsed: false };
+  if (!fixDir) return { parsed: true, found: false, reason: "no_fix_dir" };
+  const files = await htmlFiles(fixDir);
+  for (const file of files) {
+    let html;
+    try {
+      html = await readFile(file, "utf8");
+    } catch {
+      continue;
+    }
+    if (intent.target.text) {
+      if (html.includes(intent.target.text))
+        return { parsed: true, found: true, file, target: intent.target };
+    } else if (intent.target.tag) {
+      for (const tag of intent.target.tag.split(",")) {
+        if (new RegExp(`<${tag}\\b`, "i").test(html))
+          return { parsed: true, found: true, file, target: intent.target };
+      }
+    }
+  }
+  return { parsed: true, found: false, reason: "target_not_in_sources" };
+}
