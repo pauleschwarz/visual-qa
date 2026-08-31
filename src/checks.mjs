@@ -31,7 +31,7 @@ export async function runA11y(page) {
     const result = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
       .analyze();
-    return result.violations.map((v) =>
+    const out = result.violations.map((v) =>
       issue("accessibility", v.help, "high", v.description, {
         rule: v.id,
         impact: v.impact,
@@ -40,6 +40,28 @@ export async function runA11y(page) {
           .map((n) => ({ target: n.target, failureSummary: n.failureSummary })),
       }),
     );
+    // Critical means critical: contrast nodes axe could not MEASURE are a
+    // gap in the evidence, not a pass. They are findings under their own
+    // rule name so the autofix whitelist (which needs parsed colors) is not
+    // triggered on unverifiable nodes.
+    for (const v of result.incomplete ?? []) {
+      if (v.id !== "color-contrast") continue;
+      out.push(
+        issue(
+          "accessibility",
+          "Contrast could not be verified",
+          "medium",
+          "axe could not measure color contrast for these nodes; the rendered contrast is unproven",
+          {
+            rule: "color-contrast-incomplete",
+            nodes: v.nodes
+              .slice(0, 10)
+              .map((n) => ({ target: n.target, html: (n.html || "").slice(0, 160) })),
+          },
+        ),
+      );
+    }
+    return out;
   } catch (error) {
     return [
       issue(

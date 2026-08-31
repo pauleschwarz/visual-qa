@@ -723,8 +723,11 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
       if (GLOBAL_LIMITS.has(limitReason)) break;
     }
 
-    // A full run needs evidence, not merely zero findings.
-    if (!evidence.length) {
+    // A run that reached states and executed every available control is
+    // complete even with zero actions (a page without interactive elements).
+    // Only an unreachably empty graph is missing evidence: a page that never
+    // rendered cannot claim coverage.
+    if (!evidence.length && states.size === 0) {
       complete = false;
       limitReason ||= "no_action_evidence";
     }

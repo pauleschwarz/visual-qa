@@ -115,6 +115,16 @@ export async function runVisionReview({
       .map(screenshotPair)
       .filter(Boolean)
       .sort((left, right) => priority(left.entry) - priority(right.entry));
+    // Distinct from skipped_no_calls: the review was armed but the
+    // exploration produced no screenshot pairs to review (e.g. every action
+    // was skipped). Reporting "error" here would blame the endpoint.
+    if (pairs.length === 0)
+      return {
+        status: "skipped_no_pairs",
+        issues: [],
+        attempted,
+        completed,
+      };
     // The call budget is global across skills: each pair x skill is one call,
     // and the walk stops the moment the budget is spent, keeping later (more
     // critical) pairs available for earlier skills rather than starving them.

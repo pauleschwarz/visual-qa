@@ -76,7 +76,9 @@ export function resolveConfig(input = {}) {
     );
   // "changed" only ever walks an explicitly declared target source.
   const changedTargets = Array.isArray(input.changedTargets)
-    ? input.changedTargets.map((target) => String(target)).filter(Boolean)
+    ? input.changedTargets
+        .map((target) => String(target).trim())
+        .filter(Boolean)
     : [];
   if (mode === "changed" && changedTargets.length === 0)
     throw new Error(

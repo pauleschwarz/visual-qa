@@ -107,7 +107,7 @@ test("run pipeline applies an intent color change and verifies it live", async (
     );
     assert.ok(report.phases.verify.fixed >= 1);
     const patched = await readFile(appFile, "utf8");
-    assert.match(patched, /style="color:#16a34a"/);
+    assert.match(patched, /style="color:rgb\(22, 163, 74\)"/);
     const traceDir = join(outDir, "intent");
     const traced = await readdir(traceDir);
     assert.ok(traced.some((f) => f.endsWith(".before.html")));
@@ -158,6 +158,102 @@ test("run pipeline reports an unfulfillable intent instead of hiding it", async 
       ),
     );
     assert.equal(report.phases.intent?.applied, false);
+  } finally {
+    server.close();
+    await rm(appDir, { recursive: true, force: true });
+  }
+});
+
+test("run pipeline auto-fixes contrast findings and proves the fix", async () => {
+  const appDir = await mkdtemp(`${tmpdir()}/vqa-contrast-app-`);
+  const appFile = join(appDir, "index.html");
+  await writeFile(
+    appFile,
+    '<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><title>Shop</title><meta name="description" content="demo"><style>body{background:#ffffff}</style></head>\n<body><h1>Shop</h1><p id="notice" style="color:#cccccc;background-color:#ffffff">Important notice</p></body></html>\n',
+  );
+  const server = createServer(async (req, res) => {
+    const html = await readFile(appFile, "utf8");
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(html);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const outDir = await mkdtemp(`${tmpdir()}/vqa-contrast-out-`);
+  try {
+    const report = await run({
+      baseUrl: `http://127.0.0.1:${port}/`,
+      outDir,
+      fixDir: appDir,
+      autofix: "verified",
+      viewports: [{ name: "desktop", width: 1280, height: 800 }],
+      bounds: {
+        max_states: 5,
+        max_depth: 2,
+        max_actions_per_state: 5,
+        max_total_actions: 20,
+        max_runtime_ms: 60_000,
+      },
+    });
+    const contrastFix = (report.phases.fix?.applied ?? []).find(
+      (entry) => entry.kind === "contrast",
+    );
+    assert.ok(contrastFix, "contrast fix applied");
+    assert.equal(contrastFix.selector, "#notice");
+    assert.ok(contrastFix.ratio_before < 2);
+    assert.ok(report.phases.verify, "verify run executed");
+    assert.ok(
+      !report.issues.some(
+        (item) => item.evidence?.rule === "color-contrast",
+      ),
+      "no surviving color-contrast finding",
+    );
+    const patched = await readFile(appFile, "utf8");
+    assert.match(patched, /id="notice"[^>]*color:rgb\(/);
+  } finally {
+    server.close();
+    await rm(appDir, { recursive: true, force: true });
+  }
+});
+
+test("run pipeline applies a spacing intent and verifies computed style", async () => {
+  const appDir = await mkdtemp(`${tmpdir()}/vqa-spacing-app-`);
+  const appFile = join(appDir, "index.html");
+  await writeFile(
+    appFile,
+    '<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><title>Shop</title><meta name="description" content="demo"></head>\n<body><h1>Shop</h1><button id="buy">Add item</button><p id="n">0</p><script>let n=0;buy.onclick=()=>{n++;n.textContent=String(n)};</script></body></html>\n',
+  );
+  const server = createServer(async (req, res) => {
+    const html = await readFile(appFile, "utf8");
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(html);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const outDir = await mkdtemp(`${tmpdir()}/vqa-spacing-out-`);
+  try {
+    const report = await run({
+      baseUrl: `http://127.0.0.1:${port}/`,
+      outDir,
+      fixDir: appDir,
+      intent: 'setze das padding von "Add item" auf 16px',
+      viewports: [{ name: "desktop", width: 1280, height: 800 }],
+      bounds: {
+        max_states: 5,
+        max_depth: 2,
+        max_actions_per_state: 5,
+        max_total_actions: 20,
+        max_runtime_ms: 60_000,
+      },
+    });
+    assert.equal(report.phases.intent?.parsed, true);
+    assert.equal(report.phases.intent?.applied, true);
+    assert.ok(report.phases.verify, "verify run executed for spacing intent");
+    assert.ok(
+      !report.issues.some((item) => item.type === "vqa-intent"),
+      "spacing intent proven against computed style",
+    );
+    const patched = await readFile(appFile, "utf8");
+    assert.match(patched, /style="padding:16px"/);
   } finally {
     server.close();
     await rm(appDir, { recursive: true, force: true });

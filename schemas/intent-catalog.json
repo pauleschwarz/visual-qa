@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Visual QA intent and autofix catalog",
+  "description": "Prescribes exactly which instructions the run pipeline understands and which fixes it may apply. Everything outside this catalog is a finding, never a silent guess.",
+  "run_flow": [
+    "explore (deterministic BFS per viewport; expectation oracle; screenshots)",
+    "checks (a11y incl. axe violations AND unverifiable contrast nodes, layout, scroll, runtime, slop, security when isolated, intent baseline)",
+    "vision (deterministic orchestrator dispatches screenshot pairs to skills: layout, readability, slop, consistency; additive-only, severity capped at medium)",
+    "intent (parse instruction -> patch fix-dir sources -> verify against live computed style)",
+    "fix (whitelisted autofixes -> patch fix-dir sources)",
+    "verify (ONE fresh complete exploration proves every patch; an incomplete verify run proves nothing)",
+    "aggregate (run_id, final verdict, report.json, report.md)"
+  ],
+  "verdict_policy": {
+    "deterministic_checks": "authoritative, never overridable by models",
+    "vision_findings": "additive only, severity capped at medium, cannot flip a verdict to FAIL",
+    "coverage_incomplete": "never a pass",
+    "verified_fix": "counts only when a complete fresh exploration clears the issue"
+  },
+  "intents": [
+    {
+      "kind": "color",
+      "examples_de": ["ändere die Farbe von \"Add item\" auf grün", "ändere die Farbe des Buttons auf #22c55e"],
+      "examples_en": ["change the color of \"Add item\" to green"],
+      "property": "color",
+      "values": "named (de/en), #hex, rgb(); patched as resolved rgb()"
+    },
+    {
+      "kind": "background-color",
+      "examples_de": ["ändere den Hintergrund von \"header\" auf #123456"],
+      "property": "background-color",
+      "values": "same as color"
+    },
+    {
+      "kind": "font-size",
+      "examples_de": ["setze die Schriftgröße von \"Shop\" auf 24px"],
+      "property": "font-size",
+      "values": "px only"
+    },
+    {
+      "kind": "gap",
+      "examples_de": ["setze den gap von \"liste\" auf 8px"],
+      "property": "gap",
+      "values": "px only, verified via row-gap"
+    },
+    {
+      "kind": "padding",
+      "examples_de": ["setze das padding von \"Add item\" auf 16px"],
+      "property": "padding",
+      "values": "px only, verified via padding-top"
+    },
+    {
+      "kind": "margin",
+      "examples_de": ["setze den margin von \"Add item\" auf 8px"],
+      "property": "margin",
+      "values": "px only, verified via margin-top"
+    }
+  ],
+  "intent_targets": {
+    "text": "quoted string after von/of/in; patched element is the tag wrapping the first occurrence",
+    "tag": "tag alias after des/der/dem/the: button, überschrift (h1..h3), header, text (p), link (a), liste (ul,ol)"
+  },
+  "unparsed_intents": "reported as phases.intent.parsed=false, never guessed",
+  "unfulfillable_intents": "high-severity finding 'Intent target not found' / 'Intent change not applied'",
+  "autofix_whitelist": [
+    {
+      "kind": "title",
+      "rule": "document-title",
+      "action": "insert <title> derived from the fix-dir name"
+    },
+    {
+      "kind": "lang",
+      "rule": ["html-has-lang", "html-lang-valid"],
+      "action": "add lang=\"en\" to <html>"
+    },
+    {
+      "kind": "contrast",
+      "rule": "color-contrast",
+      "action": "parse foreground/background and font size from the axe failure summary, blend the foreground minimally toward black or white until WCAG 4.5:1 (3:1 for large text) is reached, patch inline color",
+      "skips": ["unparsable_summary", "no_reachable_ratio", "selector_unsupported", "no_matching_file"],
+      "selector_support": "#id, tag, .class, tag.class, tag#id, compound classes; combinators and attribute selectors are refused"
+    }
+  ],
+  "contrast_incomplete": "axe color-contrast nodes it could not measure are reported as rule color-contrast-incomplete (medium) - a measurement gap is a finding, never a pass",
+  "traces": {
+    "out_dir": "run_id + report.json + report.md + screenshots/ + traces/ + vision/ (raw model responses) + fixes/ + intent/ (before/after copies) + verify/"
+  }
+}

@@ -134,3 +134,68 @@ test("temporary evidence directory can be created", async () => {
   await writeFile(`${dir}/evidence.json`, "{}\n");
   assert.ok(dir);
 });
+
+test("mode is an explicit contract, not a silent full-run default", () => {
+  assert.equal(resolveConfig({ baseUrl: "http://127.0.0.1:1" }).mode, "full");
+  assert.equal(resolveConfig({ mode: "off" }).mode, "off");
+  assert.throws(
+    () => resolveConfig({ baseUrl: "http://127.0.0.1:1", mode: "everything" }),
+    /Unknown mode/,
+  );
+  assert.throws(
+    () => resolveConfig({ baseUrl: "http://127.0.0.1:1", mode: "changed" }),
+    /changed-target/,
+  );
+  const changed = resolveConfig({
+    baseUrl: "http://127.0.0.1:1",
+    mode: "changed",
+    changedTargets: ["/pricing", "  "],
+  });
+  assert.deepEqual(changed.changedTargets, ["/pricing"]);
+});
+
+test("submit controls are mutating regardless of their label", () => {
+  assert.equal(classifyRisk("Continue", "button", "submit"), "MUTATING");
+  assert.equal(classifyRisk("Continue", "button", "button"), "SAFE");
+  assert.equal(classifyRisk("Delete account", "button", "submit"), "DESTRUCTIVE");
+});
+
+test("destructive actions need isolation plus explicit allowance", () => {
+  const isolated = { baseUrl: "http://127.0.0.1:1", isolatedEnvironment: true };
+  assert.equal(resolveConfig(isolated).allowDestructive, false);
+  assert.equal(
+    resolveConfig({ ...isolated, allowDestructive: true }).allowDestructive,
+    true,
+  );
+  assert.equal(
+    resolveConfig({ allowDestructive: true }).allowDestructive,
+    false,
+  );
+});
+
+test("identical screenshots compare clean, differing ones do not", async () => {
+  const { compareScreenshots } = await import("../src/checks.mjs");
+  const { PNG } = await import("pngjs");
+  const dir = await mkdtemp(`${tmpdir()}/visual-qa-png-`);
+  const make = (path, color) => {
+    const png = new PNG({ width: 8, height: 8 });
+    for (let i = 0; i < png.data.length; i += 4) {
+      png.data[i] = color[0];
+      png.data[i + 1] = color[1];
+      png.data[i + 2] = color[2];
+      png.data[i + 3] = 255;
+    }
+    return writeFile(path, PNG.sync.write(png));
+  };
+  await make(`${dir}/a.png`, [255, 0, 0]);
+  await make(`${dir}/b.png`, [255, 0, 0]);
+  await make(`${dir}/c.png`, [0, 0, 255]);
+  assert.deepEqual(await compareScreenshots(`${dir}/a.png`, `${dir}/b.png`), {
+    changed: false,
+    ratio: 0,
+    pixels: 0,
+  });
+  const diff = await compareScreenshots(`${dir}/a.png`, `${dir}/c.png`);
+  assert.equal(diff.changed, true);
+  assert.ok(diff.ratio > 0);
+});

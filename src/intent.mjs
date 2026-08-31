@@ -1,9 +1,10 @@
 // Visual QA - intent-driven style changes with verified application.
 //
-// An instruction like: change the color of "Add item" to green - is parsed,
-// patched into the static sources under fixDir, and then VERIFIED against the
-// live computed style in a fresh exploration. An intent that cannot be applied
-// or does not survive verification is a finding, never a silent no-op.
+// The intent catalog is deliberately small and fully verifiable: every
+// supported instruction maps to one CSS property, one resolvable value, and
+// one computed-style readback that proves the change in a fresh exploration.
+// An instruction the parser cannot FULLY understand must return null and be
+// reported as unparsed - never patched against a guessed target.
 
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
@@ -40,6 +41,54 @@ const NAMED_COLORS = {
   braun: [120, 72, 40],
   brown: [120, 72, 40],
 };
+
+// Catalog: kind -> CSS write property + computed readback property. Shorthand
+// properties are verified on one concrete longhand (padding -> padding-top)
+// because computed shorthands are unreliable across engines.
+const KIND_RULES = [
+  {
+    kind: "background-color",
+    re: /(background|hintergrund)/,
+    write: "background-color",
+    verify: "backgroundColor",
+    color: true,
+  },
+  {
+    kind: "color",
+    re: /(\bcolor\b|farbe)/,
+    write: "color",
+    verify: "color",
+    color: true,
+  },
+  {
+    kind: "font-size",
+    re: /(font[- ]?size|schriftgr(o|ö|oe)(ss|ß)e)/,
+    write: "font-size",
+    verify: "fontSize",
+    unit: "px",
+  },
+  {
+    kind: "gap",
+    re: /(\bgap\b|abstand zwischen)/,
+    write: "gap",
+    verify: "rowGap",
+    unit: "px",
+  },
+  {
+    kind: "padding",
+    re: /(padding|innenabstand)/,
+    write: "padding",
+    verify: "paddingTop",
+    unit: "px",
+  },
+  {
+    kind: "margin",
+    re: /(margin|au(ss|ß)enabstand)/,
+    write: "margin",
+    verify: "marginTop",
+    unit: "px",
+  },
+];
 
 const TAG_ALIASES = {
   button: "button",
@@ -78,70 +127,77 @@ function rgbFromValue(value) {
   return null;
 }
 
+function resolveColor(raw) {
+  const hex = /#[0-9a-f]{3}(?:[0-9a-f]{3})?\b/i.exec(raw);
+  if (hex) return { value: hex[0], valueRgb: hexToRgb(hex[0]) };
+  const fn = /rgba?\(\s*\d+[\s,]+\d+[\s,]+\d+[^)]*\)/i.exec(raw);
+  if (fn) {
+    const value = fn[0].replace(/\s+/g, "");
+    return { value, valueRgb: rgbFromValue(value) };
+  }
+  const named = /\b(?:auf|to)\s+([a-zäöüß]+)\s*$/i.exec(raw);
+  if (named && NAMED_COLORS[named[1].toLowerCase()])
+    return {
+      value: named[1],
+      valueRgb: NAMED_COLORS[named[1].toLowerCase()],
+    };
+  return null;
+}
+
+function resolvePx(raw) {
+  const px = /(?:auf|to)\s*(\d+(?:\.\d+)?)\s*px\b/i.exec(raw);
+  if (!px) return null;
+  return { value: `${px[1]}px`, valuePx: Number(px[1]) };
+}
+
 /**
- * Parse one color-change instruction. Returns null for anything it does not
- * fully understand - an unparsed intent must fail loudly downstream, not
- * patch a guessed target.
+ * Parse one catalog instruction. Returns null for anything it does not fully
+ * understand - an unparsed intent must fail loudly downstream, not patch a
+ * guessed target.
  */
 export function parseIntent(text) {
   const raw = String(text || "").trim();
   if (!raw) return null;
   const lower = raw.toLowerCase();
+  const rule = KIND_RULES.find((entry) => entry.re.test(lower));
+  if (!rule) return null;
 
-  // Property: background/hintergrund wins over foreground when both appear.
-  const property = /(background|hintergrund)/.test(lower)
-    ? "background-color"
-    : "color";
-
-  // Value: quoted string, hex, rgb(), or a trailing named color.
-  let value = null;
-  const quotedValue = /(?:auf|to)\s+["']([^"']+)["']/i.exec(raw);
-  const hexValue = /(#[0-9a-f]{3}|#[0-9a-f]{6})\b/i.exec(raw);
-  const fnValue = /rgba?\([^)]*\)/i.exec(raw);
-  const namedValue = /\b(?:auf|to)\s+([a-zäöüß]+)\s*$/i.exec(raw);
-  if (quotedValue && rgbFromValue(quotedValue[1]))
-    value = quotedValue[1];
-  else if (hexValue) value = hexValue[1];
-  else if (fnValue) value = fnValue[0].replace(/\s+/g, "");
-  else if (namedValue && NAMED_COLORS[namedValue[1].toLowerCase()])
-    value = namedValue[1];
-  if (!value) return null;
-  const valueRgb = rgbFromValue(value);
-  if (!valueRgb) return null;
+  const resolved = rule.color ? resolveColor(raw) : resolvePx(raw);
+  if (!resolved) return null;
 
   // Target: quoted text beats a tag alias after von/des/der/dem/of/the.
   const quotedTarget = /(?:von|of|in)\s+["']([^"']+)["']/i.exec(raw);
-  if (quotedTarget)
-    return {
-      kind: "color",
-      property,
-      value,
-      valueRgb,
-      target: { text: quotedTarget[1] },
-      raw,
-    };
-  const tagTarget = /(?:von|of|des|der|dem|the)\s+(?:den\s+|die\s+|das\s+|dem\s+)?([a-zäöüß]+)\b/i.exec(
-    raw,
-  );
-  if (tagTarget) {
-    const tag = TAG_ALIASES[tagTarget[1].toLowerCase()];
-    if (tag)
-      return {
-        kind: "color",
-        property,
-        value,
-        valueRgb,
-        target: { tag },
+  let target = null;
+  if (quotedTarget) target = { text: quotedTarget[1] };
+  else {
+    const tagTarget =
+      /(?:von|of|des|der|dem|the)\s+(?:den\s+|die\s+|das\s+|dem\s+)?([a-zäöüß]+)\b/i.exec(
         raw,
-      };
+      );
+    const tag = tagTarget && TAG_ALIASES[tagTarget[1].toLowerCase()];
+    if (tag) target = { tag };
   }
-  return null;
+  if (!target) return null;
+
+  return {
+    kind: rule.kind,
+    property: rule.write,
+    verifyProperty: rule.verify,
+    value: resolved.value,
+    valueRgb: resolved.valueRgb ?? null,
+    valuePx: resolved.valuePx ?? null,
+    target,
+    raw,
+  };
 }
 
 function stylePatch(tagOpen, property, value) {
   const styleMatch = /(\sstyle\s*=\s*)(["'])(.*?)\2/i.exec(tagOpen);
   if (styleMatch) {
-    const merged = `${styleMatch[1]}${styleMatch[2]}${styleMatch[3].replace(/;\s*$/, "")};${property}:${value}${styleMatch[2]}`;
+    const merged = `${styleMatch[1]}${styleMatch[2]}${styleMatch[3].replace(
+      /;\s*$/,
+      "",
+    )};${property}:${value}${styleMatch[2]}`;
     return tagOpen.replace(styleMatch[0], merged);
   }
   return tagOpen.replace(/\s*\/?>$/, ` style="${property}:${value}">`);
@@ -190,27 +246,23 @@ export async function applyIntent(intent, fixDir, traceDir = null) {
       if (!tagOpen) continue;
     }
     if (!tagOpen) return { applied: false, reason: "no_match" };
-    // CSS understands neither "grün" nor "rot": patch the resolved rgb value,
-    // while the human word stays in the intent record for reporting.
-    const cssValue =
-      /^(#|rgb)/i.test(intent.value)
-        ? intent.value
-        : `rgb(${intent.valueRgb.join(", ")})`;
+    // CSS understands neither "grün" nor locale words: the intent record keeps
+    // the human value, the patch always carries a resolvable CSS value.
+    const cssValue = intent.valueRgb
+      ? `rgb(${intent.valueRgb.join(", ")})`
+      : intent.value;
     const patched = stylePatch(tagOpen, intent.property, cssValue);
-    if (patched === tagOpen)
-      return { applied: false, reason: "patch_failed" };
+    if (patched === tagOpen) return { applied: false, reason: "patch_failed" };
     const next = `${html.slice(0, index)}${patched}${html.slice(index + tagOpen.length)}`;
     if (traceDir) {
       await mkdir(traceDir, { recursive: true }).catch(() => {});
       const base = basename(file);
-      await writeFile(
-        join(traceDir, `${base}.before.html`),
-        html,
-      ).catch(() => {});
-      await writeFile(
-        join(traceDir, `${base}.after.html`),
-        next,
-      ).catch(() => {});
+      await writeFile(join(traceDir, `${base}.before.html`), html).catch(
+        () => {},
+      );
+      await writeFile(join(traceDir, `${base}.after.html`), next).catch(
+        () => {},
+      );
     }
     await writeFile(file, next, "utf8").catch(() => ({
       applied: false,
@@ -231,34 +283,57 @@ export async function applyIntent(intent, fixDir, traceDir = null) {
 /**
  * Verify parsed intents against the live page. Computed styles are the truth:
  * a stylesheet, a CSS variable, or an inline patch may all satisfy the intent.
+ * Colors compare per channel (+/-2), px values compare with 1px tolerance.
  */
 export async function runIntentChecks(page, intents = [], { viewport } = {}) {
   const out = [];
   const results = await page
-    .evaluate((specs) => {
-      const parseRgb = (value) => {
-        const match = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(value || "");
-        return match
-          ? [Number(match[1]), Number(match[2]), Number(match[3])]
-          : null;
-      };
-      const innermostByText = (text) => {
-        const all = [...document.querySelectorAll("body *")].filter((el) =>
-          (el.textContent || "").includes(text),
-        );
-        // The innermost element that still contains the text is the node a
-        // user would point at; outer containers inherit, they do not own.
-        return all.reverse().find((el) => el.children.length === 0) || all[0] || null;
-      };
-      return specs.map((spec) => {
-        let el = null;
-        if (spec.target.text) el = innermostByText(spec.target.text);
-        else if (spec.target.tag) el = document.querySelector(spec.target.tag);
-        if (!el) return { found: false };
-        const computed = getComputedStyle(el)[spec.property];
-        return { found: true, computed, rgb: parseRgb(computed) };
-      });
-    }, intents.map((intent) => ({ property: intent.property, target: intent.target })))
+    .evaluate(
+      (specs) => {
+        const parseRgb = (value) => {
+          const match = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(value || "");
+          return match
+            ? [Number(match[1]), Number(match[2]), Number(match[3])]
+            : null;
+        };
+        const parsePx = (value) => {
+          const match = /^(-?\d+(?:\.\d+)?)px$/.exec(
+            String(value || "").trim(),
+          );
+          return match ? Number(match[1]) : null;
+        };
+        const innermostByText = (text) => {
+          const all = [...document.querySelectorAll("body *")].filter((el) =>
+            (el.textContent || "").includes(text),
+          );
+          // The innermost element that still contains the text is the node a
+          // user would point at; outer containers inherit, they do not own.
+          return (
+            all.reverse().find((el) => el.children.length === 0) ||
+            all[0] ||
+            null
+          );
+        };
+        return specs.map((spec) => {
+          let el = null;
+          if (spec.target.text) el = innermostByText(spec.target.text);
+          else if (spec.target.tag)
+            el = document.querySelector(spec.target.tag);
+          if (!el) return { found: false };
+          const computed = getComputedStyle(el)[spec.verifyProperty];
+          return {
+            found: true,
+            computed,
+            rgb: parseRgb(computed),
+            px: parsePx(computed),
+          };
+        });
+      },
+      intents.map((intent) => ({
+        verifyProperty: intent.verifyProperty,
+        target: intent.target,
+      })),
+    )
     .catch(() => null);
 
   intents.forEach((intent, i) => {
@@ -275,20 +350,25 @@ export async function runIntentChecks(page, intents = [], { viewport } = {}) {
       });
       return;
     }
-    const actual = result.rgb;
-    const expected = intent.valueRgb;
-    const matches =
-      actual &&
-      Math.abs(actual[0] - expected[0]) <= 2 &&
-      Math.abs(actual[1] - expected[1]) <= 2 &&
-      Math.abs(actual[2] - expected[2]) <= 2;
+    let matches = false;
+    let actual = result.computed || "unknown";
+    if (intent.valueRgb && result.rgb) {
+      matches =
+        Math.abs(result.rgb[0] - intent.valueRgb[0]) <= 2 &&
+        Math.abs(result.rgb[1] - intent.valueRgb[1]) <= 2 &&
+        Math.abs(result.rgb[2] - intent.valueRgb[2]) <= 2;
+      actual = `rgb(${result.rgb.join(", ")})`;
+    } else if (intent.valuePx != null && result.px != null) {
+      matches = Math.abs(result.px - intent.valuePx) <= 1;
+      actual = `${result.px}px`;
+    }
     if (!matches) {
       out.push({
         issue_id: `vqa-intent-${i}-not-applied`,
         type: "vqa-intent",
         title: "Intent change not applied",
         severity: "high",
-        detail: `Expected ${intent.property} ${intent.value} (rgb ${expected.join(", ")}), computed ${result.computed || "unknown"}.`,
+        detail: `Expected ${intent.property} ${intent.value}, computed ${actual}.`,
         evidence,
       });
     }

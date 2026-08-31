@@ -22,23 +22,26 @@ human in the loop.
 
 ## Stages (`visual-qa run`)
 
+The full flow is prescribed in `schemas/intent-catalog.json`.
+
 1. `explore` — bounded BFS over states (per viewport), expectation oracle,
    pixel diff, screenshots, traces.
-2. `checks` — axe-core WCAG, layout/scroll probes, console/page/network,
-   slop heuristics; security probes when `--isolated`; intent checks when an
-   instruction was given.
+2. `checks` — axe-core WCAG (violations **and** contrast nodes axe could not
+   measure), layout/scroll probes, console/page/network, slop heuristics;
+   security probes when `--isolated`; intent baseline when an instruction was
+   given.
 3. `vision` — screenshot review via an OpenAI-compatible endpoint; opt-in
    through `--max-agent-calls` and `VQA_VISION_API_KEY`. The orchestrator
    stays deterministic and dispatches the same pairs to four review skills
    (layout, readability, slop, consistency); any multimodal model can serve
    them. Raw responses and accepted findings land in `<out>/vision/`.
-4. `intent` — instructions like `--intent 'ändere die Farbe von "Add item"
-   auf grün'` are parsed (DE/EN, named colors, hex, rgb), patched into the
-   `--fix-dir` sources, and verified in a fresh exploration against the live
-   computed style. An unfulfillable intent is a high-severity finding, never
-   a silent no-op.
-5. `fix`/`verify` — apply whitelisted fixes (title, lang), re-explore once,
-   diff issue sets. Before/after copies of every patched file land in
+4. `intent` — catalog instructions are parsed, patched into the `--fix-dir`
+   sources, and verified in a fresh exploration against the live computed
+   style. Anything outside the catalog is reported as unparsed, never
+   guessed; an unfulfillable instruction is a high-severity finding.
+5. `fix`/`verify` — whitelisted autofixes (document title, html lang, and
+   mechanical WCAG contrast corrections with an honest skip list), then ONE
+   fresh exploration proves every patch. Before/after copies land in
    `<out>/fixes/` and `<out>/intent/`.
 6. `aggregate` — final verdict, `run_id`, `report.json`, `report.md`.
 
