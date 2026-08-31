@@ -6,6 +6,10 @@ import { explore } from "../src/explore.mjs";
 import { dryRunIntent, parseIntent } from "../src/intent.mjs";
 import { renderJunitXml } from "../src/junit.mjs";
 import { renderSummaryLines, summarizeReport } from "../src/report.mjs";
+import {
+  applyHarnessReview,
+  prepareHarnessReview,
+} from "../src/review.mjs";
 import { run } from "../src/run.mjs";
 
 function usage() {
@@ -17,6 +21,8 @@ function usage() {
       "  visual-qa explore --url URL [--out DIR] [bounds flags]  deterministic core only\n" +
       "  visual-qa report <DIR> [--json]                         summarize an out-dir for agents\n" +
       "  visual-qa intent --intent \"...\" --fix-dir DIR [--json]   catalog dry-run, no browser\n" +
+      "  visual-qa review-prepare <DIR> [--max-pairs N]          export vision tasks for your harness\n" +
+      "  visual-qa review-apply <DIR> <findings.json>            apply your model's findings (additive)\n" +
       "Output flags (run/explore): --format human|json|junit, --out-file FILE (junit)\n" +
       "Mode flags:   --changed-target URL (repeatable, required for --mode changed)\n" +
       "              --baseline-dir DIR (per-viewport <name>.png baselines)\n" +
@@ -134,6 +140,57 @@ if (command === "report") {
       console.log(`${status}: ${result.intent}`);
     }
   process.exitCode = allGood ? 0 : 1;
+} else if (command === "review-prepare" || command === "review-apply") {
+  const positional = [];
+  let maxPairs = 6;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--max-pairs") maxPairs = Number(args[++i]);
+    else if (!arg.startsWith("--")) positional.push(arg);
+    else {
+      usage();
+      process.exit(2);
+    }
+  }
+  try {
+    if (command === "review-prepare") {
+      const [dir] = positional;
+      if (!dir) {
+        usage();
+        process.exit(2);
+      }
+      const report = JSON.parse(
+        await readFile(join(resolve(dir), "report.json"), "utf8"),
+      );
+      const { file, requests } = await prepareHarnessReview(report, resolve(dir), {
+        maxPairs,
+      });
+      console.log(
+        `vision review tasks: ${requests} requests -> ${file}`,
+      );
+      console.log(
+        "hand each request's images + system prompt to your harness vision model, collect {\"results\":[{\"id\",\"findings\"}]}, then: visual-qa review-apply",
+      );
+      process.exitCode = 0;
+    } else {
+      const [dir, findingsFile] = positional;
+      if (!dir || !findingsFile) {
+        usage();
+        process.exit(2);
+      }
+      const result = await applyHarnessReview(resolve(dir), resolve(findingsFile));
+      console.log(
+        `harness review applied: +${result.accepted} findings (rejected ${result.rejected}) | verdict ${result.verdict} | issues=${result.issues}`,
+      );
+      console.log(`full report: ${join(resolve(dir), "report.md")}`);
+      // Findings are additive and capped: the verdict moved only if medium
+      // notes turned PASS into UNPROVEN.
+      process.exitCode = 0;
+    }
+  } catch (error) {
+    console.error(`Visual QA BLOCKED: ${error.message}`);
+    process.exitCode = 2;
+  }
 } else if (command === "demo") {
   let outDir = ".qa-demo";
   const bounds = {};
