@@ -6,22 +6,33 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { redact, resolveConfig } from "./config.mjs";
 import { dedupeIssues, verdictFor } from "./checks.mjs";
 import { explore } from "./explore.mjs";
 import { applyFixes, collectFixes, diffIssues } from "./fix.mjs";
+import { applyIntent, parseIntent } from "./intent.mjs";
 import { renderMarkdownReport } from "./report.mjs";
 import { runVisionReview } from "./vision.mjs";
 
 export async function run(input = {}) {
   const config = resolveConfig(input);
-  if (!config.baseUrl) throw new Error("Visual QA requires baseUrl");
+  if (!config.baseUrl && config.mode !== "off")
+    throw new Error("Visual QA requires baseUrl");
   const outDir = config.outDir;
+  const runId = randomUUID().slice(0, 8);
   await mkdir(outDir, { recursive: true });
 
-  // Phase 1: deterministic exploration (a11y, layout, runtime, slop, security).
-  const report = await explore(input);
-  const phases = {};
+  // An unparsed intent must stay visible: the instruction was heard but not
+  // understood, and pretending otherwise would break traceability.
+  const intent = input.intent ? parseIntent(input.intent) : null;
+  const intentChecks =
+    input.intentChecks ?? (intent ? [intent] : []);
+
+  // Phase 1: deterministic exploration (a11y, layout, runtime, slop,
+  // security, intent baseline).
+  const report = await explore({ ...input, intentChecks });
+  const phases = { run_id: runId };
 
   // Phase 2: vision review. Additive by contract: findings can extend the
   // report, never remove or downgrade deterministic results, and severity is
@@ -41,28 +52,46 @@ export async function run(input = {}) {
     phases.vision = { status: `error: ${error.message}`, issues: 0 };
   }
 
-  // Phase 3: verified autofix on whitelisted document defects. Only runs on a
-  // failed report, only with an explicit fixDir, and only re-verdicts when a
-  // complete fresh exploration clears the issues.
+  // Phase 3: verified source changes. Whitelisted autofixes and explicit
+  // intents both patch fixDir sources; ONE fresh exploration then verifies
+  // everything against computed styles and fresh findings.
   let verify = null;
-  if (
-    report.verdict !== "PASS" &&
-    config.autofix === "verified" &&
-    config.fixDir
-  ) {
-    const fixes = collectFixes(report.issues);
-    const { applied, skipped } = await applyFixes(fixes, config.fixDir);
+  if (input.intent && !intent)
+    phases.intent = {
+      parsed: false,
+      detail: "Intent instruction was not understood; nothing applied.",
+    };
+  if (intent && config.fixDir) {
+    const result = await applyIntent(intent, config.fixDir, join(outDir, "intent"));
+    phases.intent = { parsed: true, ...result };
+  } else if (intent && !config.fixDir) {
+    phases.intent = { parsed: true, applied: false, reason: "no_fix_dir" };
+  }
+  const pendingFixes =
+    report.verdict !== "PASS" && config.autofix === "verified" && config.fixDir
+      ? collectFixes(report.issues)
+      : [];
+  if (pendingFixes.length) {
+    const { applied, skipped } = await applyFixes(
+      pendingFixes,
+      config.fixDir,
+      join(outDir, "fixes"),
+    );
     phases.fix = { applied, skipped };
-    if (applied.length) {
-      verify = await explore({ ...input, outDir: join(outDir, "verify") });
-      const diff = diffIssues(report.issues, verify.issues);
-      phases.verify = {
-        verdict: verify.verdict,
-        complete: verify.complete,
-        fixed: diff.fixed.length,
-        remaining: diff.remaining.length,
-      };
-    }
+  }
+  if ((pendingFixes.length || phases.intent?.applied) && config.fixDir) {
+    verify = await explore({
+      ...input,
+      intentChecks,
+      outDir: join(outDir, "verify"),
+    });
+    const diff = diffIssues(report.issues, verify.issues);
+    phases.verify = {
+      verdict: verify.verdict,
+      complete: verify.complete,
+      fixed: diff.fixed.length,
+      remaining: diff.remaining.length,
+    };
   }
 
   // Aggregate: the authoritative run is the latest COMPLETE deterministic run.
@@ -74,6 +103,7 @@ export async function run(input = {}) {
 
   const result = {
     ...report,
+    run_id: runId,
     verdict,
     complete: authoritative.complete,
     coverage: authoritative.coverage,

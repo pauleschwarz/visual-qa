@@ -11,6 +11,7 @@ const html = `<!doctype html>
 <body><header><h1>Visual QA fixture</h1><nav class="nav"><a href="/home">Home</a><a href="/missing">Broken navigation</a><button id="open">Open details</button></nav></header>
 <main><section class="card"><h2>Search catalogue</h2><label for="query">Query</label><input id="query" type="text" required placeholder="Search"><button id="search">Search</button><p id="result">Results are ready.</p></section>
 <section class="card"><h2>Actions</h2><button id="dead">Apply filter</button><button id="crash">Load data</button><button id="save">Save draft</button><button id="danger">Delete account</button><button class="tiny"></button></section>
+<section class="card"><h2>Checkout</h2><form id="order"><label for="addr">Address</label><input id="addr" type="text"><button type="submit">Continue</button></form><p id="orderState">Draft.</p></section>
 <section class="card overflow"><h2>Responsive defect</h2><p>This intentionally over-wide panel causes horizontal overflow on mobile.</p></section>
 <section class="card"><h2>TODO: Write this section</h2><p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Placeholder text lives here until the copy is written.</p></section>
 <dialog id="details"><h2>Details</h2><p>Focusable modal content.</p><button id="close">Close</button></dialog>

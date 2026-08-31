@@ -7,8 +7,11 @@ function usage() {
   console.error(
     "Usage:\n" +
       "  visual-qa run --url URL [--out DIR] [--isolated] [--autofix verified] [--fix-dir DIR]\n" +
-      "                 [--max-agent-calls N] [--mode off|changed|full] [bounds flags]\n" +
-      "  visual-qa explore --url URL [--out DIR] [bounds flags]   # deterministic core only\n" +
+      "                 [--intent \"instruction\"] [--max-agent-calls N] [--mode off|changed|full] [bounds flags]\n" +
+      "  visual-qa explore --url URL [--out DIR] [--mode off|changed|full] [bounds flags]\n" +
+      "Mode flags:   --changed-target URL (repeatable, required for --mode changed)\n" +
+      "              --baseline-dir DIR (per-viewport <name>.png baselines)\n" +
+      "              --allow-destructive (only with --isolated)\n" +
       "Bounds flags: --max-states N --max-depth N --max-actions N --max-actions-per-state N --max-runtime-ms N",
   );
   process.exitCode = 2;
@@ -23,17 +26,25 @@ let baseUrl,
   outDir = ".qa",
   mode = "full",
   isolatedEnvironment = false,
+  allowDestructive = false,
   autofix = null,
-  fixDir = null;
+  fixDir = null,
+  intent = null,
+  baselineDir = null;
 const bounds = {};
+const changedTargets = [];
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
   if (arg === "--url") baseUrl = args[++i];
   else if (arg === "--out") outDir = args[++i];
   else if (arg === "--mode") mode = args[++i];
   else if (arg === "--isolated") isolatedEnvironment = true;
+  else if (arg === "--allow-destructive") allowDestructive = true;
+  else if (arg === "--baseline-dir") baselineDir = resolve(args[++i]);
+  else if (arg === "--changed-target") changedTargets.push(args[++i]);
   else if (arg === "--autofix") autofix = args[++i];
   else if (arg === "--fix-dir") fixDir = resolve(args[++i]);
+  else if (arg === "--intent") intent = args[++i];
   else if (arg === "--max-states") bounds.max_states = Number(args[++i]);
   else if (arg === "--max-depth") bounds.max_depth = Number(args[++i]);
   else if (arg === "--max-actions")
@@ -49,8 +60,12 @@ for (let i = 0; i < args.length; i++) {
     process.exit(2);
   }
 }
-if (!baseUrl) {
+if (!baseUrl && mode !== "off") {
   usage();
+  process.exit(2);
+}
+if (mode === "changed" && changedTargets.length === 0) {
+  console.error("visual-qa: --mode changed requires at least one --changed-target");
   process.exit(2);
 }
 try {
@@ -59,8 +74,12 @@ try {
     outDir: resolve(outDir),
     mode,
     isolatedEnvironment,
+    allowDestructive,
+    baselineDir,
+    changedTargets,
     autofix,
     fixDir,
+    intent,
     bounds,
   };
   const report = command === "run" ? await run(input) : await explore(input);

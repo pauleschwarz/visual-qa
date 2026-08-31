@@ -1,6 +1,6 @@
 // Visual QA - bounded deterministic state-graph explorer.
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BrowserRuntime } from "./browser.mjs";
 import { classifyRisk, RISK, redact, resolveConfig } from "./config.mjs";
@@ -21,6 +21,7 @@ import {
 } from "./state.mjs";
 import { runSlopChecks } from "./slop.mjs";
 import { runSecurityChecks } from "./security.mjs";
+import { runIntentChecks } from "./intent.mjs";
 
 // Budgets that end the whole walk, as opposed to node-local truncations.
 const GLOBAL_LIMITS = new Set([
@@ -32,6 +33,59 @@ const GLOBAL_LIMITS = new Set([
 function now() {
   return Date.now();
 }
+
+/**
+ * Explorer-mechanics failures are evidence, never silence: a swallowed
+ * restore/screenshot/teardown error would let findings claim a page state
+ * that was never actually reached.
+ */
+function explorerIssue(kind, title, severity, detail, evidence = {}) {
+  return {
+    issue_id: `vqa-${kind}-${String(title).toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 60)}`,
+    type: `vqa-${kind}`,
+    title,
+    severity,
+    detail,
+    evidence: redact(evidence),
+  };
+}
+
+async function restoreOrIssue(runtime, target, issues, { severe } = {}) {
+  try {
+    await runtime.restoreState(target);
+    return true;
+  } catch (error) {
+    issues.push(
+      explorerIssue(
+        "explorer",
+        "State restore failed",
+        severe ? "high" : "medium",
+        "The explorer could not re-enter a page state; subsequent observations may describe the wrong page.",
+        { target: redact(target), error: redact({ message: String(error) }) },
+      ),
+    );
+    return false;
+  }
+}
+
+async function screenshotOrIssue(runtime, path, issues, label) {
+  try {
+    await runtime.screenshot(path, { stable: false });
+    return true;
+  } catch (error) {
+    issues.push(
+      explorerIssue(
+        "explorer",
+        "Screenshot capture failed",
+        "medium",
+        `The ${label} screenshot could not be written; pixel evidence is incomplete.`,
+        { path: String(path), error: redact({ message: String(error) }) },
+      ),
+    );
+    return false;
+  }
+}
+
 function actionId(stateId, control, index) {
   return `${stateId}:${control.role}:${scrubVolatile(control.name)}:${control.href || ""}:${index}`;
 }
@@ -130,6 +184,12 @@ function alreadySatisfied(control) {
   return false;
 }
 
+function baselineMissing(baselineDir, viewportName) {
+  return readFile(join(baselineDir, `${viewportName}.png`))
+    .then(() => false)
+    .catch(() => true);
+}
+
 /**
  * Explore from one URL with a bounded BFS. Each action records expectation,
  * before/after semantic observations, screenshots, DOM/ARIA/focus, runtime
@@ -137,7 +197,7 @@ function alreadySatisfied(control) {
  * One walk covers exactly one viewport; runtime and action budgets live in the
  * shared `budget` so a multi-viewport run cannot multiply its own bounds.
  */
-async function exploreViewport(config, viewport, budget) {
+async function exploreViewport(config, viewport, budget, entryUrls) {
   // The per-viewport runtime bound is a SLICE of the run. Measuring it against
   // the global start made every viewport after the first exceed its budget on
   // the first check and report zero coverage.
@@ -161,27 +221,117 @@ async function exploreViewport(config, viewport, budget) {
   let actions = 0;
   let limitReason = null;
   let complete = true;
+  let walkResult = null;
 
   try {
     const endBootEvents = runtime.markStep("boot");
-    await runtime.navigate(config.baseUrl);
-    const first = await snapshot(runtime, config);
-    issues.push(...(await runA11y(runtime.page)));
-    issues.push(...(await runLayoutChecks(runtime.page, viewport)));
-    issues.push(...(await runScrollChecks(runtime.page, viewport)));
-    // Slop heuristics describe a state like the other static checks.
-    if (config.slopChecks !== false)
-      issues.push(...(await runSlopChecks(runtime.page, { viewport })));
-    // Security probes are mutating (storage reads, canary fills) and are
-    // gated on the explicit isolated declaration, never inferred.
-    if (config.isolatedEnvironment && config.securityChecks !== false)
+    const queue = [];
+    // Each declared entry point is seeded as a root state so "changed" runs
+    // cover exactly the declared targets instead of a full sweep.
+    for (const entryUrl of entryUrls) {
+      await runtime.navigate(entryUrl);
+      const entry = await snapshot(runtime, config);
+      if (states.has(entry.state.state_id)) continue;
+      states.set(entry.state.state_id, { ...entry.state, depth: 0 });
+      queue.push({ snapshot: entry, depth: 0 });
+      scanned.add(entry.state.state_id);
+      issues.push(...(await runA11y(runtime.page)));
+      issues.push(...(await runLayoutChecks(runtime.page, viewport)));
+      issues.push(...(await runScrollChecks(runtime.page, viewport)));
+      // Slop heuristics describe a state like the other static checks.
+      if (config.slopChecks !== false)
+        issues.push(...(await runSlopChecks(runtime.page, { viewport })));
+      // Security probes are mutating (storage reads, canary fills) and are
+      // gated on the explicit isolated declaration, never inferred.
+      if (config.isolatedEnvironment && config.securityChecks !== false)
+        issues.push(
+          ...(await runSecurityChecks({
+            page: runtime.page,
+            baseUrl: config.baseUrl,
+            viewport,
+          })),
+        );
+      // Intent checks are read-only: computed styles must already satisfy the
+      // parsed instruction. A mismatch here is the baseline that the verify
+      // run has to clear.
+      if (config.intentChecks?.length)
+        issues.push(
+          ...(await runIntentChecks(runtime.page, config.intentChecks, {
+            viewport,
+          })),
+        );
+    }
+    if (queue.length === 0) {
+      // Every declared entry collapsed into an unreachable or duplicate
+      // state; a walk with no observable start cannot claim coverage.
+      complete = false;
+      limitReason = "no_entry_state";
+    }
+    // Baseline gate: a missing baseline is missing coverage, never a pass.
+    if (
+      config.baselineDir &&
+      (await baselineMissing(config.baselineDir, viewport.name))
+    ) {
       issues.push(
-        ...(await runSecurityChecks({
-          page: runtime.page,
-          baseUrl: config.baseUrl,
-          viewport,
-        })),
+        explorerIssue(
+          "baseline",
+          "Baseline missing",
+          "high",
+          `No baseline screenshot for viewport '${viewport.name}'; render-regression coverage is incomplete.`,
+          {
+            viewport: viewport.name,
+            baseline_path: join(config.baselineDir, `${viewport.name}.png`),
+            reason: "baseline_missing",
+          },
+        ),
       );
+      complete = false;
+      limitReason ||= "baseline_missing";
+    } else if (config.baselineDir) {
+      const initialShot = join(
+        outDir,
+        "screenshots",
+        `initial-${safe(viewport.name)}.png`,
+      );
+      if (await screenshotOrIssue(runtime, initialShot, issues, "initial")) {
+        try {
+          const comparison = await compareScreenshots(
+            join(config.baselineDir, `${viewport.name}.png`),
+            initialShot,
+          );
+          if (comparison.changed)
+            issues.push(
+              explorerIssue(
+                "baseline",
+                "Initial render differs from baseline",
+                "medium",
+                `The initial '${viewport.name}' render differs from the stored baseline screenshot.`,
+                {
+                  viewport: viewport.name,
+                  pixel_ratio: comparison.ratio,
+                  baseline_path: join(
+                    config.baselineDir,
+                    `${viewport.name}.png`,
+                  ),
+                },
+              ),
+            );
+        } catch (error) {
+          issues.push(
+            explorerIssue(
+              "baseline",
+              "Baseline comparison failed",
+              "medium",
+              "The stored baseline could not be compared against the initial render.",
+              {
+                viewport: viewport.name,
+                error: redact({ message: String(error) }),
+              },
+            ),
+          );
+        }
+      }
+    }
     // Load-time console/page/network failures must be able to fail a run; if
     // they are only collected inside the action loop they are dropped entirely.
     issues.push(
@@ -190,9 +340,6 @@ async function exploreViewport(config, viewport, budget) {
         baseUrl: config.baseUrl,
       })),
     );
-    const queue = [{ snapshot: first, depth: 0 }];
-    states.set(first.state.state_id, { ...first.state, depth: 0 });
-    scanned.add(first.state.state_id);
 
     while (queue.length) {
       if (now() - started > config.bounds.max_runtime_ms) {
@@ -213,12 +360,13 @@ async function exploreViewport(config, viewport, budget) {
       }
       // Re-enter the queued state before branching. Without this, later nodes
       // run against a stale live page and invent false no-ops / timeouts.
-      await runtime
-        .restoreState({
-          url: queued.snapshot.url,
-          theme: queued.snapshot.theme,
-        })
-        .catch(() => {});
+      const reentered = await restoreOrIssue(
+        runtime,
+        { url: queued.snapshot.url, theme: queued.snapshot.theme },
+        issues,
+        { severe: true },
+      );
+      if (!reentered) complete = false;
       const live = await snapshot(runtime, config);
       const current = {
         snapshot:
@@ -254,12 +402,13 @@ async function exploreViewport(config, viewport, budget) {
           break;
         }
         // Keep the live page on this node between sibling actions.
-        await runtime
-          .restoreState({
-            url: source.url,
-            theme: source.theme,
-          })
-          .catch(() => {});
+        const keptOnNode = await restoreOrIssue(
+          runtime,
+          { url: source.url, theme: source.theme },
+          issues,
+          { severe: true },
+        );
+        if (!keptOnNode) complete = false;
         const control = controls[index];
         const id = actionId(source.state.state_id, control, index);
         // External pages are outside the SUT. Do not follow them: otherwise
@@ -302,9 +451,9 @@ async function exploreViewport(config, viewport, budget) {
             // Malformed href: fall through and let the action report it.
           }
         }
-        const risk = classifyRisk(control.name, control.tag);
+        const risk = classifyRisk(control.name, control.tag, control.type);
         if (
-          risk === RISK.DESTRUCTIVE ||
+          (risk === RISK.DESTRUCTIVE && !config.allowDestructive) ||
           (risk === RISK.MUTATING && !config.allowMutating)
         ) {
           evidence.push({
@@ -343,42 +492,97 @@ async function exploreViewport(config, viewport, budget) {
         );
         const afterShot = join(outDir, "screenshots", `${safe(id)}-after.png`);
         const trace = join(outDir, "traces", `${safe(id)}.zip`);
-        await runtime.screenshot(beforeShot, { stable: false }).catch(() => {});
+        const beforeCaptured = await screenshotOrIssue(
+          runtime,
+          beforeShot,
+          issues,
+          "before-action",
+        );
         let status = "observed";
         let error = null;
-        try {
-          if (["textbox", "searchbox"].includes(control.role)) {
-            await runtime.fill(
-              control,
-              control.type === "email" ? "qa@example.invalid" : "Visual QA",
-            );
-            await runtime.press("Tab");
-          } else if (control.role === "combobox") {
-            await (await runtime.locate(control))
-              .press("ArrowDown")
-              .catch(() => {});
-            await runtime.press("Tab");
-          } else {
-            await runtime.click(control);
+        let attempts = 0;
+        const maxAttempts =
+          1 + Math.max(0, config.bounds.max_retries_per_action ?? 0);
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          attempts = attempt;
+          try {
+            if (["textbox", "searchbox"].includes(control.role)) {
+              await runtime.fill(
+                control,
+                control.type === "email" ? "qa@example.invalid" : "Visual QA",
+              );
+              await runtime.press("Tab");
+            } else if (control.role === "combobox") {
+              await (await runtime.locate(control))
+                .press("ArrowDown")
+                .catch((pressError) => {
+                  issues.push(
+                    explorerIssue(
+                      "explorer",
+                      "Keyboard interaction failed",
+                      "low",
+                      "The combobox keyboard probe could not run on this control.",
+                      {
+                        action_id: id,
+                        error: redact({ message: String(pressError) }),
+                      },
+                    ),
+                  );
+                });
+              await runtime.press("Tab");
+            } else {
+              await runtime.click(control);
+            }
+            await runtime.waitForStableState({
+              frames: config.stable_frames,
+              gap: config.stable_gap_ms,
+            });
+            status = "observed";
+            error = null;
+            break;
+          } catch (err) {
+            status = "error";
+            error = redact({ name: err.name, message: err.message });
+            if (attempt < maxAttempts)
+              await restoreOrIssue(
+                runtime,
+                { url: before.url, theme: before.theme },
+                issues,
+              );
           }
-          await runtime.waitForStableState({
-            frames: config.stable_frames,
-            gap: config.stable_gap_ms,
-          });
-        } catch (err) {
-          status = "error";
-          error = redact({ name: err.name, message: err.message });
-          await runtime
-            .restoreState({ url: before.url, theme: before.theme })
-            .catch(() => {});
         }
+        if (status === "error")
+          await restoreOrIssue(
+            runtime,
+            { url: before.url, theme: before.theme },
+            issues,
+          );
         const after = await snapshot(runtime, config);
-        await runtime.screenshot(afterShot, { stable: false }).catch(() => {});
+        const afterCaptured = await screenshotOrIssue(
+          runtime,
+          afterShot,
+          issues,
+          "after-action",
+        );
         // Pixel evidence: a control may change only what is painted, and a
         // semantics-only oracle would report that as a dead control.
-        const pixels = await compareScreenshots(beforeShot, afterShot).catch(
-          () => null,
-        );
+        let pixels = null;
+        if (beforeCaptured && afterCaptured) {
+          try {
+            pixels = await compareScreenshots(beforeShot, afterShot);
+          } catch {
+            pixels = null;
+            issues.push(
+              explorerIssue(
+                "explorer",
+                "Pixel comparison failed",
+                "medium",
+                "Both screenshots exist but could not be compared.",
+                { action_id: id },
+              ),
+            );
+          }
+        }
         const eventDelta = endEvents();
         const observation = {
           url: after.url,
@@ -396,6 +600,7 @@ async function exploreViewport(config, viewport, budget) {
           pixels_changed: pixels?.changed ?? null,
           pixel_ratio: pixels?.ratio ?? null,
           duration_ms: now() - stepStarted,
+          attempts,
           status,
           error,
           ...eventDelta,
@@ -505,9 +710,11 @@ async function exploreViewport(config, viewport, budget) {
         }
         if (after.state.state_id !== before.state.state_id) {
           // Reset every branch to the node origin before the next sibling.
-          await runtime
-            .restoreState({ url: source.url, theme: source.theme })
-            .catch(() => {});
+          await restoreOrIssue(
+            runtime,
+            { url: source.url, theme: source.theme },
+            issues,
+          );
         }
       }
       // Only global budgets end the walk. max_depth and max_actions_per_state
@@ -523,7 +730,7 @@ async function exploreViewport(config, viewport, budget) {
     }
     budget.actions += actions;
     budget.states += states.size;
-    return {
+    walkResult = {
       viewport: viewport.name,
       complete,
       limitReason,
@@ -534,10 +741,36 @@ async function exploreViewport(config, viewport, budget) {
       actions,
     };
   } finally {
-    await runtime.stop(
-      join(outDir, "traces", `run-${safe(viewport.name)}.zip`),
-    );
+    // Teardown failures are evidence too: a lost trace cannot back a finding.
+    try {
+      await runtime.stop(
+        join(outDir, "traces", `run-${safe(viewport.name)}.zip`),
+      );
+    } catch (error) {
+      const target = walkResult ?? {
+        viewport: viewport.name,
+        complete: false,
+        limitReason: "teardown_failed",
+        states: [],
+        edges: [],
+        issues: [],
+        evidence: [],
+        actions: 0,
+      };
+      target.issues.push(
+        explorerIssue(
+          "explorer",
+          "Browser teardown failed",
+          "medium",
+          "Browser teardown did not complete cleanly; traces may be incomplete.",
+          { viewport: viewport.name, error: redact({ message: String(error) }) },
+        ),
+      );
+      target.complete = false;
+      walkResult = target;
+    }
   }
+  return walkResult;
 }
 
 /**
@@ -546,11 +779,59 @@ async function exploreViewport(config, viewport, budget) {
  */
 export async function explore(input = {}) {
   const config = resolveConfig(input);
-  if (!config.baseUrl) throw new Error("Visual QA requires baseUrl");
+  if (!config.baseUrl && config.mode !== "off")
+    throw new Error("Visual QA requires baseUrl");
   const started = now();
   const outDir = config.outDir;
   await mkdir(join(outDir, "screenshots"), { recursive: true });
   await mkdir(join(outDir, "traces"), { recursive: true });
+
+  const writeReport = async (result) => {
+    await writeFile(
+      join(outDir, "report.json"),
+      `${JSON.stringify(redact(result), null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    return result;
+  };
+
+  // mode "off" never launches a browser. It reports an explicitly incomplete
+  // run instead of pretending the configured coverage was examined.
+  if (config.mode === "off") {
+    return writeReport({
+      schema_version: "vqa-0.1",
+      product: "Visual QA",
+      mode: "off",
+      verdict: "COVERAGE_INCOMPLETE",
+      complete: false,
+      coverage: {
+        bounds: config.bounds,
+        states: 0,
+        actions: 0,
+        queued: 0,
+        limit_reason: "mode_off",
+        viewports_covered: [],
+        viewports_missing: config.viewports.map((viewport) => viewport.name),
+      },
+      states: [],
+      edges: [],
+      issues: [],
+      evidence: [],
+      started_at: new Date(started).toISOString(),
+      duration_ms: now() - started,
+      config: redact({
+        ...config,
+        intent: config.intent ? "[configured]" : null,
+      }),
+    });
+  }
+
+  const entryUrls =
+    config.mode === "changed"
+      ? config.changedTargets.map((target) =>
+          new URL(target, config.baseUrl).href,
+        )
+      : [config.baseUrl];
 
   const budget = { actions: 0, states: 0 };
   const walks = [];
@@ -572,7 +853,37 @@ export async function explore(input = {}) {
         ),
       },
     };
-    walks.push(await exploreViewport(viewportConfig, viewport, budget));
+    // One viewport failing to boot must not erase the other viewports'
+    // coverage: the aborted viewport is recorded as explicitly incomplete.
+    try {
+      walks.push(
+        await exploreViewport(viewportConfig, viewport, budget, entryUrls),
+      );
+    } catch (error) {
+      walks.push({
+        viewport: viewport.name,
+        complete: false,
+        limitReason: "viewport_error",
+        states: [],
+        edges: [],
+        issues: [
+          explorerIssue(
+            "explorer",
+            "Viewport walk failed",
+            "high",
+            `The '${viewport.name}' walk aborted before completing: ${error instanceof Error ? error.message : String(error)}`,
+            {
+              viewport: viewport.name,
+              error: redact({
+                message: error instanceof Error ? error.message : String(error),
+              }),
+            },
+          ),
+        ],
+        evidence: [],
+        actions: 0,
+      });
+    }
     if (now() - started > config.bounds.max_runtime_ms) break;
     if (budget.actions >= config.bounds.max_total_actions) break;
   }
