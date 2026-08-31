@@ -2,3 +2,5 @@ node_modules/
 .qa/
 *.log
 .DS_Store
+debug-*.tmp.mjs
+verify/

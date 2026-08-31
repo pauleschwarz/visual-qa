@@ -1,10 +1,26 @@
 {
   "name": "@pauleschwarz/visual-qa",
   "version": "0.1.0",
-  "description": "Visual QA - autonomous visual and contextual QA runtime for running web applications.",
+  "description": "Autonomous visual and contextual QA for web apps: explore, find, fix, prove - no human in the loop.",
   "type": "module",
   "license": "MIT",
   "author": "Paul Schwarz",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pauleschwarz/visual-qa.git"
+  },
+  "bugs": "https://github.com/pauleschwarz/visual-qa/issues",
+  "homepage": "https://github.com/pauleschwarz/visual-qa#readme",
+  "keywords": [
+    "qa",
+    "testing",
+    "playwright",
+    "accessibility",
+    "visual-regression",
+    "ai-slop",
+    "autonomous-agents",
+    "web"
+  ],
   "bin": {
     "visual-qa": "bin/visual-qa.mjs"
   },
