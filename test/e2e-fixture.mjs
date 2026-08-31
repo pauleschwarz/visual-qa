@@ -13,18 +13,34 @@ const server = spawn(process.execPath, ["fixture/server.mjs"], {
 });
 test.after(() => server.kill());
 
-await new Promise((resolve) => setTimeout(resolve, 250));
+// Wait for real readiness, not a guessed sleep: the first exploration walks
+// into whatever the server is serving at that moment.
+async function waitForServer(url, { timeoutMs = 10_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return;
+    } catch {
+      // not up yet
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`fixture server did not come up at ${url}`);
+}
+await waitForServer(`http://127.0.0.1:${port}/`);
 
 test("fixture yields structured non-PASS report with seeded defects", async () => {
   const outDir = await mkdtemp(`${tmpdir()}/visual-qa-e2e-`);
   const report = await explore({
     baseUrl: `http://127.0.0.1:${port}/`,
     outDir,
+    // Generous: this test also runs while other browser suites are active.
     bounds: {
       max_states: 10,
       max_depth: 2,
-      max_total_actions: 12,
-      max_runtime_ms: 30_000,
+      max_total_actions: 20,
+      max_runtime_ms: 60_000,
     },
   });
   assert.notEqual(report.verdict, "PASS");

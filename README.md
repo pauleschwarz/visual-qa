@@ -14,21 +14,86 @@ oracle, reads every screen, and returns a verdict you can act on: `PASS`,
 ```sh
 npm install -g @pauleschwarz/visual-qa
 npx playwright install chromium
-visual-qa run --url http://127.0.0.1:4173 --out .qa
+visual-qa demo          # under a minute: bundled app with seeded defects
 ```
 
-Everything runs deterministic and offline by default. Add intelligence when
-you want it:
+The demo finds everything wrong on purpose — overflow, a crashing handler,
+placeholder copy — so you see a real `FAIL` report with evidence, not a
+green lie. Then point it at your own app:
+
+```sh
+visual-qa run --url http://127.0.0.1:3000 --out .qa
+```
+
+Deterministic and offline by default. Opt in when you want more:
 
 ```sh
 # vision review by four prompt skills (layout, readability, slop, consistency)
 export VQA_VISION_API_KEY=...
-visual-qa run --url http://127.0.0.1:4173 --max-agent-calls 8
+visual-qa run --url http://127.0.0.1:3000 --max-agent-calls 8
 
 # verified autofix + a visual change instruction, DE or EN
-visual-qa run --url http://127.0.0.1:4173 --autofix verified --fix-dir ./app \
+visual-qa run --url http://127.0.0.1:3000 --autofix verified --fix-dir ./app \
   --intent 'ändere die Farbe von "Add item" auf grün'
 ```
+
+## Using it from an agent harness
+
+visual-qa is a CLI tool, not a service: start it, read the result, act.
+The whole integration contract is three things.
+
+**Exit codes.** `0` = `PASS`. `1` = run happened, verdict is not `PASS`
+(findings or incomplete coverage — the report says which). `2` = blocked
+(bad arguments, unreachable URL, refused mode).
+
+**One summary command.** After a run, a harness reads the compact summary
+instead of the full report:
+
+```sh
+visual-qa report .qa --json
+```
+
+```json
+{
+  "verdict": "FAIL",
+  "limit_reason": null,
+  "coverage": { "states": 4, "actions": 9, "viewports": ["mobile", "desktop"] },
+  "issue_count": 6,
+  "by_severity": { "high": 4, "medium": 1, "low": 1 },
+  "issues": [{ "id": "...", "type": "vqa-functional", "severity": "high", "title": "Dead button", "detail": "..." }],
+  "phases": { "fix": { "applied": [] } },
+  "artifacts": { "report_md": "report.md", "screenshots": "screenshots/" }
+}
+```
+
+**A working loop.** The intended agent loop, no orchestration framework
+needed:
+
+1. Build or change the app; start it locally.
+2. `visual-qa run --url ... --out .qa` (add `--fix-dir <app-source>
+   --autofix verified` to let it fix and prove title/lang/contrast).
+3. `visual-qa report .qa --json` — treat each `issues[]` entry as a task:
+   fix the source, then re-run until the verdict is `PASS` or you accept
+   the remaining findings consciously.
+4. Never ship on `COVERAGE_INCOMPLETE` — raise the bounds flags and re-run
+   instead.
+
+The full machine contract (verdict policy, intent catalog, autofix
+whitelist, artifact layout) lives in
+[`schemas/intent-catalog.json`](schemas/intent-catalog.json).
+
+## Limits, stated honestly
+
+- Fixable sources are **static HTML** in `--fix-dir` (inline-style patches,
+  document title/lang). React/Vue components are findings, not patches.
+- The intent catalog is deliberately small: color, background, font-size,
+  gap, padding, margin against text or tag targets. Anything else reports
+  as unparsed.
+- Contrast fixes need axe to measure — unverifiable nodes are reported
+  (`color-contrast-incomplete`), not auto-fixed.
+- Exploration is bounded BFS with semantic-state identity; deep
+  authenticated flows need an app-level login or a reachable session URL.
+- Vision findings are capped at `medium`: they flag, they never gate.
 
 ## How it decides
 
