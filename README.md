@@ -21,9 +21,11 @@ visual-qa run --url http://127.0.0.1:3000 --out .qa
 ```
 
 Deterministic and offline by default. `--format junit` plugs into CI,
-`--max-agent-calls` adds vision review, `--autofix verified --fix-dir ./app`
-lets it fix and prove title/lang/contrast, and `--intent 'ändere die Farbe
-von "Add item" auf grün'` applies a verified visual change (DE or EN).
+`--max-agent-calls` adds vision review (or let your own harness model
+review via `review-prepare`/`review-apply`), `--autofix verified
+--fix-dir ./app` lets it fix and prove title/lang/contrast, and
+`--intent 'ändere die Farbe von "Add item" auf grün'` applies a verified
+visual change (DE or EN).
 
 ## Verdicts
 

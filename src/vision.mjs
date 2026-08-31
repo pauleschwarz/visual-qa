@@ -6,9 +6,11 @@ import { redact } from "./config.mjs";
 /**
  * Review skills are prompt packs, not models. The orchestrator stays
  * deterministic and merely dispatches the same screenshot pairs to each
- * skill; any OpenAI-compatible multimodal endpoint can serve them.
+ * skill; any OpenAI-compatible multimodal endpoint can serve them. The
+ * same packs are exported for harness-driven review: the calling agent's
+ * own vision model can answer them (see review.mjs).
  */
-const SKILLS = {
+export const SKILLS = {
   layout: {
     focus:
       "Broken layout: overlapping, clipped or off-screen elements, collapsed containers, misaligned grids, horizontal overflow.",
@@ -30,7 +32,8 @@ const SKILLS = {
 const SHARED_CONTRACT =
   'You are a visual QA reviewer. You see two screenshots of one user action (before, after). Report ONLY visible UI defects in your focus area. Ignore animations/carets. Reply with JSON ONLY: {"findings":[{"title":string,"severity":"high"|"medium"|"low","detail":string}]}. Empty findings array if the action looks fine.';
 
-function skillPrompt(skill) {
+export function skillPrompt(skill) {
+  if (!SKILLS[skill]) throw new Error(`Unknown vision skill "${skill}"`);
   return `${SHARED_CONTRACT} Focus: ${SKILLS[skill].focus}`;
 }
 

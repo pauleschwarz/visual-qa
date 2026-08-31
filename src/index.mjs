@@ -6,6 +6,7 @@ export { applyIntent, parseIntent, runIntentChecks } from "./intent.mjs";
 export { applyFixes, collectFixes, diffIssues } from "./fix.mjs";
 export { renderMarkdownReport } from "./report.mjs";
 export { run } from "./run.mjs";
+export { applyHarnessReview, prepareHarnessReview } from "./review.mjs";
 export { runSlopChecks } from "./slop.mjs";
 export { runSecurityChecks } from "./security.mjs";
 export { runVisionReview } from "./vision.mjs";
