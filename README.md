@@ -25,19 +25,36 @@ human in the loop.
 1. `explore` — bounded BFS over states (per viewport), expectation oracle,
    pixel diff, screenshots, traces.
 2. `checks` — axe-core WCAG, layout/scroll probes, console/page/network,
-   slop heuristics; security probes when `--isolated`.
+   slop heuristics; security probes when `--isolated`; intent checks when an
+   instruction was given.
 3. `vision` — screenshot review via an OpenAI-compatible endpoint; opt-in
-   through `--max-agent-calls` and `VQA_VISION_API_KEY`.
-4. `fix`/`verify` — apply whitelisted fixes, re-explore, diff issue sets.
-5. `aggregate` — final verdict, `report.json`, `report.md`.
+   through `--max-agent-calls` and `VQA_VISION_API_KEY`. The orchestrator
+   stays deterministic and dispatches the same pairs to four review skills
+   (layout, readability, slop, consistency); any multimodal model can serve
+   them. Raw responses and accepted findings land in `<out>/vision/`.
+4. `intent` — instructions like `--intent 'ändere die Farbe von "Add item"
+   auf grün'` are parsed (DE/EN, named colors, hex, rgb), patched into the
+   `--fix-dir` sources, and verified in a fresh exploration against the live
+   computed style. An unfulfillable intent is a high-severity finding, never
+   a silent no-op.
+5. `fix`/`verify` — apply whitelisted fixes (title, lang), re-explore once,
+   diff issue sets. Before/after copies of every patched file land in
+   `<out>/fixes/` and `<out>/intent/`.
+6. `aggregate` — final verdict, `run_id`, `report.json`, `report.md`.
 
 ## Usage
 
 ```sh
 visual-qa run --url http://127.0.0.1:4173 --out .qa \
-  --isolated --autofix verified --fix-dir ./app --max-agent-calls 4
+  --isolated --autofix verified --fix-dir ./app \
+  --intent 'ändere die Farbe von "Add item" auf grün' \
+  --max-agent-calls 8
 visual-qa explore --url http://127.0.0.1:4173   # deterministic core only
 ```
+
+Output directory per run: `screenshots/`, `traces/`, `vision/`, `fixes/`,
+`intent/`, `verify/`, `report.json`, `report.md` — every change traceable to
+its before/after copies and the issue diff that proves it.
 
 Bounds flags: `--max-states`, `--max-depth`, `--max-actions`,
 `--max-actions-per-state`, `--max-runtime-ms`, `--max-agent-calls`.

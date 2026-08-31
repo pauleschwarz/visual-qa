@@ -1,7 +1,40 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { redact } from "./config.mjs";
 
-const SYSTEM_CONTRACT =
-  'You are a visual QA reviewer. You see two screenshots of one user action (before, after). Report ONLY visible UI defects: broken layout, overlapping/clipped elements, unreadable text, empty sections, AI-slop patterns (placeholder copy, scaffold defaults), broken images, dead interactive elements. Ignore animations/carets. Reply with JSON ONLY: {"findings":[{"title":string,"severity":"high"|"medium"|"low","detail":string}]}. Empty findings array if the action looks fine.';
+/**
+ * Review skills are prompt packs, not models. The orchestrator stays
+ * deterministic and merely dispatches the same screenshot pairs to each
+ * skill; any OpenAI-compatible multimodal endpoint can serve them.
+ */
+const SKILLS = {
+  layout: {
+    focus:
+      "Broken layout: overlapping, clipped or off-screen elements, collapsed containers, misaligned grids, horizontal overflow.",
+  },
+  readability: {
+    focus:
+      "Readability: text too small or low contrast, unreadable text over images, cramped spacing, truncated labels, missing focus states.",
+  },
+  slop: {
+    focus:
+      "AI slop: placeholder copy, lorem ipsum, scaffold defaults, emoji soup, generic marketing filler, inconsistent tone.",
+  },
+  consistency: {
+    focus:
+      "Consistency: mixed fonts or button styles, inconsistent spacing, conflicting colors, mismatched icon sets, dead or duplicated controls.",
+  },
+};
+
+const SHARED_CONTRACT =
+  'You are a visual QA reviewer. You see two screenshots of one user action (before, after). Report ONLY visible UI defects in your focus area. Ignore animations/carets. Reply with JSON ONLY: {"findings":[{"title":string,"severity":"high"|"medium"|"low","detail":string}]}. Empty findings array if the action looks fine.';
+
+function skillPrompt(skill) {
+  return `${SHARED_CONTRACT} Focus: ${SKILLS[skill].focus}`;
+}
+
+const SKILL_KEYS = Object.keys(SKILLS);
 
 function slug(value) {
   return String(value)
@@ -72,106 +105,138 @@ export async function runVisionReview({
     const model = process.env.VQA_VISION_MODEL || "gpt-4o-mini";
     const readFile =
       readFileImpl ?? (await import("node:fs/promises")).readFile;
+    const traceDir = config?.outDir
+      ? join(config.outDir, "vision")
+      : null;
+    if (traceDir) await mkdir(traceDir, { recursive: true }).catch(() => {});
+    const runId = randomUUID().slice(0, 8);
     const evidence = Array.isArray(report?.evidence) ? report.evidence : [];
     const pairs = evidence
       .map(screenshotPair)
       .filter(Boolean)
-      .sort((left, right) => priority(left.entry) - priority(right.entry))
-      .slice(0, calls);
+      .sort((left, right) => priority(left.entry) - priority(right.entry));
+    // The call budget is global across skills: each pair x skill is one call,
+    // and the walk stops the moment the budget is spent, keeping later (more
+    // critical) pairs available for earlier skills rather than starving them.
+    let spent = 0;
 
-    for (const { entry, beforePath, afterPath } of pairs) {
-      let beforeDataUrl;
-      let afterDataUrl;
-      try {
-        beforeDataUrl = `data:image/png;base64,${Buffer.from(
-          await readFile(beforePath),
-        ).toString("base64")}`;
-        afterDataUrl = `data:image/png;base64,${Buffer.from(
-          await readFile(afterPath),
-        ).toString("base64")}`;
-      } catch {
-        continue;
-      }
-
-      attempted += 1;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 45_000);
-      try {
-        const response = await fetchImpl(`${endpoint}/chat/completions`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model,
-            max_tokens: 700,
-            messages: [
-              { role: "system", content: SYSTEM_CONTRACT },
-              {
-                role: "user",
-                content: [
-                  {
-                    type: "text",
-                    text: `Review the before and after screenshots for action ${String(entry.action_id || "unknown")}.`,
-                  },
-                  {
-                    type: "image_url",
-                    image_url: { url: beforeDataUrl },
-                  },
-                  {
-                    type: "image_url",
-                    image_url: { url: afterDataUrl },
-                  },
-                ],
-              },
-            ],
-          }),
-          signal: controller.signal,
-        });
-
-        const status = response?.status;
-        const successful =
-          response?.ok === true ||
-          (Number.isFinite(status) && status >= 200 && status < 300);
-        if (!successful) continue;
-
-        const payload = await response.json();
-        const content = payload?.choices?.[0]?.message?.content;
-        const findings = parseFindings(content);
-        if (!findings) continue;
-
-        completed += 1;
-        for (const finding of findings) {
-          if (
-            !finding ||
-            typeof finding !== "object" ||
-            typeof finding.title !== "string" ||
-            typeof finding.detail !== "string" ||
-            !["high", "medium", "low"].includes(finding.severity)
-          )
-            continue;
-
-          // Severity cap keeps vision additive; it cannot flip the deterministic verdict to FAIL.
-          const severity = finding.severity === "high" ? "medium" : finding.severity;
-          issues.push({
-            issue_id: `vqa-vision-${issues.length}-${slug(finding.title)}`,
-            type: "vqa-vision",
-            title: finding.title,
-            severity,
-            detail: finding.detail,
-            evidence: redact({
-              source: "vision",
-              model,
-              action_id: entry.action_id,
-              screenshot_pair: [beforePath, afterPath],
-            }),
-          });
+    for (const skill of SKILL_KEYS) {
+      if (spent >= calls) break;
+      for (const { entry, beforePath, afterPath } of pairs) {
+        if (spent >= calls) break;
+        let beforeDataUrl;
+        let afterDataUrl;
+        try {
+          beforeDataUrl = `data:image/png;base64,${Buffer.from(
+            await readFile(beforePath),
+          ).toString("base64")}`;
+          afterDataUrl = `data:image/png;base64,${Buffer.from(
+            await readFile(afterPath),
+          ).toString("base64")}`;
+        } catch {
+          continue;
         }
-      } catch {
-        continue;
-      } finally {
-        clearTimeout(timeout);
+
+        attempted += 1;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 45_000);
+        let raw = null;
+        try {
+          const response = await fetchImpl(`${endpoint}/chat/completions`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${key}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model,
+              max_tokens: 700,
+              messages: [
+                { role: "system", content: skillPrompt(skill) },
+                {
+                  role: "user",
+                  content: [
+                    {
+                      type: "text",
+                      text: `Review the before and after screenshots for action ${String(entry.action_id || "unknown")}.`,
+                    },
+                    {
+                      type: "image_url",
+                      image_url: { url: beforeDataUrl },
+                    },
+                    {
+                      type: "image_url",
+                      image_url: { url: afterDataUrl },
+                    },
+                  ],
+                },
+              ],
+            }),
+            signal: controller.signal,
+          });
+
+          const status = response?.status;
+          const successful =
+            response?.ok === true ||
+            (Number.isFinite(status) && status >= 200 && status < 300);
+          if (!successful) continue;
+
+          const payload = await response.json();
+          raw = payload;
+          const content = payload?.choices?.[0]?.message?.content;
+          const findings = parseFindings(content);
+          if (!findings) continue;
+
+          completed += 1;
+          const accepted = [];
+          for (const finding of findings) {
+            if (
+              !finding ||
+              typeof finding !== "object" ||
+              typeof finding.title !== "string" ||
+              typeof finding.detail !== "string" ||
+              !["high", "medium", "low"].includes(finding.severity)
+            )
+              continue;
+
+            // Severity cap keeps vision additive; it cannot flip the deterministic verdict to FAIL.
+            const severity = finding.severity === "high" ? "medium" : finding.severity;
+            const visionIssue = {
+              issue_id: `vqa-vision-${issues.length}-${slug(finding.title)}`,
+              type: "vqa-vision",
+              title: finding.title,
+              severity,
+              detail: finding.detail,
+              evidence: redact({
+                source: "vision",
+                skill,
+                model,
+                action_id: entry.action_id,
+                screenshot_pair: [beforePath, afterPath],
+              }),
+            };
+            issues.push(visionIssue);
+            accepted.push(visionIssue);
+          }
+          // Traceability: every completed call leaves its raw response and the
+          // accepted findings on disk, keyed by run, skill, and action.
+          if (traceDir) {
+            const base = `${runId}-${skill}-${slug(String(entry.action_id || "unknown")).slice(0, 40)}`;
+            await writeFile(
+              join(traceDir, `${base}.response.json`),
+              `${JSON.stringify(raw, null, 2)}\n`,
+            ).catch(() => {});
+            await writeFile(
+              join(traceDir, `${base}.findings.json`),
+              `${JSON.stringify({ skill, model, action_id: entry.action_id, findings: accepted }, null, 2)}\n`,
+            ).catch(() => {});
+          }
+        } catch {
+          continue;
+        } finally {
+          clearTimeout(timeout);
+        }
+        spent += 1;
       }
     }
 

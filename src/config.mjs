@@ -34,10 +34,12 @@ const DESTRUCTIVE_RE =
 const MUTATING_RE =
   /\b(save|create|submit|add|update|upload|publish|apply|confirm|register|sign up|speicher|anleg|erstell|senden|absenden|bestaetig|bestätig)\b/i;
 
-export function classifyRisk(label = "", tag = "") {
+export function classifyRisk(label = "", tag = "", type = "") {
   const text = String(label).trim();
   if (DESTRUCTIVE_RE.test(text)) return RISK.DESTRUCTIVE;
   if (MUTATING_RE.test(text)) return RISK.MUTATING;
+  // A submit control posts its form even under an innocent label.
+  if (String(type).toLowerCase() === "submit") return RISK.MUTATING;
   if (tag === "a" || tag === "link") return RISK.SAFE;
   return RISK.SAFE;
 }
@@ -65,7 +67,21 @@ export function redact(value) {
 }
 
 export function resolveConfig(input = {}) {
-  const mode = MODES.includes(input.mode) ? input.mode : "full";
+  // The mode is a contract, not a hint: an unknown value must block the run
+  // instead of silently degrading to a full walk.
+  const mode = input.mode === undefined || input.mode === null ? "full" : input.mode;
+  if (!MODES.includes(mode))
+    throw new Error(
+      `Unknown mode "${mode}"; expected one of: ${MODES.join(", ")}`,
+    );
+  // "changed" only ever walks an explicitly declared target source.
+  const changedTargets = Array.isArray(input.changedTargets)
+    ? input.changedTargets.map((target) => String(target)).filter(Boolean)
+    : [];
+  if (mode === "changed" && changedTargets.length === 0)
+    throw new Error(
+      'mode "changed" requires an explicit changed-target source (changedTargets)',
+    );
   return {
     mode,
     baseUrl: input.baseUrl,
@@ -83,12 +99,17 @@ export function resolveConfig(input = {}) {
       input.isolatedEnvironment === true && input.allowDestructive === true,
     intent: input.intent || null,
     baselineDir: input.baselineDir || null,
+    changedTargets,
     autofix: input.autofix === "verified" ? "verified" : false,
     // Where fixable document-level defects (title, lang) are applied.
     // Without a fixDir the fix stage only plans, never edits.
     fixDir: input.fixDir || null,
     slopChecks: input.slopChecks !== false,
     securityChecks: input.securityChecks !== false,
+    // Parsed intents are supplied by the run pipeline (see intent.mjs);
+    // explore only verifies them against computed styles, it never parses
+    // raw instruction strings itself.
+    intentChecks: Array.isArray(input.intentChecks) ? input.intentChecks : [],
     trace: input.trace !== false,
     stable_frames: Number.isInteger(input.stable_frames)
       ? input.stable_frames

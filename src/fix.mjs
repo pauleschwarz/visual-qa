@@ -5,7 +5,7 @@
 // needs product knowledge stays a finding. A fix counts as fixed only when a
 // complete fresh exploration no longer reports the issue.
 
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 
 const FIXABLE_RULES = {
@@ -59,7 +59,7 @@ function insertLang(html) {
   return `${html.slice(0, open.index)}<html lang="en"${attrs}>${html.slice(open.index + open[0].length)}`;
 }
 
-async function htmlFiles(dir) {
+export async function htmlFiles(dir) {
   const out = [];
   let entries;
   try {
@@ -80,8 +80,9 @@ async function htmlFiles(dir) {
  * Apply whitelisted fixes to every HTML file under fixDir.
  * Returns { applied: [{kind, files}], skipped: [kinds] } — never throws;
  * an unreadable fixDir means nothing is applied, not a broken run.
+ * With traceDir, before/after copies of every patched file land on disk.
  */
-export async function applyFixes(fixes = [], fixDir) {
+export async function applyFixes(fixes = [], fixDir, traceDir = null) {
   if (!fixDir || !fixes.length) return { applied: [], skipped: fixes.map((f) => f.kind) };
   const files = await htmlFiles(fixDir);
   const applied = [];
@@ -110,6 +111,16 @@ export async function applyFixes(fixes = [], fixDir) {
       }
     }
     if (next !== html) {
+      if (traceDir) {
+        await mkdir(traceDir, { recursive: true }).catch(() => {});
+        const base = basename(file);
+        await writeFile(join(traceDir, `${base}.before.html`), html).catch(
+          () => {},
+        );
+        await writeFile(join(traceDir, `${base}.after.html`), next).catch(
+          () => {},
+        );
+      }
       await writeFile(file, next, "utf8").catch(() => {
         // Unwritable target: the fix stage reports it as unapplied via the
         // remaining set instead of failing the whole run.

@@ -26,6 +26,11 @@ export function renderMarkdownReport(report) {
 
   const phases = report.phases || {};
   const phaseLines = [];
+  if (report.run_id) phaseLines.push(`- run: \`${report.run_id}\``);
+  if (phases.intent)
+    phaseLines.push(
+      `- intent: parsed=${phases.intent.parsed}, applied=${phases.intent.applied ?? false}${phases.intent.reason ? `, reason: ${phases.intent.reason}` : ""}${phases.intent.parsed === false ? ` — ${phases.intent.detail}` : ""}`,
+    );
   if (phases.vision)
     phaseLines.push(
       `- vision: \`${phases.vision.status}\` — ${phases.vision.issues ?? 0} finding(s)`,
