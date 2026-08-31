@@ -1,101 +1,95 @@
 # visual-qa
 
-Autonomous visual and contextual QA runtime for running web applications.
-One bounded exploration pass per viewport: it walks the app's state graph,
-acts on every interactive control with an expectation-based oracle, and runs
-deterministic checks plus opt-in vision review and verified autofix — no
-human in the loop.
+Autonomous QA for web apps: it explores your running app like a user, finds
+what is broken, fixes what is mechanically fixable, proves every fix — and
+blocks the ship when coverage or verdict fails. No human in the loop.
+
+**The use case.** You (or an agent) just built an app. Before it goes out,
+one command walks its state graph, clicks every control with an expectation
+oracle, reads every screen, and returns a verdict you can act on: `PASS`,
+`FAIL`, `UNPROVEN`, or `COVERAGE_INCOMPLETE` — never a quiet "looks fine".
+
+## Quickstart
+
+```sh
+npm install -g @pauleschwarz/visual-qa
+npx playwright install chromium
+visual-qa run --url http://127.0.0.1:4173 --out .qa
+```
+
+Everything runs deterministic and offline by default. Add intelligence when
+you want it:
+
+```sh
+# vision review by four prompt skills (layout, readability, slop, consistency)
+export VQA_VISION_API_KEY=...
+visual-qa run --url http://127.0.0.1:4173 --max-agent-calls 8
+
+# verified autofix + a visual change instruction, DE or EN
+visual-qa run --url http://127.0.0.1:4173 --autofix verified --fix-dir ./app \
+  --intent 'ändere die Farbe von "Add item" auf grün'
+```
 
 ## How it decides
 
-- **Deterministic checks are authoritative.** a11y, layout, scroll, runtime,
-  functional semantics, slop heuristics, and (in isolated environments)
-  security probes produce hard findings.
-- **Vision models are additive only.** They review before/after screenshots
-  and may add findings (capped at `medium` severity); they can never remove or
-  downgrade a deterministic result.
-- **Coverage gates the verdict.** `COVERAGE_INCOMPLETE` is never a pass; a
-  bounded run must prove it explored, not merely find nothing.
-- **A fix only counts when verified.** Whitelisted document fixes (title,
-  lang) are applied to `--fix-dir`, then a fresh complete exploration must
-  clear the issue.
+- Deterministic checks are authoritative: axe WCAG (violations *and*
+  contrast nodes axe could not measure), layout and scroll probes, console,
+  page and network failures, slop heuristics, and — only in `--isolated`
+  environments — security probes.
+- Vision models are additive only. The orchestrator stays deterministic and
+  merely dispatches screenshot pairs to review skills; their findings cap at
+  `medium`, so a model can enrich a report but never fail or clear a run.
+- An instruction outside the intent catalog is reported as unparsed, never
+  guessed. An unfulfillable one is a finding, never a silent no-op.
+- A fix only counts when a complete fresh exploration no longer reports it.
+- `COVERAGE_INCOMPLETE` is never a pass.
 
-## Stages (`visual-qa run`)
+## What it can fix (whitelist)
 
-The full flow is prescribed in `schemas/intent-catalog.json`.
-
-1. `explore` — bounded BFS over states (per viewport), expectation oracle,
-   pixel diff, screenshots, traces.
-2. `checks` — axe-core WCAG (violations **and** contrast nodes axe could not
-   measure), layout/scroll probes, console/page/network, slop heuristics;
-   security probes when `--isolated`; intent baseline when an instruction was
-   given.
-3. `vision` — screenshot review via an OpenAI-compatible endpoint; opt-in
-   through `--max-agent-calls` and `VQA_VISION_API_KEY`. The orchestrator
-   stays deterministic and dispatches the same pairs to four review skills
-   (layout, readability, slop, consistency); any multimodal model can serve
-   them. Raw responses and accepted findings land in `<out>/vision/`.
-4. `intent` — catalog instructions are parsed, patched into the `--fix-dir`
-   sources, and verified in a fresh exploration against the live computed
-   style. Anything outside the catalog is reported as unparsed, never
-   guessed; an unfulfillable instruction is a high-severity finding.
-5. `fix`/`verify` — whitelisted autofixes (document title, html lang, and
-   mechanical WCAG contrast corrections with an honest skip list), then ONE
-   fresh exploration proves every patch. Before/after copies land in
-   `<out>/fixes/` and `<out>/intent/`.
-6. `aggregate` — final verdict, `run_id`, `report.json`, `report.md`.
-
-## Usage
-
-```sh
-visual-qa run --url http://127.0.0.1:4173 --out .qa \
-  --isolated --autofix verified --fix-dir ./app \
-  --intent 'ändere die Farbe von "Add item" auf grün' \
-  --max-agent-calls 8
-visual-qa explore --url http://127.0.0.1:4173   # deterministic core only
-```
-
-Output directory per run: `screenshots/`, `traces/`, `vision/`, `fixes/`,
-`intent/`, `verify/`, `report.json`, `report.md` — every change traceable to
-its before/after copies and the issue diff that proves it.
-
-Bounds flags: `--max-states`, `--max-depth`, `--max-actions`,
-`--max-actions-per-state`, `--max-runtime-ms`, `--max-agent-calls`.
-Defaults are mutually coherent (40 states × 6 actions ≈ 15 min wall clock).
-
-Exit code: `PASS` → 0, everything else → 1, blocked → 2.
-
-### Vision environment
-
-| Variable | Meaning | Default |
+| Finding | Fix | Proof |
 | --- | --- | --- |
-| `VQA_VISION_API_KEY` | enables the vision stage | — (skips without) |
-| `VQA_VISION_ENDPOINT` | OpenAI-compatible base URL | `https://api.openai.com/v1` |
-| `VQA_VISION_MODEL` | multimodal model | `gpt-4o-mini` |
+| Missing `<title>` / `lang` | insert into fix-dir sources | fresh run clears the axe rule |
+| WCAG contrast violation | parse axe summary, blend foreground minimally to 4.5:1 (3:1 large text) | fresh run clears the node |
+| `--intent` style change (color, background, font-size, gap, padding, margin) | patch inline style as resolved CSS | computed style matches in fresh run |
 
-Without a key or `--max-agent-calls`, the stage reports
-`skipped_no_endpoint` / `skipped_no_calls` and the run stays fully
-deterministic.
+Everything else stays a finding with evidence: before/after screenshots,
+ARIA/DOM snapshots, traces, and per-call model responses. Unfixable targets
+appear in an honest skip list (`selector_unsupported`, `unparsable_summary`),
+never as silent drops.
 
-### Safety
+Full contract: [`schemas/intent-catalog.json`](schemas/intent-catalog.json).
 
-- Destructive labels (delete, pay, unsubscribe, …) are refused unless
-  `--isolated` is set; mutating labels additionally require an isolated
-  environment.
-- External-origin links are never followed; off-origin events are excluded
-  from findings.
-- Secrets are redacted from evidence before it reaches disk; report files are
-  written `0600`.
+## Safety
+
+- Destructive labels (delete, pay, unsubscribe, …) are refused; mutating
+  labels require `--isolated`.
+- External links are never followed; off-origin events are excluded.
+- Secrets are redacted before evidence reaches disk; reports are `0600`.
+- Every patch leaves before/after copies in `<out>/fixes/` and
+  `<out>/intent/`, and every run carries a `run_id`.
+
+## Output
+
+Per run: `report.json` (machine), `report.md` (verdict, phases, issues),
+`screenshots/`, `traces/`, `vision/`, `fixes/`, `intent/`, `verify/`.
+
+```
+Visual QA PASS | states=2 actions=4 issues=0
+  intent: parsed=true applied=true
+  fix:    contrast #notice 1.61 -> rgb(118, 118, 118)
+  verify: PASS complete fixed=3 remaining=0
+```
 
 ## Development
 
 ```sh
 npm install && npx playwright install chromium
-npm run verify        # unit + e2e against the defect fixture
-npm run fixture       # serves the seeded-defect fixture on :4173
+npm run verify      # unit + e2e against the seeded-defect fixture
+npm run fixture     # serves the defect fixture on :4173
 ```
 
 The fixture intentionally seeds dead controls, a crashing handler, a failing
-API call, overflow, a tiny unnamed button, and placeholder copy.
+API call, overflow, placeholder copy, and an unnamed button — so the test
+suite proves the runtime finds what matters, not that it stays green.
 
 License: MIT.

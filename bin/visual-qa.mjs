@@ -17,6 +17,13 @@ function usage() {
   process.exitCode = 2;
 }
 const args = process.argv.slice(2);
+if (args[0] === "--version" || args[0] === "-v") {
+  const { createRequire } = await import("node:module");
+  console.log(
+    createRequire(import.meta.url)("../package.json").version,
+  );
+  process.exit(0);
+}
 const command = args.shift();
 if (command !== "explore" && command !== "run") {
   usage();
