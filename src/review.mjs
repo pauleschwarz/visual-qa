@@ -12,8 +12,22 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { dedupeIssues, verdictFor } from "./checks.mjs";
 import { redact } from "./config.mjs";
-import { renderMarkdownReport } from "./report.mjs";
+import { writeReportArtifacts } from "./report.mjs";
 import { skillPrompt, SKILLS } from "./vision.mjs";
+
+async function readJson(path, label) {
+  let source;
+  try {
+    source = await readFile(path, "utf8");
+  } catch (error) {
+    throw new Error(`Could not read ${label} at ${path}: ${error.message}`);
+  }
+  try {
+    return JSON.parse(source);
+  } catch (error) {
+    throw new Error(`Invalid JSON in ${label} at ${path}: ${error.message}`);
+  }
+}
 
 function slug(value) {
   return String(value)
@@ -114,8 +128,8 @@ function toVisionIssue(answer, finding, index) {
  */
 export async function applyHarnessReview(outDir, findingsFile) {
   const reportPath = join(outDir, "report.json");
-  const report = JSON.parse(await readFile(reportPath, "utf8"));
-  const answers = JSON.parse(await readFile(findingsFile, "utf8"));
+  const report = await readJson(reportPath, "visual-qa report");
+  const answers = await readJson(findingsFile, "vision findings");
   const results = Array.isArray(answers?.results) ? answers.results : [];
   if (!Array.isArray(answers?.results))
     throw new Error('findings file must be {"results": [{"id", "findings": [...]}]}');
@@ -174,14 +188,7 @@ export async function applyHarnessReview(outDir, findingsFile) {
     accepted: accepted.length,
     rejected: rejected.length,
   };
-  await writeFile(
-    reportPath,
-    `${JSON.stringify(redact(report), null, 2)}\n`,
-    { mode: 0o600 },
-  );
-  await writeFile(join(outDir, "report.md"), `${renderMarkdownReport(report)}\n`, {
-    mode: 0o600,
-  });
+  await writeReportArtifacts(outDir, report);
   return {
     verdict: report.verdict,
     accepted: accepted.length,
