@@ -1,7 +1,7 @@
 {
   "name": "@pauleschwarz/visual-qa",
   "version": "0.1.0",
-  "description": "Autonomous visual and contextual QA for web apps: explore, find, fix, prove - no human in the loop.",
+  "description": "Bounded browser QA for web apps: explore, find, fix, and prove with portable evidence.",
   "type": "module",
   "license": "MIT",
   "author": "Paul Schwarz",
@@ -31,7 +31,9 @@
     "bin",
     "src",
     "schemas",
-    "docs",
+    "docs/README.md",
+    "docs/harness.md",
+    "CONTRIBUTING.md",
     "README.md",
     "LICENSE"
   ],
@@ -44,10 +46,12 @@
   },
   "dependencies": {
     "@axe-core/playwright": "^4.13.0",
-    "@pauleschwarz/pi-verity": "github:pauleschwarz/pi-verity#main",
     "pixelmatch": "^7.2.0",
     "playwright": "^1.62.1",
     "pngjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "@pauleschwarz/pi-verity": "github:pauleschwarz/pi-verity#8fd92f80c8157149a59c4d61ef8ccc49b7361b87"
   },
   "engines": {
     "node": ">=20"
