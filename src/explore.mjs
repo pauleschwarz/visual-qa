@@ -1,6 +1,6 @@
 // Visual QA - bounded deterministic state-graph explorer.
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BrowserRuntime } from "./browser.mjs";
 import { classifyRisk, RISK, redact, resolveConfig } from "./config.mjs";
@@ -22,6 +22,7 @@ import {
 import { runSlopChecks } from "./slop.mjs";
 import { runSecurityChecks } from "./security.mjs";
 import { runIntentChecks } from "./intent.mjs";
+import { writeReportArtifacts } from "./report.mjs";
 
 // Budgets that end the whole walk, as opposed to node-local truncations.
 const GLOBAL_LIMITS = new Set([
@@ -789,14 +790,7 @@ export async function explore(input = {}) {
   await mkdir(join(outDir, "screenshots"), { recursive: true });
   await mkdir(join(outDir, "traces"), { recursive: true });
 
-  const writeReport = async (result) => {
-    await writeFile(
-      join(outDir, "report.json"),
-      `${JSON.stringify(redact(result), null, 2)}\n`,
-      { mode: 0o600 },
-    );
-    return result;
-  };
+  const writeReport = (result) => writeReportArtifacts(outDir, result);
 
   // mode "off" never launches a browser. It reports an explicitly incomplete
   // run instead of pretending the configured coverage was examined.
@@ -927,12 +921,7 @@ export async function explore(input = {}) {
       intent: config.intent ? "[configured]" : null,
     }),
   };
-  await writeFile(
-    join(outDir, "report.json"),
-    `${JSON.stringify(redact(result), null, 2)}\n`,
-    { mode: 0o600 },
-  );
-  return result;
+  return writeReport(result);
 }
 
 function safe(input) {
