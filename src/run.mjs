@@ -4,15 +4,15 @@
 // vision review (additive only), verified autofix, and aggregation into
 // report.json + report.md with one final verdict.
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { redact, resolveConfig } from "./config.mjs";
+import { resolveConfig } from "./config.mjs";
 import { dedupeIssues, verdictFor } from "./checks.mjs";
 import { explore } from "./explore.mjs";
 import { applyFixes, collectFixes, diffIssues } from "./fix.mjs";
 import { applyIntent, parseIntent } from "./intent.mjs";
-import { renderMarkdownReport } from "./report.mjs";
+import { writeReportArtifacts } from "./report.mjs";
 import { runVisionReview } from "./vision.mjs";
 
 export async function run(input = {}) {
@@ -114,15 +114,6 @@ export async function run(input = {}) {
     phases,
   };
 
-  await writeFile(
-    join(outDir, "report.json"),
-    `${JSON.stringify(redact(result), null, 2)}\n`,
-    { mode: 0o600 },
-  );
-  await writeFile(
-    join(outDir, "report.md"),
-    `${renderMarkdownReport(result)}\n`,
-    { mode: 0o600 },
-  );
+  await writeReportArtifacts(outDir, result);
   return result;
 }
