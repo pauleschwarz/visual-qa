@@ -42,7 +42,10 @@ function now() {
  */
 function explorerIssue(kind, title, severity, detail, evidence = {}) {
   return {
-    issue_id: `vqa-${kind}-${String(title).toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 60)}`,
+    issue_id: `vqa-${kind}-${String(title)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .slice(0, 60)}`,
     type: `vqa-${kind}`,
     title,
     severity,
@@ -767,7 +770,10 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           "Browser teardown failed",
           "medium",
           "Browser teardown did not complete cleanly; traces may be incomplete.",
-          { viewport: viewport.name, error: redact({ message: String(error) }) },
+          {
+            viewport: viewport.name,
+            error: redact({ message: String(error) }),
+          },
         ),
       );
       target.complete = false;
@@ -825,8 +831,8 @@ export async function explore(input = {}) {
 
   const entryUrls =
     config.mode === "changed"
-      ? config.changedTargets.map((target) =>
-          new URL(target, config.baseUrl).href,
+      ? config.changedTargets.map(
+          (target) => new URL(target, config.baseUrl).href,
         )
       : [config.baseUrl];
 

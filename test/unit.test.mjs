@@ -146,6 +146,22 @@ test("mode is an explicit contract, not a silent full-run default", () => {
     () => resolveConfig({ baseUrl: "http://127.0.0.1:1", mode: "changed" }),
     /changed-target/,
   );
+  assert.throws(
+    () => resolveConfig({ baseUrl: "not-a-url" }),
+    /Invalid baseUrl/,
+  );
+  assert.throws(
+    () => resolveConfig({ baseUrl: "file:///tmp/app.html" }),
+    /expected http: or https:/,
+  );
+  assert.throws(
+    () =>
+      resolveConfig({
+        baseUrl: "http://127.0.0.1:1",
+        bounds: { max_states: NaN },
+      }),
+    /max_states must be an integer/,
+  );
   const changed = resolveConfig({
     baseUrl: "http://127.0.0.1:1",
     mode: "changed",
@@ -157,7 +173,10 @@ test("mode is an explicit contract, not a silent full-run default", () => {
 test("submit controls are mutating regardless of their label", () => {
   assert.equal(classifyRisk("Continue", "button", "submit"), "MUTATING");
   assert.equal(classifyRisk("Continue", "button", "button"), "SAFE");
-  assert.equal(classifyRisk("Delete account", "button", "submit"), "DESTRUCTIVE");
+  assert.equal(
+    classifyRisk("Delete account", "button", "submit"),
+    "DESTRUCTIVE",
+  );
 });
 
 test("destructive actions need isolation plus explicit allowance", () => {
