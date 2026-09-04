@@ -51,7 +51,7 @@
     "pngjs": "^7.0.0"
   },
   "devDependencies": {
-    "@pauleschwarz/pi-verity": "github:pauleschwarz/pi-verity#8fd92f80c8157149a59c4d61ef8ccc49b7361b87"
+    "@pauleschwarz/pi-verity": "https://codeload.github.com/pauleschwarz/pi-verity/tar.gz/8fd92f80c8157149a59c4d61ef8ccc49b7361b87"
   },
   "engines": {
     "node": ">=20"

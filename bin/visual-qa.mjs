@@ -6,10 +6,7 @@ import { explore } from "../src/explore.mjs";
 import { dryRunIntent, parseIntent } from "../src/intent.mjs";
 import { renderJunitXml } from "../src/junit.mjs";
 import { renderSummaryLines, summarizeReport } from "../src/report.mjs";
-import {
-  applyHarnessReview,
-  prepareHarnessReview,
-} from "../src/review.mjs";
+import { applyHarnessReview, prepareHarnessReview } from "../src/review.mjs";
 import { run } from "../src/run.mjs";
 
 function usage({ error = false, message = null } = {}) {
@@ -17,10 +14,10 @@ function usage({ error = false, message = null } = {}) {
     "Usage:\n" +
     "  visual-qa demo [--out DIR] [bounds flags]              zero-setup first run\n" +
     "  visual-qa run --url URL [--out DIR] [--isolated] [--autofix verified] [--fix-dir DIR]\n" +
-    "                 [--intent \"instruction\"] [--max-agent-calls N] [--mode off|changed|full] [bounds flags]\n" +
+    '                 [--intent "instruction"] [--max-agent-calls N] [--mode off|changed|full] [bounds flags]\n' +
     "  visual-qa explore --url URL [--out DIR] [bounds flags]  deterministic core only\n" +
     "  visual-qa report <DIR> [--json]                         summarize an out-dir for agents\n" +
-    "  visual-qa intent --intent \"...\" --fix-dir DIR [--json]   catalog dry-run, no browser\n" +
+    '  visual-qa intent --intent "..." --fix-dir DIR [--json]   catalog dry-run, no browser\n' +
     "  visual-qa review-prepare <DIR> [--max-pairs N]          export vision tasks for your harness\n" +
     "  visual-qa review-apply <DIR> <findings.json>            apply your model's findings (additive)\n" +
     "Output flags (run/explore): --format human|json|junit, --out-file FILE (junit)\n" +
@@ -35,10 +32,23 @@ function usage({ error = false, message = null } = {}) {
 }
 
 const VALUE_OPTIONS = new Set([
-  "--out", "--url", "--mode", "--baseline-dir", "--changed-target",
-  "--autofix", "--fix-dir", "--intent", "--format", "--out-file",
-  "--max-states", "--max-depth", "--max-actions", "--max-actions-per-state",
-  "--max-runtime-ms", "--max-agent-calls", "--max-pairs",
+  "--out",
+  "--url",
+  "--mode",
+  "--baseline-dir",
+  "--changed-target",
+  "--autofix",
+  "--fix-dir",
+  "--intent",
+  "--format",
+  "--out-file",
+  "--max-states",
+  "--max-depth",
+  "--max-actions",
+  "--max-actions-per-state",
+  "--max-runtime-ms",
+  "--max-agent-calls",
+  "--max-pairs",
 ]);
 
 function validateOptionValues(tokens) {
@@ -53,7 +63,15 @@ function validateOptionValues(tokens) {
 }
 
 function reportWasBlocked(report) {
-  return report.coverage?.states === 0 && report.coverage?.limit_reason === "viewport_error";
+  return (
+    report.coverage?.states === 0 &&
+    report.coverage?.limit_reason === "viewport_error"
+  );
+}
+
+function exitCodeForReport(report) {
+  if (reportWasBlocked(report)) return 2;
+  return report.verdict === "PASS" ? 0 : 1;
 }
 
 const args = process.argv.slice(2);
@@ -92,8 +110,9 @@ async function emitResult(report, { format, outDir, outFile }) {
         await writeFile(path, xml);
         console.log(`junit report: ${path}`);
       } catch (error) {
-        console.error(`Visual QA BLOCKED: ${error.message}`);
-        process.exitCode = 2;
+        throw new Error(
+          `Could not write JUnit report at ${path}: ${error.message}`,
+        );
       }
     } else {
       console.log(xml);
@@ -128,7 +147,7 @@ if (command === "report") {
     const summary = summarizeReport(report);
     if (json) console.log(JSON.stringify(summary, null, 2));
     else console.log(renderSummaryLines(summary).join("\n"));
-    process.exitCode = report.verdict === "PASS" ? 0 : 1;
+    process.exitCode = exitCodeForReport(report);
   } catch (error) {
     console.error(`Visual QA BLOCKED: ${error.message}`);
     process.exitCode = 2;
@@ -202,14 +221,16 @@ if (command === "report") {
       const report = JSON.parse(
         await readFile(join(resolve(dir), "report.json"), "utf8"),
       );
-      const { file, requests } = await prepareHarnessReview(report, resolve(dir), {
-        maxPairs,
-      });
-      console.log(
-        `vision review tasks: ${requests} requests -> ${file}`,
+      const { file, requests } = await prepareHarnessReview(
+        report,
+        resolve(dir),
+        {
+          maxPairs,
+        },
       );
+      console.log(`vision review tasks: ${requests} requests -> ${file}`);
       console.log(
-        "hand each request's images + system prompt to your harness vision model, collect {\"results\":[{\"id\",\"findings\"}]}, then: visual-qa review-apply",
+        'hand each request\'s images + system prompt to your harness vision model, collect {"results":[{"id","findings"}]}, then: visual-qa review-apply',
       );
       process.exitCode = 0;
     } else {
@@ -218,7 +239,10 @@ if (command === "report") {
         usage();
         process.exit(2);
       }
-      const result = await applyHarnessReview(resolve(dir), resolve(findingsFile));
+      const result = await applyHarnessReview(
+        resolve(dir),
+        resolve(findingsFile),
+      );
       console.log(
         `harness review applied: +${result.accepted} findings (rejected ${result.rejected}) | verdict ${result.verdict} | issues=${result.issues}`,
       );
@@ -254,7 +278,9 @@ if (command === "report") {
     console.log("Visual QA demo | walking an intentionally broken fixture…");
     const report = await demo({ outDir: resolve(outDir), bounds });
     await emitResult(report, { format: "human", outDir });
-    console.log("Demo complete: findings are expected here. Next, run visual-qa against your own URL.");
+    console.log(
+      "Demo complete: findings are expected here. Next, run visual-qa against your own URL.",
+    );
     // The demo seeds defects on purpose: findings are the success case, so
     // the exit code reports blockage only when the run could not happen.
     process.exitCode = reportWasBlocked(report) ? 2 : 0;
@@ -323,6 +349,16 @@ if (command === "report") {
     console.error('visual-qa: --autofix only accepts "verified"');
     process.exit(2);
   }
+  if (command === "explore" && (autofix || fixDir || intent)) {
+    console.error(
+      "visual-qa: autofix, fix-dir, and intent require the run command",
+    );
+    process.exit(2);
+  }
+  if (outFile && format !== "junit") {
+    console.error("visual-qa: --out-file requires --format junit");
+    process.exit(2);
+  }
   if (allowDestructive && !isolatedEnvironment) {
     console.error("visual-qa: --allow-destructive requires --isolated");
     process.exit(2);
@@ -343,15 +379,13 @@ if (command === "report") {
     };
     if (format === "human") {
       const seconds = Math.ceil((bounds.max_runtime_ms ?? 900_000) / 1000);
-      console.log(`Visual QA inspect | ${baseUrl ?? "browser disabled"} | budget up to ${seconds}s`);
+      console.log(
+        `Visual QA inspect | ${baseUrl ?? "browser disabled"} | budget up to ${seconds}s`,
+      );
     }
     const report = command === "run" ? await run(input) : await explore(input);
     await emitResult(report, { format, outDir, outFile });
-    process.exitCode = reportWasBlocked(report)
-      ? 2
-      : report.verdict === "PASS"
-        ? 0
-        : 1;
+    process.exitCode = exitCodeForReport(report);
   } catch (error) {
     console.error(`Visual QA BLOCKED: ${error.message}`);
     process.exitCode = 2;
@@ -359,7 +393,9 @@ if (command === "report") {
 } else {
   usage({
     error: true,
-    message: command ? `visual-qa: unknown command "${command}"` : "visual-qa: missing command",
+    message: command
+      ? `visual-qa: unknown command "${command}"`
+      : "visual-qa: missing command",
   });
   process.exit(2);
 }

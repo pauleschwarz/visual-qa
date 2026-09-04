@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { demo } from "../src/demo.mjs";
-import { renderSummaryLines, summarizeReport } from "../src/report.mjs";
+import {
+  renderHtmlReport,
+  renderSummaryLines,
+  summarizeReport,
+} from "../src/report.mjs";
 
 test("demo explores the bundled fixture and finds seeded defects", async () => {
   const outDir = await mkdtemp(`${tmpdir()}/vqa-demo-`);
@@ -23,6 +27,20 @@ test("demo explores the bundled fixture and finds seeded defects", async () => {
   assert.ok(report.issues.length >= 3, "seeded defects found");
   assert.ok(report.issues.some((i) => i.type === "vqa-visual"));
   assert.ok(report.issues.some((i) => i.type === "vqa-slop"));
+  const [json, markdown, html] = await Promise.all([
+    readFile(join(outDir, "report.json"), "utf8"),
+    readFile(join(outDir, "report.md"), "utf8"),
+    readFile(join(outDir, "report.html"), "utf8"),
+  ]);
+  assert.match(json, /"verdict"/);
+  assert.match(markdown, /# Visual QA Report/);
+  assert.match(html, /Evidence before confidence/);
+  assert.match(html, /Built by Paul Schwarz/);
+  assert.doesNotMatch(
+    html,
+    /(?:src|href)="https?:\/\//,
+    "portable report has no network assets",
+  );
 });
 
 test("summarizeReport gives agents a small actionable contract", () => {
@@ -67,9 +85,56 @@ test("summarizeReport gives agents a small actionable contract", () => {
   assert.equal(summary.issues.length, 3);
   assert.equal(summary.issues[0].id, "vqa-runtime-unhandled-page-error");
   assert.equal(summary.artifacts.report_md, "report.md");
+  assert.equal(summary.artifacts.report_html, "report.html");
   const lines = renderSummaryLines(summary);
   assert.ok(lines[0].includes("Visual QA FAIL"));
   assert.ok(lines.some((l) => l.includes("vqa-runtime-unhandled-page-error")));
+});
+
+test("summaries always prioritize severe findings", () => {
+  const low = Array.from({ length: 12 }, (_, index) => ({
+    issue_id: `low-${index}`,
+    type: "vqa-note",
+    severity: "low",
+    title: `Low ${index}`,
+    detail: "note",
+  }));
+  const summary = summarizeReport({
+    verdict: "FAIL",
+    coverage: {},
+    issues: [
+      ...low,
+      {
+        issue_id: "critical-last",
+        type: "vqa-runtime",
+        severity: "critical",
+        title: "Critical finding",
+        detail: "must stay visible",
+      },
+    ],
+  });
+  assert.equal(summary.issues[0].id, "critical-last");
+  assert.equal(summary.issues.length, 10);
+});
+
+test("HTML report escapes finding content", () => {
+  const html = renderHtmlReport({
+    verdict: "FAIL",
+    complete: true,
+    coverage: {},
+    issues: [
+      {
+        issue_id: "unsafe",
+        type: "vqa-test",
+        severity: "high",
+        title: "<script>alert(1)</script>",
+        detail: "unsafe & untrusted",
+      },
+    ],
+  });
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /&lt;script&gt;/);
+  assert.match(html, /unsafe &amp; untrusted/);
 });
 
 test("summarizeReport tolerates an empty report shape", () => {

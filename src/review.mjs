@@ -60,7 +60,11 @@ export function reviewRequestsDir(outDir) {
  * The harness hands each request's images and system prompt to its own
  * vision model and collects { id, findings } answers.
  */
-export async function prepareHarnessReview(report, outDir, { maxPairs = 6 } = {}) {
+export async function prepareHarnessReview(
+  report,
+  outDir,
+  { maxPairs = 6 } = {},
+) {
   const evidence = Array.isArray(report?.evidence) ? report.evidence : [];
   const pairs = evidence
     .map(screenshotPair)
@@ -78,7 +82,10 @@ export async function prepareHarnessReview(report, outDir, { maxPairs = 6 } = {}
         before: beforePath,
         after: afterPath,
         // The answering model may see the observation that triggered the pick.
-        context: { status: entry.observation?.status ?? null, pixel_ratio: entry.observation?.pixel_ratio ?? null },
+        context: {
+          status: entry.observation?.status ?? null,
+          pixel_ratio: entry.observation?.pixel_ratio ?? null,
+        },
       });
     }
   }
@@ -132,7 +139,9 @@ export async function applyHarnessReview(outDir, findingsFile) {
   const answers = await readJson(findingsFile, "vision findings");
   const results = Array.isArray(answers?.results) ? answers.results : [];
   if (!Array.isArray(answers?.results))
-    throw new Error('findings file must be {"results": [{"id", "findings": [...]}]}');
+    throw new Error(
+      'findings file must be {"results": [{"id", "findings": [...]}]}',
+    );
 
   const appliedIds = new Set(report.phases?.harness_vision?.applied ?? []);
   const accepted = [];
@@ -165,7 +174,11 @@ export async function applyHarnessReview(outDir, findingsFile) {
         continue;
       }
       accepted.push(
-        toVisionIssue({ ...answer, skill: result.skill ?? answer.skill }, finding, accepted.length),
+        toVisionIssue(
+          { ...answer, skill: result.skill ?? answer.skill },
+          finding,
+          accepted.length,
+        ),
       );
       acceptedHere += 1;
     }

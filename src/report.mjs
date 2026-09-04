@@ -8,7 +8,9 @@ import { join } from "node:path";
 import { redact } from "./config.mjs";
 
 const SEVERITIES = ["critical", "high", "medium", "low"];
-const SEVERITY_RANK = new Map(SEVERITIES.map((severity, index) => [severity, index]));
+const SEVERITY_RANK = new Map(
+  SEVERITIES.map((severity, index) => [severity, index]),
+);
 
 function orderedIssues(issues = []) {
   return [...issues].sort(
@@ -64,7 +66,8 @@ export function summarizeReport(report) {
 export function renderSummaryLines(summary) {
   const lines = [];
   lines.push(`Visual QA ${summary.verdict} | issues=${summary.issue_count}`);
-  if (summary.limit_reason) lines.push(`coverage limit: ${summary.limit_reason}`);
+  if (summary.limit_reason)
+    lines.push(`coverage limit: ${summary.limit_reason}`);
   for (const [phase, info] of Object.entries(summary.phases || {}))
     lines.push(`  ${phase}: ${JSON.stringify(info)}`);
   for (const issue of summary.issues)
@@ -73,7 +76,9 @@ export function renderSummaryLines(summary) {
 }
 
 function truncate(text, max = 160) {
-  const flat = String(text ?? "").replace(/\s+/g, " ").trim();
+  const flat = String(text ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
@@ -157,11 +162,12 @@ function artifactHref(path) {
   const normalized = String(path ?? "").replaceAll("\\", "/");
   const marker = "/screenshots/";
   const markerIndex = normalized.lastIndexOf(marker);
-  const relative = markerIndex >= 0
-    ? normalized.slice(markerIndex + 1)
-    : normalized.startsWith("screenshots/")
-      ? normalized
-      : null;
+  const relative =
+    markerIndex >= 0
+      ? normalized.slice(markerIndex + 1)
+      : normalized.startsWith("screenshots/")
+        ? normalized
+        : null;
   if (!relative || relative.includes("..")) return null;
   return `./${relative.split("/").map(encodeURIComponent).join("/")}`;
 }
@@ -188,8 +194,10 @@ function screenshotPairs(report) {
 
 function verdictMessage(report) {
   if (report.verdict === "PASS") return "Complete walk. No blocking findings.";
-  if (report.verdict === "FAIL") return "The walk completed and found ship blockers.";
-  if (report.verdict === "UNPROVEN") return "Notes remain. This is not a ship-gate pass.";
+  if (report.verdict === "FAIL")
+    return "The walk completed and found ship blockers.";
+  if (report.verdict === "UNPROVEN")
+    return "Notes remain. This is not a ship-gate pass.";
   return "Coverage stopped before the surface was fully proven.";
 }
 
@@ -228,15 +236,16 @@ export function renderHtmlReport(report) {
             (pair) => `<figure>
               <figcaption>${escapeHtml(pair.label)}</figcaption>
               <div class="pair">
-                <a href="${pair.before}"><img src="${pair.before}" alt="Before ${escapeHtml(pair.label)}" loading="lazy"><span>Before</span></a>
-                <a href="${pair.after}"><img src="${pair.after}" alt="After ${escapeHtml(pair.label)}" loading="lazy"><span>After</span></a>
+                <a href="${pair.before}"><img src="${pair.before}" alt="Before ${escapeHtml(pair.label)}"><span>Before</span></a>
+                <a href="${pair.after}"><img src="${pair.after}" alt="After ${escapeHtml(pair.label)}"><span>After</span></a>
               </div>
             </figure>`,
           )
           .join("")}</div>
       </section>`
     : "";
-  const viewports = (report.coverage?.viewports_covered || []).join(", ") || "none";
+  const viewports =
+    (report.coverage?.viewports_covered || []).join(", ") || "none";
   const duration = Math.round((report.duration_ms || 0) / 1000);
 
   return `<!doctype html>
@@ -246,7 +255,7 @@ export function renderHtmlReport(report) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Visual QA — ${escapeHtml(report.verdict)} inspection</title>
   <style>
-    :root { color-scheme: light; --paper:#f2efe7; --ink:#181816; --muted:#69665f; --line:#c9c3b7; --accent:#c83f27; --panel:#fffdf7; }
+    :root { color-scheme: light; --paper:#f2efe7; --ink:#181816; --muted:#69665f; --line:#c9c3b7; --accent:#b53621; --panel:#fffdf7; }
     * { box-sizing:border-box; }
     body { margin:0; background:var(--paper); color:var(--ink); font-family:"Arial Narrow","Aptos Narrow",system-ui,sans-serif; line-height:1.5; }
     a { color:inherit; text-decoration-thickness:2px; text-decoration-color:var(--accent); text-underline-offset:3px; }
@@ -362,12 +371,20 @@ export async function writeReportArtifacts(outDir, report) {
       `${JSON.stringify(safeReport, null, 2)}\n`,
       { mode: 0o600 },
     ),
-    writeFile(join(outDir, "report.md"), `${renderMarkdownReport(safeReport)}\n`, {
-      mode: 0o600,
-    }),
-    writeFile(join(outDir, "report.html"), `${renderHtmlReport(safeReport)}\n`, {
-      mode: 0o600,
-    }),
+    writeFile(
+      join(outDir, "report.md"),
+      `${renderMarkdownReport(safeReport)}\n`,
+      {
+        mode: 0o600,
+      },
+    ),
+    writeFile(
+      join(outDir, "report.html"),
+      `${renderHtmlReport(safeReport)}\n`,
+      {
+        mode: 0o600,
+      },
+    ),
   ]);
   return report;
 }

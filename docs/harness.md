@@ -1,15 +1,22 @@
 # Using visual-qa from an agent harness
 
 visual-qa is a CLI tool, not a service: start it, read the result, act.
-No daemon, no framework, no state. It ships as an npm package with a
-`visual-qa` binary, so any harness that can run a subprocess can use it.
+No daemon and no framework: it runs as a `visual-qa` subprocess and writes a
+bounded evidence directory. Until the npm package is published, install the
+public repository directly.
 
 ## Install (once)
 
 ```sh
-npm install -g @pauleschwarz/visual-qa
+git clone https://github.com/pauleschwarz/visual-qa.git
+cd visual-qa
+npm ci
 npx playwright install chromium
+npm link
 ```
+
+After npm publication, the clone/install/link steps can be replaced with
+`npm install -g @pauleschwarz/visual-qa`.
 
 ## The contract
 
@@ -25,9 +32,10 @@ visual-qa report .qa --json
 ```
 
 Returns the compact summary: `verdict`, `run_id`, `complete`,
-`limit_reason`, `coverage`, `issue_count`, `by_severity`, `issues[]`
-(`id`, `type`, `severity`, `title`, `detail`), `phases`, `artifacts`.
-Human-readable without `--json`.
+`limit_reason`, `coverage`, `issue_count`, `by_severity`, severity-prioritized
+`issues[]` (`id`, `type`, `severity`, `title`, `detail`), `phases`, `artifacts`.
+Human-readable without `--json`. Each run also writes a portable
+`report.html` inspection docket and `report.md`.
 
 **CI output.** `run` and `explore` accept `--format junit|json`:
 
