@@ -72,22 +72,29 @@ function validatedBaseUrl(value) {
   try {
     parsed = new URL(String(value));
   } catch {
-    throw new Error(`Invalid baseUrl "${value}"; expected an absolute http(s) URL`);
+    throw new Error(
+      `Invalid baseUrl "${value}"; expected an absolute http(s) URL`,
+    );
   }
   if (!["http:", "https:"].includes(parsed.protocol))
-    throw new Error(`Invalid baseUrl protocol "${parsed.protocol}"; expected http: or https:`);
+    throw new Error(
+      `Invalid baseUrl protocol "${parsed.protocol}"; expected http: or https:`,
+    );
   return String(value);
 }
 
 function resolvedBounds(input = {}) {
   const unknown = Object.keys(input).filter((key) => !(key in DEFAULT_BOUNDS));
-  if (unknown.length)
-    throw new Error(`Unknown bound "${unknown[0]}"`);
+  if (unknown.length) throw new Error(`Unknown bound "${unknown[0]}"`);
   const bounds = { ...DEFAULT_BOUNDS, ...input };
   for (const [name, value] of Object.entries(bounds)) {
-    const minimum = ["max_agent_calls", "max_retries_per_action"].includes(name) ? 0 : 1;
+    const minimum = ["max_agent_calls", "max_retries_per_action"].includes(name)
+      ? 0
+      : 1;
     if (!Number.isInteger(value) || value < minimum)
-      throw new Error(`${name} must be an integer >= ${minimum}; received ${value}`);
+      throw new Error(
+        `${name} must be an integer >= ${minimum}; received ${value}`,
+      );
   }
   return bounds;
 }
@@ -95,7 +102,8 @@ function resolvedBounds(input = {}) {
 export function resolveConfig(input = {}) {
   // The mode is a contract, not a hint: an unknown value must block the run
   // instead of silently degrading to a full walk.
-  const mode = input.mode === undefined || input.mode === null ? "full" : input.mode;
+  const mode =
+    input.mode === undefined || input.mode === null ? "full" : input.mode;
   if (!MODES.includes(mode))
     throw new Error(
       `Unknown mode "${mode}"; expected one of: ${MODES.join(", ")}`,

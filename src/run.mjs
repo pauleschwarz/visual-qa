@@ -26,8 +26,7 @@ export async function run(input = {}) {
   // An unparsed intent must stay visible: the instruction was heard but not
   // understood, and pretending otherwise would break traceability.
   const intent = input.intent ? parseIntent(input.intent) : null;
-  const intentChecks =
-    input.intentChecks ?? (intent ? [intent] : []);
+  const intentChecks = input.intentChecks ?? (intent ? [intent] : []);
 
   // Phase 1: deterministic exploration (a11y, layout, runtime, slop,
   // security, intent baseline).
@@ -62,7 +61,11 @@ export async function run(input = {}) {
       detail: "Intent instruction was not understood; nothing applied.",
     };
   if (intent && config.fixDir) {
-    const result = await applyIntent(intent, config.fixDir, join(outDir, "intent"));
+    const result = await applyIntent(
+      intent,
+      config.fixDir,
+      join(outDir, "intent"),
+    );
     phases.intent = { parsed: true, ...result };
   } else if (intent && !config.fixDir) {
     phases.intent = { parsed: true, applied: false, reason: "no_fix_dir" };
