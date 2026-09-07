@@ -403,10 +403,13 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           limitReason = "max_runtime_ms";
           break;
         }
-        // Keep the live page on this node between sibling actions.
+        // Keep the live page on this node between sibling actions. The
+        // post-action restore (below) just reloaded this node, so the
+        // sameTarget fastpath skips a redundant second reload; everything
+        // that mutated state already navigated back.
         const keptOnNode = await restoreOrIssue(
           runtime,
-          { url: live.url, theme: live.theme },
+          { url: live.url, theme: live.theme, sameTarget: true },
           issues,
           { severe: true },
         );
@@ -577,10 +580,25 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           issues,
           "after-action",
         );
-        // Pixel evidence: a control may change only what is painted, and a
-        // semantics-only oracle would report that as a dead control.
+        const eventDelta = endEvents();
+        const urlChanged =
+          normalizeUrl(before.url, config.baseUrl) !==
+          normalizeUrl(after.url, config.baseUrl);
+        const stateChanged = changed(before, after);
+        const textChanged = before.text !== after.text;
+        const controlChanged = controlSignalChanged(
+          before.controls,
+          after.controls,
+          control,
+        );
+        const themeChanged = before.theme !== after.theme;
+        // Pixel oracle only decides the dead-control case: when semantics
+        // already prove a change, the PNG decode x2 is wasted work in the
+        // common success path.
+        const semanticsChanged =
+          urlChanged || stateChanged || textChanged || controlChanged || themeChanged;
         let pixels = null;
-        if (beforeCaptured && afterCaptured) {
+        if (!semanticsChanged && beforeCaptured && afterCaptured) {
           try {
             pixels = await compareScreenshots(beforeShot, afterShot);
           } catch {
@@ -596,19 +614,12 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
             );
           }
         }
-        const eventDelta = endEvents();
         const observation = {
           url: after.url,
-          url_changed:
-            normalizeUrl(before.url, config.baseUrl) !==
-            normalizeUrl(after.url, config.baseUrl),
-          state_changed: changed(before, after),
-          text_changed: before.text !== after.text,
-          control_changed: controlSignalChanged(
-            before.controls,
-            after.controls,
-            control,
-          ),
+          url_changed: urlChanged,
+          state_changed: stateChanged,
+          text_changed: textChanged,
+          control_changed: controlChanged,
           focus: after.focus,
           pixels_changed: pixels?.changed ?? null,
           pixel_ratio: pixels?.ratio ?? null,
