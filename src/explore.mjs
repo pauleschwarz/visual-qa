@@ -403,10 +403,13 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           limitReason = "max_runtime_ms";
           break;
         }
-        // Keep the live page on this node between sibling actions.
+        // Keep the live page on this node between sibling actions. The
+        // post-action restore (below) just reloaded this node, so the
+        // sameTarget fastpath skips a redundant second reload; everything
+        // that mutated state already navigated back.
         const keptOnNode = await restoreOrIssue(
           runtime,
-          { url: live.url, theme: live.theme },
+          { url: live.url, theme: live.theme, sameTarget: true },
           issues,
           { severe: true },
         );

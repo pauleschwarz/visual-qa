@@ -306,14 +306,14 @@ export class BrowserRuntime {
   /**
    * Re-enter an explored state before branching. URL is the primary key;
    * optional theme is restored so localStorage-sticky themes cannot drift.
-   * Same-URL fastpath: the explore loop restores back after every state
-   * change, so most restore calls target the page the browser already sits
-   * on — a blind reload per sibling action burned the time budget without
-   * adding signal. Pass force:true to reload even on a URL match (the SPA
-   * case: state mutated without changing the URL).
+   * Always navigate: an SPA can mutate its state without changing its URL.
+   * Exception: sameTarget=true opts into a skip when the browser already
+   * sits on the exact URL+theme — used by the explore sibling loop, where
+   * the post-action restore just reloaded this node. Never pass sameTarget
+   * for state resets: the reload IS the reset for SPA mutations.
    */
-  async restoreState({ url, theme, force = false } = {}) {
-    if (url && !force && this.page.url() === url) {
+  async restoreState({ url, theme, sameTarget = false } = {}) {
+    if (url && sameTarget && this.page.url() === url) {
       const current = await this.themeSignal();
       if (!theme || current === theme) return;
     }
