@@ -372,24 +372,22 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
       );
       if (!reentered) complete = false;
       const live = await snapshot(runtime, config);
+      // Always act on the LIVE page. URL restore cannot reopen modals/hash-UI;
+      // clicking queued controls that are gone (e.g. dialog Close) burns the
+      // timeout budget and invents false "broken control" findings.
       const current = {
-        snapshot:
-          live.state.state_id === queued.snapshot.state.state_id
-            ? live
-            : queued.snapshot,
+        snapshot: live,
         depth: queued.depth,
         live,
+        intended: queued.snapshot,
       };
-      // Prefer live controls when restore landed on the intended state.
-      const source =
-        live.state.state_id === queued.snapshot.state.state_id
-          ? live
-          : queued.snapshot;
-      const controls = source.controls.slice(
+      // Prefer live controls always. A partial restore (modal closed by URL
+      // navigation) is expected for same-document UI; do not fail coverage.
+      const controls = live.controls.slice(
         0,
         config.bounds.max_actions_per_state,
       );
-      if (source.controls.length > controls.length) {
+      if (live.controls.length > controls.length) {
         complete = false;
         limitReason ||= "max_actions_per_state";
       }
@@ -408,13 +406,13 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
         // Keep the live page on this node between sibling actions.
         const keptOnNode = await restoreOrIssue(
           runtime,
-          { url: source.url, theme: source.theme },
+          { url: live.url, theme: live.theme },
           issues,
           { severe: true },
         );
         if (!keptOnNode) complete = false;
         const control = controls[index];
-        const id = actionId(source.state.state_id, control, index);
+        const id = actionId(live.state.state_id, control, index);
         // External pages are outside the SUT. Do not follow them: otherwise
         // foreign DOM/a11y/runtime findings get attributed to this run and
         // consume the bounded exploration budget.
@@ -474,10 +472,18 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
         // after restoreState the page can already satisfy the control (e.g.
         // scroll position back at beat 0), and clicking it then looks like a
         // dead button when it is really a documented no-op.
-        const liveControl =
-          before.controls.find(
-            (item) => controlKey(item) === controlKey(control),
-          ) || control;
+        const liveControl = before.controls.find(
+          (item) => controlKey(item) === controlKey(control),
+        );
+        if (!liveControl) {
+          evidence.push({
+            action_id: id,
+            status: "skipped",
+            skip_reason: "CONTROL_NOT_PRESENT",
+            control,
+          });
+          continue;
+        }
         if (alreadySatisfied(liveControl)) {
           evidence.push({
             action_id: id,
@@ -535,18 +541,21 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
                 });
               await runtime.press("Tab");
             } else {
-              await runtime.click(control);
+              await runtime.click(liveControl);
             }
-            await runtime.waitForStableState({
-              frames: config.stable_frames,
-              gap: config.stable_gap_ms,
-            });
+            // click()/fill() already waited for stability once; a second
+            // full stable poll doubled action cost without new signal.
             status = "observed";
             error = null;
             break;
           } catch (err) {
             status = "error";
             error = redact({ name: err.name, message: err.message });
+            // Timeouts on missing/hidden controls do not heal on retry.
+            const noRetry =
+              err?.name === "TimeoutError" ||
+              /Timeout \d+ms exceeded/i.test(String(err?.message || ""));
+            if (noRetry) break;
             if (attempt < maxAttempts)
               await restoreOrIssue(
                 runtime,
@@ -713,10 +722,10 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           queue.push({ snapshot: after, depth: current.depth + 1 });
         }
         if (after.state.state_id !== before.state.state_id) {
-          // Reset every branch to the node origin before the next sibling.
+          // Reset every branch to the live node origin before the next sibling.
           await restoreOrIssue(
             runtime,
-            { url: source.url, theme: source.theme },
+            { url: live.url, theme: live.theme },
             issues,
           );
         }
