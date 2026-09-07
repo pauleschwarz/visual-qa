@@ -12,8 +12,8 @@ import { DEMO_HTML } from "./demo-html.mjs";
 const DEMO_BOUNDS = {
   max_states: 12,
   max_depth: 3,
-  max_actions_per_state: 8,
-  max_total_actions: 40,
+  max_actions_per_state: 14,
+  max_total_actions: 80,
   max_runtime_ms: 90_000,
 };
 

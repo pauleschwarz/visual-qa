@@ -469,28 +469,48 @@ export class BrowserRuntime {
     return kept.map((c, i) => ({ ...c, index: i }));
   }
 
-  /** Resolve a control to a Playwright locator using semantic selectors first. */
+  /**
+   * Resolve a control to a Playwright locator using semantic selectors first.
+   * Prefer visible matches so closed dialogs / offscreen duplicates do not
+   * swallow the action timeout.
+   */
   async locate(control) {
     const p = this.page;
-    if (control.testId)
-      return p.locator(`[data-testid="${escapeSelector(control.testId)}"]`).first();
-    if (control.id) return p.locator(`#${escapeSelector(control.id)}`).first();
+    const visible = (locator) => locator.locator("visible=true");
+    if (control.testId) {
+      const byTestId = p.locator(
+        `[data-testid="${escapeSelector(control.testId)}"]`,
+      );
+      const shown = visible(byTestId);
+      if ((await shown.count().catch(() => 0)) > 0) return shown.first();
+      return byTestId.first();
+    }
+    if (control.id) {
+      const byId = p.locator(`#${escapeSelector(control.id)}`);
+      const shown = visible(byId);
+      if ((await shown.count().catch(() => 0)) > 0) return shown.first();
+      return byId.first();
+    }
     const name = String(control.name || "").trim();
     if (name) {
       const idx = Math.max(0, control.nameIndex || 0);
       // Full accessible-name match first: substring matching otherwise
       // resolves "Save" onto a "Save draft" sibling whenever it sorts earlier.
-      const exact = p.getByRole(control.role, { name, exact: true }).nth(idx);
+      const exact = visible(
+        p.getByRole(control.role, { name, exact: true }),
+      ).nth(idx);
       if ((await exact.count().catch(() => 0)) > 0) return exact;
       // nameOf falls back to non-accessible sources (value, truncated text);
       // substring keeps those controls resolvable.
-      const fuzzy = p.getByRole(control.role, { name, exact: false }).nth(idx);
+      const fuzzy = visible(
+        p.getByRole(control.role, { name, exact: false }),
+      ).nth(idx);
       if ((await fuzzy.count().catch(() => 0)) > 0) return fuzzy;
     }
     // Deterministic positional fallback: nth over the tag in DOM order.
-    const positional = p
-      .locator(control.tag || "*")
-      .nth(Math.max(0, control.tagIndex || 0));
+    const positional = visible(p.locator(control.tag || "*")).nth(
+      Math.max(0, control.tagIndex || 0),
+    );
     if ((await positional.count().catch(() => 0)) > 0) return positional;
     return p.locator(control.tag || "*").first();
   }
@@ -498,12 +518,16 @@ export class BrowserRuntime {
   async click(control) {
     // Action timeout is locate+click only; stability is a separate cheap poll.
     // A 5s click tax made dense walks burn the wall clock before coverage.
-    await (await this.locate(control)).click({ timeout: 2_000 });
-    await this.waitForStableState();
+    await (await this.locate(control)).click({
+      timeout: 1_500,
+      trial: false,
+    });
+    await this.waitForStableState({ frames: 2, gap: 20 });
   }
 
   async fill(control, value) {
-    await (await this.locate(control)).fill(String(value), { timeout: 2_000 });
+    await (await this.locate(control)).fill(String(value), { timeout: 1_500 });
+    await this.waitForStableState({ frames: 2, gap: 20 });
   }
 
   async press(key) {

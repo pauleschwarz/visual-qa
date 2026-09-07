@@ -44,6 +44,17 @@ test("demo explores the bundled fixture and finds seeded defects", async () => {
   );
 });
 
+test("default demo completes the seeded walk as FAIL", async () => {
+  const outDir = await mkdtemp(`${tmpdir()}/vqa-demo-default-`);
+  const started = Date.now();
+  const report = await demo({ outDir });
+  assert.equal(report.verdict, "FAIL");
+  assert.equal(report.complete, true);
+  assert.ok(!report.coverage?.limit_reason);
+  assert.ok(report.issues.length >= 3, "seeded defects found");
+  assert.ok(Date.now() - started < 90_000, "demo stays inside its advertised budget");
+});
+
 test("summarizeReport gives agents a small actionable contract", () => {
   const summary = summarizeReport({
     verdict: "FAIL",
