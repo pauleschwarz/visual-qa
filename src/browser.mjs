@@ -306,20 +306,10 @@ export class BrowserRuntime {
   /**
    * Re-enter an explored state before branching. URL is the primary key;
    * optional theme is restored so localStorage-sticky themes cannot drift.
-   * Skip navigation when the live page is already on the target URL — the
-   * explore loop re-enters the same node between sibling actions.
+   * Always navigate: an SPA can mutate its state without changing its URL.
    */
   async restoreState({ url, theme } = {}) {
-    if (url) {
-      const live = this.page.url();
-      let same = false;
-      try {
-        same = new URL(live).href === new URL(url, this.baseUrl).href;
-      } catch {
-        same = live === url;
-      }
-      if (!same) await this.navigate(url);
-    }
+    if (url) await this.navigate(url);
     if (theme) {
       // Site-agnostic: mirror the theme onto the documented root signal and
       // into whichever storage key already holds a theme token. Hard-coding
