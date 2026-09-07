@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { demo } from "../src/demo.mjs";
 import {
+  findingWhere,
   renderHtmlReport,
   renderSummaryLines,
   summarizeReport,
@@ -129,12 +130,31 @@ test("HTML report escapes finding content", () => {
         severity: "high",
         title: "<script>alert(1)</script>",
         detail: "unsafe & untrusted",
+        evidence: {
+          control: { role: "button", name: "<img>" },
+        },
       },
     ],
   });
   assert.doesNotMatch(html, /<script>/);
   assert.match(html, /&lt;script&gt;/);
   assert.match(html, /unsafe &amp; untrusted/);
+  assert.match(html, /finding-where/);
+  assert.match(html, /button &quot;&lt;img&gt;&quot;/);
+});
+
+test("findingWhere prefers selector then axe target then control", () => {
+  assert.equal(findingWhere({ selector: "#x" }), "#x");
+  assert.equal(
+    findingWhere({ nodes: [{ target: [".tiny"] }] }),
+    ".tiny",
+  );
+  assert.equal(
+    findingWhere({ control: { role: "button", name: "Save" } }),
+    'button "Save"',
+  );
+  assert.equal(findingWhere({ url: "http://127.0.0.1/" }), "http://127.0.0.1/");
+  assert.equal(findingWhere(null), "");
 });
 
 test("summarizeReport tolerates an empty report shape", () => {

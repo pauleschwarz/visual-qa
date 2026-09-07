@@ -24,6 +24,7 @@ export {
 } from "./intent.mjs";
 export { applyFixes, collectFixes, diffIssues } from "./fix.mjs";
 export {
+  findingWhere,
   renderHtmlReport,
   renderMarkdownReport,
   renderSummaryLines,
