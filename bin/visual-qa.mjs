@@ -247,9 +247,7 @@ if (command === "report") {
         `harness review applied: +${result.accepted} findings (rejected ${result.rejected}) | verdict ${result.verdict} | issues=${result.issues}`,
       );
       console.log(`open report: ${join(resolve(dir), "report.html")}`);
-      // Findings are additive and capped: the verdict moved only if medium
-      // notes turned PASS into UNPROVEN.
-      process.exitCode = 0;
+      process.exitCode = result.ok ? 0 : 1;
     }
   } catch (error) {
     console.error(`Visual QA BLOCKED: ${error.message}`);

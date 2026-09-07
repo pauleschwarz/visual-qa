@@ -20,8 +20,8 @@ function fakeReport(evidence) {
 const PAIR = (id, status = "observed") => ({
   action_id: id,
   observation: { status, pixel_ratio: 0.5 },
-  before: { screenshot: `/tmp/${id}-before.png` },
-  after: { screenshot: `/tmp/${id}-after.png` },
+  before: { screenshot: `screenshots/${id}-before.png` },
+  after: { screenshot: `screenshots/${id}-after.png` },
 });
 
 // Realistic flow: run/explore wrote report.json first; prepare only adds
@@ -46,6 +46,11 @@ test("prepare exports pairs x skill requests with prompts and ids", async () => 
     assert.ok(request.id.startsWith("abc12345-"));
     assert.match(request.system, /visual QA reviewer/);
     assert.ok(request.before.endsWith("-before.png"));
+    assert.ok(
+      !request.before.startsWith("/") && !/^[A-Za-z]:\\/.test(request.before),
+      "request paths stay portable (no absolute host paths)",
+    );
+    assert.match(request.before, /^screenshots\//);
   }
 });
 
@@ -81,6 +86,8 @@ test("apply caps severity, records request ids, and is idempotent", async () => 
   // The high finding arrives capped at medium: vision can add, never gate.
   const applied = JSON.parse(await readFile(join(dir, "report.json"), "utf8"));
   assert.equal(first.accepted, 1);
+  assert.equal(first.ok, false, "invalid/empty answers keep apply non-ok");
+  assert.ok(first.rejected > 0);
   assert.equal(applied.issues.length, 1);
   assert.equal(applied.issues[0].severity, "medium");
   assert.equal(applied.issues[0].evidence.source, "harness-vision");

@@ -10,8 +10,8 @@ import { DEMO_HTML } from "./demo-html.mjs";
 // Sized to the fixture graph: enough room to hit seeded defects, small
 // enough that wall-clock stays under ~90s with the walker defaults.
 const DEMO_BOUNDS = {
-  max_states: 12,
-  max_depth: 3,
+  max_states: 16,
+  max_depth: 4,
   max_actions_per_state: 14,
   max_total_actions: 80,
   max_runtime_ms: 90_000,

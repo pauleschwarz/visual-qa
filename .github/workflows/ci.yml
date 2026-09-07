@@ -21,10 +21,23 @@ jobs:
         run: |
           node bin/visual-qa.mjs demo --out .qa-ci-demo
           node -e '
+            const fs = require("fs");
             const r = require("./.qa-ci-demo/report.json");
             if (r.verdict !== "FAIL") {
               console.error("expected FAIL, got", r.verdict, r.coverage);
               process.exit(1);
+            }
+            if (r.complete !== true) {
+              console.error("expected complete walk", r.coverage);
+              process.exit(4);
+            }
+            if (r.coverage?.limit_reason) {
+              console.error("unexpected limit", r.coverage.limit_reason);
+              process.exit(5);
+            }
+            if ((r.coverage?.viewports_missing || []).length) {
+              console.error("missing viewports", r.coverage.viewports_missing);
+              process.exit(6);
             }
             if ((r.duration_ms || 0) > 120_000) {
               console.error("demo too slow", r.duration_ms);
@@ -34,5 +47,11 @@ jobs:
               console.error("expected seeded defects, got", r.issues?.length);
               process.exit(3);
             }
-            console.log("demo ok", r.verdict, r.duration_ms, r.issues.length);
+            for (const file of ["report.json", "report.md", "report.html"]) {
+              if (!fs.existsSync("./.qa-ci-demo/" + file)) {
+                console.error("missing artifact", file);
+                process.exit(7);
+              }
+            }
+            console.log("demo ok", r.verdict, r.duration_ms, r.issues.length, r.complete);
           '

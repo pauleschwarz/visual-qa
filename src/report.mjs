@@ -48,6 +48,11 @@ export function summarizeReport(report) {
       severity: issue.severity,
       title: issue.title,
       detail: issue.detail,
+      where: findingWhere(issue.evidence) || null,
+      action_id: issue.evidence?.action_id ?? null,
+      viewport: issue.evidence?.viewport ?? null,
+      before: artifactHref(issue.evidence?.before?.screenshot),
+      after: artifactHref(issue.evidence?.after?.screenshot),
     })),
     phases: report.phases ?? {},
     artifacts: {
@@ -137,11 +142,12 @@ export function renderMarkdownReport(report) {
     if (!group.length) continue;
     lines.push(`### ${severity.toUpperCase()}`);
     lines.push("");
-    lines.push("| ID | Type | Title | Detail |");
-    lines.push("| --- | --- | --- | --- |");
+    lines.push("| ID | Type | Title | Where | Detail |");
+    lines.push("| --- | --- | --- | --- | --- |");
     for (const issue of group) {
+      const where = findingWhere(issue.evidence) || "—";
       lines.push(
-        `| \`${issue.issue_id}\` | \`${issue.type}\` | ${truncate(issue.title, 90)} | ${truncate(issue.detail, 140)} |`,
+        `| \`${issue.issue_id}\` | \`${issue.type}\` | ${truncate(issue.title, 90)} | ${truncate(where, 80)} | ${truncate(issue.detail, 140)} |`,
       );
     }
     lines.push("");
