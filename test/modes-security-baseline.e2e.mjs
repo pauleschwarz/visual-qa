@@ -124,11 +124,11 @@ test("isolated environments with explicit allowance execute the same controls", 
     const destructive = report.evidence.find(
       (entry) => entry.control?.name === "Delete account",
     );
-    assert.equal(destructive?.status, "observed");
+    assert.equal(destructive?.observation?.status, "observed");
     const submit = report.evidence.find(
       (entry) => entry.control?.name === "Continue",
     );
-    assert.equal(submit?.status, "observed");
+    assert.equal(submit?.observation?.status, "observed");
   } finally {
     server.close();
     await rm(outDir, { recursive: true, force: true });
@@ -208,6 +208,57 @@ test("a differing baseline is recorded as a render difference", async () => {
     server.close();
     await rm(outDir, { recursive: true, force: true });
     await rm(baselineDir, { recursive: true, force: true });
+  }
+});
+
+test("same-URL modal states replay their action path before nested controls", async () => {
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Modal path</title></head>
+<body><h1>Modal path</h1>
+<button id="opener">Open dialog</button>
+<dialog id="modal"><p id="result">Waiting</p><button id="nested">Run nested action</button><button id="closer">Close</button></dialog>
+<script>
+document.querySelector('#opener').onclick=()=>document.querySelector('#modal').showModal();
+document.querySelector('#nested').onclick=()=>{ document.querySelector('#result').textContent='Nested reached'; };
+document.querySelector('#closer').onclick=()=>document.querySelector('#modal').close();
+</script></body></html>`;
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(html);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const outDir = await mkdtemp(`${tmpdir()}/vqa-modal-path-`);
+  try {
+    const report = await explore({
+      baseUrl: `http://127.0.0.1:${port}/`,
+      outDir,
+      viewports: [{ name: "desktop", width: 1280, height: 800 }],
+      bounds: {
+        max_states: 8,
+        max_depth: 3,
+        max_actions_per_state: 6,
+        max_total_actions: 20,
+        max_runtime_ms: 60_000,
+      },
+    });
+    const nested = report.evidence.find(
+      (entry) => entry.control?.id === "nested",
+    );
+    assert.ok(nested, "nested modal control was explored");
+    assert.equal(nested.observation?.status, "observed");
+    assert.equal(nested.observation?.text_changed, true);
+    assert.ok(report.coverage.states >= 3);
+    assert.ok(
+      !report.issues.some(
+        (issue) =>
+          issue.title === "State identity restore mismatch" ||
+          issue.title === "State action path replay failed",
+      ),
+    );
+  } finally {
+    server.close();
+    await rm(outDir, { recursive: true, force: true });
   }
 });
 

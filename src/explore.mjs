@@ -161,6 +161,78 @@ async function snapshot(runtime, config) {
   return { state, url, theme, controls, aria, dom, text, focus };
 }
 
+async function replayControl(runtime, control) {
+  // Text-entry probes use one deterministic value and are safe to reconstruct.
+  // Potentially mutating/destructive controls are never replayed.
+  if (["textbox", "searchbox"].includes(control.role)) {
+    await runtime.fill(
+      control,
+      control.type === "email" ? "qa@example.invalid" : "Visual QA",
+    );
+    await runtime.press("Tab");
+    return;
+  }
+  if (control.role === "combobox") {
+    await (await runtime.locate(control)).press("ArrowDown");
+    await runtime.press("Tab");
+    return;
+  }
+  const risk = classifyRisk(control.name, control.tag, control.type);
+  if (risk !== RISK.SAFE) {
+    throw new Error(
+      `unsafe replay step: ${risk} ${control.role} '${control.name || "unnamed"}'`,
+    );
+  }
+  await runtime.click(control);
+}
+
+/** Rebuild a queued SPA state from its entry point and deterministic action path. */
+async function reenterQueuedState(runtime, queued, config, issues) {
+  const restored = await restoreOrIssue(
+    runtime,
+    { url: queued.entry.url, theme: queued.entry.theme },
+    issues,
+    { severe: true },
+  );
+  if (!restored) return { ok: false, snapshot: await snapshot(runtime, config) };
+  try {
+    for (const step of queued.path) await replayControl(runtime, step.control);
+  } catch (error) {
+    issues.push(
+      explorerIssue(
+        "explorer",
+        "State action path replay failed",
+        "high",
+        "The explorer could not replay the actions required to re-enter a queued SPA state.",
+        {
+          target_state_id: queued.snapshot.state.state_id,
+          path: queued.path.map((step) => step.control),
+          error: { name: error?.name, message: error?.message },
+        },
+      ),
+    );
+    return { ok: false, snapshot: await snapshot(runtime, config) };
+  }
+  const live = await snapshot(runtime, config);
+  if (live.state.state_id !== queued.snapshot.state.state_id) {
+    issues.push(
+      explorerIssue(
+        "explorer",
+        "State identity restore mismatch",
+        "high",
+        "The replayed action path reached a different UI state than the queued state.",
+        {
+          expected_state_id: queued.snapshot.state.state_id,
+          actual_state_id: live.state.state_id,
+          path: queued.path.map((step) => step.control),
+        },
+      ),
+    );
+    return { ok: false, snapshot: live };
+  }
+  return { ok: true, snapshot: live };
+}
+
 function controlKey(control) {
   return `${control.role}|${control.id || ""}|${scrubVolatile(control.name)}|${control.href || ""}`;
 }
@@ -236,8 +308,17 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
       await runtime.navigate(entryUrl);
       const entry = await snapshot(runtime, config);
       if (states.has(entry.state.state_id)) continue;
-      states.set(entry.state.state_id, { ...entry.state, depth: 0 });
-      queue.push({ snapshot: entry, depth: 0 });
+      states.set(entry.state.state_id, {
+        ...entry.state,
+        url: entry.url,
+        depth: 0,
+      });
+      queue.push({
+        snapshot: entry,
+        depth: 0,
+        entry: { url: entry.url, theme: entry.theme },
+        path: [],
+      });
       scanned.add(entry.state.state_id);
       issues.push(...(await runA11y(runtime.page)));
       issues.push(...(await runLayoutChecks(runtime.page, viewport)));
@@ -362,27 +443,26 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
         limitReason ||= "max_depth";
         continue;
       }
-      // Re-enter the queued state before branching. Without this, later nodes
-      // run against a stale live page and invent false no-ops / timeouts.
-      const reentered = await restoreOrIssue(
+      // Re-enter the exact queued state by replaying the path that created it.
+      // URL+theme alone is insufficient for same-URL SPA states (dialogs,
+      // selected tabs, expanded panels, filters).
+      const reentered = await reenterQueuedState(
         runtime,
-        { url: queued.snapshot.url, theme: queued.snapshot.theme },
+        queued,
+        config,
         issues,
-        { severe: true },
       );
-      if (!reentered) complete = false;
-      const live = await snapshot(runtime, config);
-      // Always act on the LIVE page. URL restore cannot reopen modals/hash-UI;
-      // clicking queued controls that are gone (e.g. dialog Close) burns the
-      // timeout budget and invents false "broken control" findings.
+      if (!reentered.ok) {
+        complete = false;
+        continue;
+      }
+      const live = reentered.snapshot;
       const current = {
         snapshot: live,
         depth: queued.depth,
         live,
         intended: queued.snapshot,
       };
-      // Prefer live controls always. A partial restore (modal closed by URL
-      // navigation) is expected for same-document UI; do not fail coverage.
       const controls = live.controls.slice(
         0,
         config.bounds.max_actions_per_state,
@@ -403,17 +483,21 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           limitReason = "max_runtime_ms";
           break;
         }
-        // Keep the live page on this node between sibling actions. The
-        // post-action restore (below) just reloaded this node, so the
-        // sameTarget fastpath skips a redundant second reload; everything
-        // that mutated state already navigated back.
-        const keptOnNode = await restoreOrIssue(
-          runtime,
-          { url: live.url, theme: live.theme, sameTarget: true },
-          issues,
-          { severe: true },
-        );
-        if (!keptOnNode) complete = false;
+        // Every sibling starts from the exact queued UI state. Replaying the
+        // state path avoids acting on a root page after a prior sibling closed
+        // a modal or otherwise mutated same-URL SPA state.
+        if (index > 0) {
+          const reset = await reenterQueuedState(
+            runtime,
+            queued,
+            config,
+            issues,
+          );
+          if (!reset.ok) {
+            complete = false;
+            continue;
+          }
+        }
         const control = controls[index];
         const id = actionId(live.state.state_id, control, index);
         // External pages are outside the SUT. Do not follow them: otherwise
@@ -470,12 +554,8 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           continue;
         }
         const expected = expectedFor(control);
-        const before = await snapshot(runtime, config);
-        // Skip decisions must read the LIVE control, not the queued snapshot:
-        // after restoreState the page can already satisfy the control (e.g.
-        // scroll position back at beat 0), and clicking it then looks like a
-        // dead button when it is really a documented no-op.
-        const liveControl = before.controls.find(
+        let before = await snapshot(runtime, config);
+        let liveControl = before.controls.find(
           (item) => controlKey(item) === controlKey(control),
         );
         if (!liveControl) {
@@ -559,12 +639,20 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
               err?.name === "TimeoutError" ||
               /Timeout \d+ms exceeded/i.test(String(err?.message || ""));
             if (noRetry) break;
-            if (attempt < maxAttempts)
-              await restoreOrIssue(
+            if (attempt < maxAttempts) {
+              const replayed = await reenterQueuedState(
                 runtime,
-                { url: before.url, theme: before.theme },
+                queued,
+                config,
                 issues,
               );
+              if (!replayed.ok) break;
+              before = replayed.snapshot;
+              liveControl = before.controls.find(
+                (item) => controlKey(item) === controlKey(control),
+              );
+              if (!liveControl) break;
+            }
           }
         }
         if (status === "error")
@@ -727,10 +815,22 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
         if (!states.has(after.state.state_id)) {
           states.set(after.state.state_id, {
             ...after.state,
+            url: after.url,
             depth: current.depth + 1,
           });
-          // URL + theme restore makes same-document states re-enterable.
-          queue.push({ snapshot: after, depth: current.depth + 1 });
+          const replayable =
+            expected !== "input-or-validation" && risk === RISK.SAFE;
+          // Queue only states that can be reconstructed safely. Deterministic
+          // input probes still produce evidence/findings, but do not fork the
+          // BFS into state paths that require replaying form mutations.
+          if (replayable) {
+            queue.push({
+              snapshot: after,
+              depth: current.depth + 1,
+              entry: queued.entry,
+              path: [...queued.path, { control: liveControl }],
+            });
+          }
         }
         if (after.state.state_id !== before.state.state_id) {
           // Reset every branch to the live node origin before the next sibling.

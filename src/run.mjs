@@ -7,7 +7,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { resolveConfig } from "./config.mjs";
+import { resolveConfig, redact } from "./config.mjs";
 import { dedupeIssues, verdictFor } from "./checks.mjs";
 import { explore } from "./explore.mjs";
 import { applyFixes, collectFixes, diffIssues } from "./fix.mjs";
@@ -55,11 +55,27 @@ export async function run(input = {}) {
   // intents both patch fixDir sources; ONE fresh exploration then verifies
   // everything against computed styles and fresh findings.
   let verify = null;
-  if (input.intent && !intent)
+  if (input.intent && !intent) {
     phases.intent = {
       parsed: false,
       detail: "Intent instruction was not understood; nothing applied.",
     };
+    report.issues = dedupeIssues([
+      ...(report.issues || []),
+      {
+        issue_id: "vqa-intent-unparsed",
+        type: "vqa-intent",
+        title: "Intent instruction not understood",
+        severity: "high",
+        detail: phases.intent.detail,
+        evidence: redact({ intent: String(input.intent).slice(0, 240) }),
+      },
+    ]);
+    report.verdict = verdictFor({
+      issues: report.issues,
+      complete: report.complete,
+    });
+  }
   if (intent && config.fixDir) {
     const result = await applyIntent(
       intent,
@@ -69,6 +85,22 @@ export async function run(input = {}) {
     phases.intent = { parsed: true, ...result };
   } else if (intent && !config.fixDir) {
     phases.intent = { parsed: true, applied: false, reason: "no_fix_dir" };
+    report.issues = dedupeIssues([
+      ...(report.issues || []),
+      {
+        issue_id: "vqa-intent-no-fix-dir",
+        type: "vqa-intent",
+        title: "Intent requires --fix-dir",
+        severity: "high",
+        detail:
+          "Parsed intent was not applied because no fix directory was provided.",
+        evidence: redact({ intent: String(input.intent).slice(0, 240) }),
+      },
+    ]);
+    report.verdict = verdictFor({
+      issues: report.issues,
+      complete: report.complete,
+    });
   }
   const pendingFixes =
     report.verdict !== "PASS" && config.autofix === "verified" && config.fixDir
@@ -101,7 +133,19 @@ export async function run(input = {}) {
   // An incomplete verify run cannot prove a fix, so the original run stays
   // authoritative in that case. Vision findings are always additive.
   const authoritative = verify?.complete ? verify : report;
-  const issues = dedupeIssues([...authoritative.issues, ...visionIssues]);
+  const deterministicIssues = verify?.complete
+    ? verify.issues
+    : verify
+      ? dedupeIssues([
+          ...report.issues.filter((issue) =>
+            verify.issues.some(
+              (candidate) => candidate.issue_id === issue.issue_id,
+            ),
+          ),
+          ...verify.issues,
+        ])
+      : report.issues;
+  const issues = dedupeIssues([...deterministicIssues, ...visionIssues]);
   const verdict = verdictFor({ issues, complete: authoritative.complete });
 
   const result = {

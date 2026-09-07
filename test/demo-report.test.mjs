@@ -73,6 +73,13 @@ test("summarizeReport gives agents a small actionable contract", () => {
         severity: "critical",
         title: "Unhandled page error",
         detail: "boom",
+        evidence: {
+          selector: "#crash",
+          viewport: "mobile",
+          action_id: "s1:button:Go::0",
+          before: { screenshot: "/tmp/out/screenshots/a-before.png" },
+          after: { screenshot: "/tmp/out/screenshots/a-after.png" },
+        },
       },
       {
         issue_id: "vqa-slop-lorem-ipsum-placeholder-copy",
@@ -96,6 +103,11 @@ test("summarizeReport gives agents a small actionable contract", () => {
   assert.deepEqual(summary.by_severity, { critical: 1, high: 1, low: 1 });
   assert.equal(summary.issues.length, 3);
   assert.equal(summary.issues[0].id, "vqa-runtime-unhandled-page-error");
+  assert.equal(summary.issues[0].where, "#crash");
+  assert.equal(summary.issues[0].action_id, "s1:button:Go::0");
+  assert.equal(summary.issues[0].viewport, "mobile");
+  assert.equal(summary.issues[0].before, "./screenshots/a-before.png");
+  assert.equal(summary.issues[0].after, "./screenshots/a-after.png");
   assert.equal(summary.artifacts.report_md, "report.md");
   assert.equal(summary.artifacts.report_html, "report.html");
   const lines = renderSummaryLines(summary);

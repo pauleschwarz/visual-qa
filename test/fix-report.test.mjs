@@ -96,6 +96,7 @@ test("markdown report renders verdict, phases, and grouped issues", () => {
         severity: "critical",
         title: "Unhandled page error",
         detail: "boom at window.onload",
+        evidence: { selector: "#onload", action_id: "s0:button:Run::0" },
       },
       {
         type: "vqa-slop",
@@ -112,6 +113,8 @@ test("markdown report renders verdict, phases, and grouped issues", () => {
   assert.match(md, /### CRITICAL/);
   assert.match(md, /### LOW/);
   assert.match(md, /Unhandled page error/);
+  assert.match(md, /\| ID \| Type \| Title \| Where \| Detail \|/);
+  assert.match(md, /#onload/);
 });
 
 test("markdown report states explicitly when no issues exist", () => {

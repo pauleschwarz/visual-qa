@@ -164,6 +164,51 @@ test("run pipeline reports an unfulfillable intent instead of hiding it", async 
   }
 });
 
+test("run pipeline fails closed on unparsed intent", async () => {
+  const appDir = await mkdtemp(`${tmpdir()}/vqa-intent-unparsed-`);
+  const appFile = join(appDir, "index.html");
+  await writeFile(
+    appFile,
+    '<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><title>Shop</title></head>\n<body><h1>Healthy</h1></body></html>\n',
+  );
+  const server = createServer(async (_req, res) => {
+    const html = await readFile(appFile, "utf8");
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(html);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const outDir = await mkdtemp(`${tmpdir()}/vqa-intent-unparsed-out-`);
+  try {
+    const report = await run({
+      baseUrl: `http://127.0.0.1:${port}/`,
+      outDir,
+      fixDir: appDir,
+      intent: "mach es schöner",
+      viewports: [{ name: "desktop", width: 1280, height: 800 }],
+      bounds: {
+        max_states: 3,
+        max_depth: 1,
+        max_actions_per_state: 2,
+        max_total_actions: 6,
+        max_runtime_ms: 30_000,
+      },
+    });
+    assert.equal(report.phases.intent?.parsed, false);
+    assert.notEqual(report.verdict, "PASS");
+    assert.ok(
+      report.issues.some(
+        (item) =>
+          item.type === "vqa-intent" &&
+          item.title === "Intent instruction not understood",
+      ),
+    );
+  } finally {
+    server.close();
+    await rm(appDir, { recursive: true, force: true });
+  }
+});
+
 test("run pipeline auto-fixes contrast findings and proves the fix", async () => {
   const appDir = await mkdtemp(`${tmpdir()}/vqa-contrast-app-`);
   const appFile = join(appDir, "index.html");

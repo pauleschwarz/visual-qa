@@ -45,21 +45,56 @@ export function classifyRisk(label = "", tag = "", type = "") {
 }
 
 export const SECRET_KEYS =
-  /^(authorization|cookie|set-cookie|x-api-key|x-auth-token|proxy-authorization|api-key|password|passphrase|secret)$/i;
+  /^(authorization|cookie|set-cookie|x-api-key|x-auth-token|proxy-authorization|api-key|api_key|password|passphrase|secret|token|access[_-]?token|session(_?id)?)$/i;
 const SECRET_VALUE =
   /(bearer\s+[\w.-]+|eyJ[\w-]+\.[\w-]+\.[\w-]+|sk-[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{20,})/gi;
+
+function secretKeyName(key) {
+  return String(key)
+    .replace(/[-_]/g, "")
+    .toLowerCase();
+}
+
+export function isSecretKey(key) {
+  const compact = secretKeyName(key);
+  return /^(authorization|cookie|setcookie|xapikey|xauthtoken|proxyauthorization|apikey|password|passphrase|secret|token|accesstoken|session|sessionid)$/.test(
+    compact,
+  );
+}
+
+function redactString(value) {
+  const replaced = value.replace(SECRET_VALUE, "[REDACTED]");
+  try {
+    const url = new URL(replaced);
+    let changed = false;
+    for (const key of new Set(url.searchParams.keys())) {
+      const values = url.searchParams.getAll(key);
+      if (
+        isSecretKey(key) &&
+        values.some((raw) => raw && raw !== "[REDACTED]")
+      ) {
+        url.searchParams.delete(key);
+        for (let index = 0; index < values.length; index++)
+          url.searchParams.append(key, "[REDACTED]");
+        changed = true;
+      }
+    }
+    if (!changed) return replaced;
+    return url.toString();
+  } catch {
+    return replaced;
+  }
+}
 
 /** Redact secrets from any structure before it reaches evidence on disk. */
 export function redact(value) {
   if (value == null) return value;
-  if (typeof value === "string")
-    return value.replace(SECRET_VALUE, "[REDACTED]");
+  if (typeof value === "string") return redactString(value);
   if (Array.isArray(value)) return value.map(redact);
   if (typeof value === "object") {
     const out = {};
     for (const [k, v] of Object.entries(value)) {
-      SECRET_KEYS.lastIndex = 0;
-      out[k] = SECRET_KEYS.test(k) ? "[REDACTED]" : redact(v);
+      out[k] = isSecretKey(k) ? "[REDACTED]" : redact(v);
     }
     return out;
   }
@@ -99,6 +134,37 @@ function resolvedBounds(input = {}) {
   return bounds;
 }
 
+function resolvedViewports(input) {
+  const viewports =
+    Array.isArray(input) && input.length ? input : DEFAULT_VIEWPORTS;
+  const seen = new Set();
+  return viewports.map((viewport, index) => {
+    const name = String(viewport?.name ?? "").trim();
+    if (!name) {
+      throw new Error(
+        `viewport[${index}] needs a non-empty name`,
+      );
+    }
+    if (seen.has(name)) {
+      throw new Error(`duplicate viewport name "${name}"`);
+    }
+    seen.add(name);
+    const width = viewport?.width;
+    const height = viewport?.height;
+    if (!Number.isInteger(width) || width < 1) {
+      throw new Error(
+        `viewport "${name}" width must be an integer >= 1; received ${width}`,
+      );
+    }
+    if (!Number.isInteger(height) || height < 1) {
+      throw new Error(
+        `viewport "${name}" height must be an integer >= 1; received ${height}`,
+      );
+    }
+    return { name, width, height };
+  });
+}
+
 export function resolveConfig(input = {}) {
   // The mode is a contract, not a hint: an unknown value must block the run
   // instead of silently degrading to a full walk.
@@ -118,15 +184,35 @@ export function resolveConfig(input = {}) {
     throw new Error(
       'mode "changed" requires an explicit changed-target source (changedTargets)',
     );
+  const baseUrl = validatedBaseUrl(input.baseUrl);
+  if (baseUrl) {
+    for (const target of changedTargets) {
+      let resolved;
+      try {
+        resolved = new URL(target, baseUrl);
+      } catch {
+        throw new Error(
+          `changed-target "${target}" is not a valid URL relative to baseUrl`,
+        );
+      }
+      if (resolved.origin !== new URL(baseUrl).origin) {
+        throw new Error(
+          `changed-target "${target}" is off-origin; expected same origin as ${baseUrl}`,
+        );
+      }
+    }
+  }
+  if (input.trace === true) {
+    throw new Error(
+      "trace capture is disabled: Playwright trace archives can contain unredacted URLs, headers, and DOM data",
+    );
+  }
   return {
     mode,
-    baseUrl: validatedBaseUrl(input.baseUrl),
+    baseUrl,
     outDir: input.outDir || ".qa",
     bounds: resolvedBounds(input.bounds || {}),
-    viewports:
-      Array.isArray(input.viewports) && input.viewports.length
-        ? input.viewports
-        : DEFAULT_VIEWPORTS,
+    viewports: resolvedViewports(input.viewports),
     // Only an explicit declaration unlocks mutating/destructive actions.
     isolatedEnvironment: input.isolatedEnvironment === true,
     allowMutating:
@@ -146,7 +232,7 @@ export function resolveConfig(input = {}) {
     // explore only verifies them against computed styles, it never parses
     // raw instruction strings itself.
     intentChecks: Array.isArray(input.intentChecks) ? input.intentChecks : [],
-    trace: input.trace !== false,
+    trace: false,
     stable_frames: Number.isInteger(input.stable_frames)
       ? input.stable_frames
       : 2,

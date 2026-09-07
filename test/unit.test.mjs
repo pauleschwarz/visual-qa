@@ -12,19 +12,37 @@ import {
 } from "../src/state.mjs";
 
 test("redacts credentials and volatile state", () => {
-  assert.equal(
-    redact({
-      password: "secret",
-      token: "abc",
-      cookie: "x",
-      nested: { authorization: "Bearer y" },
-    }).password,
-    "[REDACTED]",
-  );
+  const redacted = redact({
+    password: "secret",
+    token: "abc",
+    api_key: "plain-key",
+    cookie: "x",
+    nested: { authorization: "Bearer y", accessToken: "tok" },
+  });
+  assert.equal(redacted.password, "[REDACTED]");
+  assert.equal(redacted.token, "[REDACTED]");
+  assert.equal(redacted.api_key, "[REDACTED]");
+  assert.equal(redacted.nested.authorization, "[REDACTED]");
+  assert.equal(redacted.nested.accessToken, "[REDACTED]");
   assert.equal(
     scrubVolatile("csrf=abc&timestamp=123&name=ok"),
     "csrf=[VOLATILE]&timestamp=[VOLATILE]&name=ok",
   );
+  const url = redact(
+    "http://127.0.0.1:1/path?api_key=sekret&token=tval&session=s1&ok=1",
+  );
+  assert.equal(new URL(url).searchParams.get("api_key"), "[REDACTED]");
+  assert.equal(new URL(url).searchParams.get("token"), "[REDACTED]");
+  assert.equal(new URL(url).searchParams.get("session"), "[REDACTED]");
+  assert.match(url, /ok=1/);
+  assert.doesNotMatch(url, /sekret|tval|s1/);
+  const encoded = redact(
+    "https://example.test/path?next=a%2Fb&api_key=secret&tag=x&tag=y#frag",
+  );
+  assert.match(encoded, /next=a%2Fb/);
+  assert.match(encoded, /tag=x&tag=y/);
+  assert.match(encoded, /#frag$/);
+  assert.doesNotMatch(encoded, /secret/);
 });
 
 test("config denies mutating/destructive actions by default", () => {
@@ -37,6 +55,71 @@ test("config denies mutating/destructive actions by default", () => {
     resolveConfig({ baseUrl: "http://127.0.0.1:1", isolatedEnvironment: true })
       .allowMutating,
     true,
+  );
+});
+
+test("changed targets must stay same-origin as baseUrl", () => {
+  assert.throws(
+    () =>
+      resolveConfig({
+        baseUrl: "http://127.0.0.1:4174/",
+        mode: "changed",
+        changedTargets: ["https://example.com/path"],
+      }),
+    /same-origin|off-origin|changed-target/i,
+  );
+  const ok = resolveConfig({
+    baseUrl: "http://127.0.0.1:4174/",
+    mode: "changed",
+    changedTargets: ["/about", "http://127.0.0.1:4174/settings"],
+  });
+  assert.deepEqual(ok.changedTargets, [
+    "/about",
+    "http://127.0.0.1:4174/settings",
+  ]);
+});
+
+test("viewports require unique names and positive integer sizes", () => {
+  assert.throws(
+    () =>
+      resolveConfig({
+        baseUrl: "http://127.0.0.1:1",
+        viewports: [{ name: "mobile", width: 0, height: 800 }],
+      }),
+    /width|viewport/i,
+  );
+  assert.throws(
+    () =>
+      resolveConfig({
+        baseUrl: "http://127.0.0.1:1",
+        viewports: [
+          { name: "desktop", width: 1280, height: 800 },
+          { name: "desktop", width: 1440, height: 900 },
+        ],
+      }),
+    /duplicate/i,
+  );
+  const cfg = resolveConfig({
+    baseUrl: "http://127.0.0.1:1",
+    viewports: [
+      { name: "phone", width: 390, height: 844 },
+      { name: "wide", width: 1440, height: 900 },
+    ],
+  });
+  assert.deepEqual(
+    cfg.viewports.map((v) => v.name),
+    ["phone", "wide"],
+  );
+});
+
+test("raw browser traces stay disabled because archives cannot be redacted", () => {
+  assert.equal(
+    resolveConfig({ baseUrl: "http://127.0.0.1:1" }).trace,
+    false,
+  );
+  assert.throws(
+    () => resolveConfig({ baseUrl: "http://127.0.0.1:1", trace: true }),
+    /trace capture is disabled|unredacted/i,
   );
 });
 

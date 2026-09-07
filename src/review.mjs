@@ -44,6 +44,17 @@ function screenshotPair(entry) {
   return { entry, beforePath, afterPath };
 }
 
+function portableEvidencePath(path) {
+  const normalized = String(path ?? "").replaceAll("\\", "/");
+  if (!normalized) return normalized;
+  const marker = "/screenshots/";
+  const markerIndex = normalized.lastIndexOf(marker);
+  if (markerIndex >= 0) return normalized.slice(markerIndex + 1);
+  if (normalized.startsWith("screenshots/")) return normalized;
+  if (normalized.startsWith("./")) return normalized.slice(2);
+  return normalized;
+}
+
 function priority({ observation } = {}) {
   if (observation?.status === "error") return 0;
   if (observation?.pixel_ratio > 0.2) return 1;
@@ -79,8 +90,8 @@ export async function prepareHarnessReview(
         skill,
         action_id: entry.action_id ?? null,
         system: skillPrompt(skill),
-        before: beforePath,
-        after: afterPath,
+        before: portableEvidencePath(beforePath),
+        after: portableEvidencePath(afterPath),
         // The answering model may see the observation that triggered the pick.
         context: {
           status: entry.observation?.status ?? null,
@@ -202,10 +213,12 @@ export async function applyHarnessReview(outDir, findingsFile) {
     rejected: rejected.length,
   };
   await writeReportArtifacts(outDir, report);
+  const blocking = rejected.filter((entry) => entry.reason !== "already_applied");
   return {
     verdict: report.verdict,
     accepted: accepted.length,
     rejected: rejected.length,
     issues: report.issues.length,
+    ok: blocking.length === 0,
   };
 }
