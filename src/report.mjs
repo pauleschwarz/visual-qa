@@ -201,6 +201,31 @@ function verdictMessage(report) {
   return "Coverage stopped before the surface was fully proven.";
 }
 
+/** One-line locator for humans — not buried in collapsed JSON. */
+export function findingWhere(evidence = {}) {
+  if (!evidence || typeof evidence !== "object") return "";
+  if (typeof evidence.selector === "string" && evidence.selector.trim())
+    return evidence.selector.trim();
+  const nodeTarget = evidence.nodes?.[0]?.target;
+  if (Array.isArray(nodeTarget) && nodeTarget.length)
+    return nodeTarget.flat().filter(Boolean).join(" ");
+  if (typeof nodeTarget === "string" && nodeTarget.trim()) return nodeTarget.trim();
+  const control = evidence.control;
+  if (control && typeof control === "object") {
+    const role = control.role || control.tag || "control";
+    const name = control.name || control.testId || control.id || "";
+    const box = control.box
+      ? ` @(${control.box.x},${control.box.y} ${control.box.w}x${control.box.h})`
+      : "";
+    return name ? `${role} "${name}"${box}` : `${role}${box}`;
+  }
+  if (typeof evidence.url === "string" && evidence.url.trim())
+    return evidence.url.trim();
+  if (typeof evidence.rule === "string" && evidence.rule.trim())
+    return `rule:${evidence.rule.trim()}`;
+  return "";
+}
+
 /** Render a self-contained inspection docket with no network dependencies. */
 export function renderHtmlReport(report) {
   const issues = orderedIssues(report.issues || []);
@@ -213,18 +238,20 @@ export function renderHtmlReport(report) {
   );
   const issueCards = issues.length
     ? issues
-        .map(
-          (issue, index) => `
+        .map((issue, index) => {
+          const where = findingWhere(issue.evidence);
+          return `
           <article class="finding" id="finding-${escapeHtml(issue.issue_id || index + 1)}">
             <div class="finding-index">${String(index + 1).padStart(2, "0")}</div>
             <div>
               <div class="finding-meta"><strong>${escapeHtml(issue.severity)}</strong> / ${escapeHtml(issue.type)} / ${escapeHtml(issue.issue_id)}</div>
               <h3>${escapeHtml(issue.title)}</h3>
               <p>${escapeHtml(issue.detail)}</p>
+              ${where ? `<p class="finding-where"><span>Where</span> ${escapeHtml(where)}</p>` : ""}
               ${issue.evidence ? `<details><summary>Inspect evidence</summary><pre>${escapeHtml(JSON.stringify(issue.evidence, null, 2))}</pre></details>` : ""}
             </div>
-          </article>`,
-        )
+          </article>`;
+        })
         .join("")
     : '<p class="empty">No findings. Coverage must still be complete for this to count as a pass.</p>';
   const contactSheets = pairs.length
@@ -286,6 +313,8 @@ export function renderHtmlReport(report) {
     .finding-meta strong { color:var(--accent); }
     .finding h3 { margin:7px 0 8px; font-size:clamp(1.35rem,3vw,2rem); line-height:1.08; }
     .finding p { max-width:760px; margin:0; font-size:1.03rem; }
+     .finding-where { margin-top:10px !important; color:var(--muted); font-size:.92rem !important; }
+     .finding-where span { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; letter-spacing:.08em; text-transform:uppercase; font-size:.68rem; color:var(--accent); margin-right:8px; }
     details { margin-top:14px; }
     summary { cursor:pointer; font-weight:800; text-decoration:underline; text-decoration-color:var(--accent); text-underline-offset:3px; }
     pre { max-width:100%; overflow:auto; padding:16px; background:var(--ink); color:var(--paper); font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace; }

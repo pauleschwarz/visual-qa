@@ -1,26 +1,27 @@
 // Visual QA - zero-setup demo: bundled defect fixture + one bounded run.
 //
-// The demo exists so a first-time user (or agent) sees a full report in
-// under a minute without writing anything: it serves the seeded-defect
-// page, explores it with small bounds, and returns the report.
+// First-run contract: complete the seeded fixture as FAIL (not
+// COVERAGE_INCOMPLETE) in under a minute on typical hardware.
 
 import { createServer } from "node:http";
 import { explore } from "./explore.mjs";
 import { DEMO_HTML } from "./demo-html.mjs";
 
+// Sized to the fixture graph: enough room to hit seeded defects, small
+// enough that wall-clock stays under ~90s with the walker defaults.
 const DEMO_BOUNDS = {
-  max_states: 24,
+  max_states: 12,
   max_depth: 3,
-  max_actions_per_state: 14,
-  max_total_actions: 80,
-  max_runtime_ms: 240_000,
+  max_actions_per_state: 8,
+  max_total_actions: 40,
+  max_runtime_ms: 90_000,
 };
 
 /**
  * Serve the demo fixture on a random localhost port and explore it.
- * Defaults to the mobile viewport: it is the defect-richest view and keeps
- * the first run a complete bounded walk, not a coverage warning.
- * `overrides` exist for tests; everything defaults to a fast bounded walk.
+ * Defaults to mobile: defect-richest viewport. Expect verdict FAIL with
+ * seeded findings when the walk completes inside the budget.
+ * `overrides` exist for tests.
  */
 export async function demo({
   outDir = ".qa-demo",

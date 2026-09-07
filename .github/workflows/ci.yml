@@ -17,3 +17,22 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run verify
+      - name: Demo must FAIL under budget
+        run: |
+          node bin/visual-qa.mjs demo --out .qa-ci-demo
+          node -e '
+            const r = require("./.qa-ci-demo/report.json");
+            if (r.verdict !== "FAIL") {
+              console.error("expected FAIL, got", r.verdict, r.coverage);
+              process.exit(1);
+            }
+            if ((r.duration_ms || 0) > 120_000) {
+              console.error("demo too slow", r.duration_ms);
+              process.exit(2);
+            }
+            if (!Array.isArray(r.issues) || r.issues.length < 3) {
+              console.error("expected seeded defects, got", r.issues?.length);
+              process.exit(3);
+            }
+            console.log("demo ok", r.verdict, r.duration_ms, r.issues.length);
+          '

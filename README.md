@@ -1,35 +1,39 @@
 # visual-qa
 
-**Autonomous QA for web apps: explore like a user, find what's broken, fix
-what is mechanically fixable, prove every fix — and block the ship when
-coverage or verdict fails.**
+**Bounded browser QA for web apps:** explores a running app like a user,
+reports findings with portable evidence, applies a small mechanical fix
+whitelist when asked, and fails the ship gate when coverage or verdict is
+not `PASS`.
+
+Runs unattended. You still own the verdict and product judgment.
 
 [![CI](https://github.com/pauleschwarz/visual-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/pauleschwarz/visual-qa/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-0f766e.svg)](LICENSE)
 
-No human in the explore/fix/prove loop. Humans still own product judgment.
-
-> **Install note:** the package name is `@pauleschwarz/visual-qa`. It is
-> intended for npm, but if the registry package is missing, install from Git
-> (see below). Always run `npx playwright install chromium` once per machine.
+Status: **v0.1.0 pre-release**. Not on npm yet — install from Git. **Chromium
+only.** Node >= 20. macOS/Linux tested; Windows untested. CLI flags may change
+before 1.0. Always run `npx playwright install chromium` once per machine.
 
 ## Why not "just Playwright"?
 
-| | Playwright / Cypress | **visual-qa** |
+Playwright is the execution kernel. visual-qa is the bounded walk + verdict +
+evidence docket on top:
+
+| | Playwright scripts | visual-qa |
 | --- | --- | --- |
 | You write | Selectors + assertions | Bounds + optional intent |
-| Exploration | Scripted paths | Bounded walk of the running app |
+| Exploration | Paths you scripted | Bounded walk of the running app |
 | Output | Pass/fail you defined | Findings + **verdict** + evidence dir |
-| Autofix | You | Whitelisted mechanical fixes, proven |
+| Autofix | You | Whitelisted mechanical fixes only (title/lang/contrast), proven |
 | CI posture | Your suite | `junit`/`json` + non-zero on non-`PASS` |
 
+Chromium-only today — not multi-browser parity with raw Playwright.
+
 **vs [pi-verity](https://github.com/pauleschwarz/pi-verity):** Verity proves
-*repository* evidence after agent edits (tests, types, counterfactual).
-**visual-qa** proves what a **browser** can observe on a running app. Use both.
+*repository* evidence after agent edits (tests, types). **visual-qa** proves
+what a **browser** can observe on a running app. Use both.
 
-## Quickstart
-
-### From Git (always works)
+## Install (from Git)
 
 ```sh
 git clone https://github.com/pauleschwarz/visual-qa.git
@@ -37,36 +41,42 @@ cd visual-qa
 npm ci
 npx playwright install chromium
 npm link          # puts `visual-qa` on your PATH
-visual-qa demo    # under a minute: bundled app with seeded defects
+visual-qa demo    # ~1 min on Apple Silicon; seeded defects → expect FAIL
 ```
 
-### From npm (when published)
+The demo is intentionally broken (overflow, crashing handler, placeholder
+copy). A healthy first run ends with verdict **`FAIL`**, complete coverage of
+the fixture, and `report.html` full of evidence — not a green lie and not
+`COVERAGE_INCOMPLETE`.
 
-```sh
-npm install -g @pauleschwarz/visual-qa
-npx playwright install chromium
-visual-qa demo
-```
-
-The demo **finds everything wrong on purpose** — overflow, a crashing handler,
-placeholder copy — so you see a real `FAIL` report with evidence, not a green
-lie. Then point it at your app:
+Then point it at your app:
 
 ```sh
 visual-qa run --url http://127.0.0.1:3000 --out .qa
 open .qa/report.html   # portable inspection docket; no server required
 ```
 
-Deterministic and offline by default. A full default walk is bounded at 40
-states, 160 actions, and 15 minutes; start smaller with
-`--max-states 8 --max-actions 24 --max-runtime-ms 60000` when learning the tool.
+Deterministic and offline by default. Full default walk: 40 states, 160
+actions, 15 minutes. Learn with
+`--max-states 8 --max-actions 24 --max-runtime-ms 60000`.
 
 - `--format junit` → CI
-- `--max-agent-calls N` → optional vision review (or your harness via
-  `review-prepare` / `review-apply`)
-- `--autofix verified --fix-dir ./app` → fix + prove title/lang/contrast
+- `review-prepare` / `review-apply` → your harness vision model (human/agent
+  in the loop for visual judgment)
+- `--max-agent-calls N` → optional built-in vision (needs `VQA_VISION_*`)
+- `--autofix verified --fix-dir ./app` → prove title/lang/contrast only
 - `--intent 'ändere die Farbe von "Add item" auf grün'` → verified visual
   change (DE or EN)
+
+## When not to use this
+
+- You need multi-browser matrix (Firefox/WebKit) or device lab coverage.
+- The app is behind auth and you have not supplied a session yet (v0.1 walks
+  the public shell only).
+- You want a replacement for unit/integration tests — this is a ship-gate
+  on the running UI, not a test framework.
+- Production traffic or real customer data (use `--isolated` only on safe
+  fixtures).
 
 ## Verdicts
 
@@ -86,7 +96,7 @@ states, 160 actions, and 15 minutes; start smaller with
 | `2` | Blocked (bad args, unreachable URL, refused mode) |
 
 Every run writes three views: `report.html` for people, `report.md` for review,
-and `report.json` for machines. Summarize the machine report with:
+and `report.json` for machines. Summarize an out-dir later with:
 
 ```sh
 visual-qa report .qa --json
@@ -131,38 +141,19 @@ Optional vision without baking a vendor into the CLI:
 
 ```sh
 visual-qa review-prepare .qa
-# hand images + prompts to your harness model → findings.json
+# hand images + system prompts to your model → findings.json
 visual-qa review-apply .qa findings.json
 ```
 
-## Safety
+## CI snippet
 
-- Destructive labels (delete, pay, unsubscribe, …) are **refused**; mutating
-  labels require `--isolated`.
-- External links are never followed; off-origin events are excluded.
-- Secrets are redacted before evidence hits disk; reports are mode `0600`.
-- Every patch leaves before/after copies under `<out>/fixes/` and
-  `<out>/intent/`; every run has a `run_id`.
-
-## Development
-
-```sh
-npm install && npx playwright install chromium
-npm run verify      # unit + e2e against the seeded-defect fixture
-npm run fixture     # serves the defect fixture (default :4173)
-npm test            # unit tests only
+```yaml
+- run: npx playwright install --with-deps chromium
+- run: npm run verify
+- run: node bin/visual-qa.mjs demo --out .qa-ci-demo
+- run: node -e 'const r=require("./.qa-ci-demo/report.json"); if(r.verdict!=="FAIL") process.exit(1); if((r.duration_ms||0)>120000) process.exit(2)'
 ```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). Docs index: [docs/README.md](docs/README.md).
-
-## Related tools
-
-| Tool | Layer |
-| --- | --- |
-| **visual-qa** (this) | Running web UI — explore / find / fix / prove |
-| [pi-verity](https://github.com/pauleschwarz/pi-verity) | Repo evidence after coding-agent edits |
-| [obsidian2date](https://github.com/pauleschwarz/obsidian2date) | Research window → Obsidian notes |
 
 ## License
 
-MIT — [LICENSE](LICENSE).
+MIT © Paul Schwarz

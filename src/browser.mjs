@@ -45,6 +45,8 @@ export class BrowserRuntime {
     this.console = [];
     this.pageErrors = [];
     this.network = [];
+    this.dialogs = [];
+    this.popups = [];
   }
 
   async start() {
@@ -69,6 +71,18 @@ export class BrowserRuntime {
     }
     this.page = await this.context.newPage();
     this.#attachListeners(this.page);
+    // New tabs / window.open after the primary page exists. Register only
+    // after this.page is set so the initial newPage is not treated as a popup.
+    this.context.on("page", (page) => {
+      if (page === this.page) return;
+      this.#attachListeners(page);
+      this.popups.push(
+        redact({
+          url: page.url(),
+          at: this.#mark(),
+        }),
+      );
+    });
     // Suppress animations so screenshot stabilization converges.
     await this.context.addInitScript(() => {
       const style = document.createElement("style");
@@ -122,6 +136,20 @@ export class BrowserRuntime {
         }),
       );
     });
+    // Native dialogs block Playwright until handled. Dismiss by default and
+    // record evidence so confirm-gated controls are not misread as dead.
+    page.on("dialog", async (dialog) => {
+      this.dialogs.push(
+        redact({
+          type: dialog.type(),
+          message: dialog.message(),
+          at: this.#mark(),
+          url: page.url(),
+          action: "dismiss",
+        }),
+      );
+      await dialog.dismiss().catch(() => {});
+    });
   }
 
   #mark() {
@@ -135,11 +163,15 @@ export class BrowserRuntime {
       console: this.console.length,
       errors: this.pageErrors.length,
       net: this.network.length,
+      dialogs: this.dialogs.length,
+      popups: this.popups.length,
     };
     return () => ({
       console: this.console.slice(before.console),
       pageErrors: this.pageErrors.slice(before.errors),
       network: this.network.slice(before.net),
+      dialogs: this.dialogs.slice(before.dialogs),
+      popups: this.popups.slice(before.popups),
     });
   }
 
@@ -274,9 +306,20 @@ export class BrowserRuntime {
   /**
    * Re-enter an explored state before branching. URL is the primary key;
    * optional theme is restored so localStorage-sticky themes cannot drift.
+   * Skip navigation when the live page is already on the target URL — the
+   * explore loop re-enters the same node between sibling actions.
    */
   async restoreState({ url, theme } = {}) {
-    if (url) await this.navigate(url);
+    if (url) {
+      const live = this.page.url();
+      let same = false;
+      try {
+        same = new URL(live).href === new URL(url, this.baseUrl).href;
+      } catch {
+        same = live === url;
+      }
+      if (!same) await this.navigate(url);
+    }
     if (theme) {
       // Site-agnostic: mirror the theme onto the documented root signal and
       // into whichever storage key already holds a theme token. Hard-coding
@@ -463,12 +506,14 @@ export class BrowserRuntime {
   }
 
   async click(control) {
-    await (await this.locate(control)).click({ timeout: 5000 });
+    // Action timeout is locate+click only; stability is a separate cheap poll.
+    // A 5s click tax made dense walks burn the wall clock before coverage.
+    await (await this.locate(control)).click({ timeout: 2_000 });
     await this.waitForStableState();
   }
 
   async fill(control, value) {
-    await (await this.locate(control)).fill(String(value), { timeout: 5000 });
+    await (await this.locate(control)).fill(String(value), { timeout: 2_000 });
   }
 
   async press(key) {
