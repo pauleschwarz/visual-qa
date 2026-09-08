@@ -29,6 +29,12 @@ evidence docket on top:
 
 Chromium-only today — not multi-browser parity with raw Playwright.
 
+**Known limits:** no authenticated areas — the explorer fills placeholder
+test values, never real credentials, so login-gated pages are out of reach
+(on purpose: wrong logins on a real app are mutating actions). No hover/
+drag/multi-tab probes yet. Nothing here renders a PASS for you — you own the
+verdict.
+
 **vs [pi-verity](https://github.com/pauleschwarz/pi-verity):** Verity proves
 *repository* evidence after agent edits (tests, types). **visual-qa** proves
 what a **browser** can observe on a running app. Use both.

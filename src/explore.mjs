@@ -561,6 +561,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
         limitReason ||= "max_actions_per_state";
       }
 
+      let liveIsCurrent = true;
       for (let index = 0; index < controls.length; index++) {
         if (budget.actions + actions >= config.bounds.max_total_actions) {
           complete = false;
@@ -643,7 +644,10 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           continue;
         }
         const expected = expectedFor(control);
-        let before = await snapshot(runtime, config);
+        // After a state change the post-action restore reloaded this node —
+        // the live snapshot describes exactly that origin again, so reuse it
+        // instead of paying a second full snapshot per sibling.
+        let before = liveIsCurrent ? live : await snapshot(runtime, config);
         let liveControl = before.controls.find(
           (item) => controlKey(item) === controlKey(control),
         );
@@ -683,6 +687,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
         let status = "observed";
         let error = null;
         let attempts = 0;
+        let timedOut = false;
         const maxAttempts =
           1 + Math.max(0, config.bounds.max_retries_per_action ?? 0);
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -718,7 +723,10 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
             const noRetry =
               err?.name === "TimeoutError" ||
               /Timeout \d+ms exceeded/i.test(String(err?.message || ""));
-            if (noRetry) break;
+            if (noRetry) {
+              timedOut = true;
+              break;
+            }
             if (attempt < maxAttempts) {
               const replayed = await reenterQueuedState(
                 runtime,
@@ -735,19 +743,26 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
             }
           }
         }
+        let restoredAfterError = false;
         if (status === "error")
-          await restoreOrIssue(
+          restoredAfterError = await restoreOrIssue(
             runtime,
             { url: before.url, theme: before.theme },
             issues,
           );
-        const after = await snapshot(runtime, config);
-        const afterCaptured = await screenshotOrIssue(
-          runtime,
-          afterShot,
-          issues,
-          "after-action",
-        );
+        // Timeout on a gone control does not heal; after the successful
+        // restore the page is provably back on the before-state — skip the
+        // redundant after-snapshot + screenshot.
+        const afterIsBefore = status === "error" && timedOut && restoredAfterError;
+        const after = afterIsBefore ? before : await snapshot(runtime, config);
+        let afterCaptured = false;
+        if (!afterIsBefore)
+          afterCaptured = await screenshotOrIssue(
+            runtime,
+            afterShot,
+            issues,
+            "after-action",
+          );
         const eventDelta = endEvents();
         const urlChanged =
           normalizeUrl(before.url, config.baseUrl) !==
@@ -927,6 +942,11 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
             { url: live.url, theme: live.theme },
             issues,
           );
+          // The restore reloaded the node origin: the live snapshot is the
+          // current page again and the next sibling can reuse it.
+          liveIsCurrent = true;
+        } else {
+          liveIsCurrent = false;
         }
       }
       // Only global budgets end the walk. max_depth and max_actions_per_state
