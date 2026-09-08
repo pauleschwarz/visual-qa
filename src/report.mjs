@@ -64,6 +64,10 @@ export function summarizeReport(report) {
       fixes: "fixes/",
       intent: "intent/",
       verify: "verify/",
+      state_screenshots: (report.evidence || [])
+        .filter((entry) => entry?.kind === "state_scan" && entry.screenshot)
+        .map((entry) => artifactHref(entry.screenshot))
+        .filter(Boolean),
     },
   };
 }
@@ -98,6 +102,17 @@ export function renderMarkdownReport(report) {
     `**Coverage:** ${report.coverage?.states ?? 0} states, ${report.coverage?.actions ?? 0} actions over ${(report.coverage?.viewports_covered || []).join(", ") || "no viewports"}`,
   );
   lines.push(`**Duration:** ${Math.round((report.duration_ms || 0) / 1000)}s`);
+  const stateScreenshots = (report.evidence || [])
+    .filter((entry) => entry?.kind === "state_scan" && entry.screenshot)
+    .map((entry) => artifactHref(entry.screenshot))
+    .filter(Boolean);
+  if (stateScreenshots.length) {
+    lines.push("");
+    lines.push("## State screenshots");
+    lines.push("");
+    for (const screenshot of stateScreenshots)
+      lines.push(`- [${screenshot}](${screenshot})`);
+  }
   lines.push("");
 
   const phases = report.phases || {};
@@ -236,6 +251,13 @@ export function findingWhere(evidence = {}) {
 export function renderHtmlReport(report) {
   const issues = orderedIssues(report.issues || []);
   const pairs = screenshotPairs(report);
+  const stateScreenshots = (report.evidence || [])
+    .filter((entry) => entry?.kind === "state_scan" && entry.screenshot)
+    .map((entry) => ({
+      src: artifactHref(entry.screenshot),
+      state: entry.state_id || "state",
+      viewport: entry.viewport || "viewport",
+    }));
   const counts = Object.fromEntries(
     SEVERITIES.map((severity) => [
       severity,
@@ -272,6 +294,20 @@ export function renderHtmlReport(report) {
                 <a href="${pair.before}"><img src="${pair.before}" alt="Before ${escapeHtml(pair.label)}"><span>Before</span></a>
                 <a href="${pair.after}"><img src="${pair.after}" alt="After ${escapeHtml(pair.label)}"><span>After</span></a>
               </div>
+            </figure>`,
+          )
+          .join("")}</div>
+      </section>`
+    : "";
+  const stateGallery = stateScreenshots.length
+    ? `<section aria-labelledby="states-title">
+        <div class="section-kicker">03 / STATE ATLAS</div>
+        <h2 id="states-title">Every scanned state</h2>
+        <div class="state-grid">${stateScreenshots
+          .map(
+            (shot) => `<figure>
+              <figcaption>${escapeHtml(shot.viewport)} · ${escapeHtml(shot.state)}</figcaption>
+              <a href="${escapeHtml(shot.src)}"><img src="${escapeHtml(shot.src)}" alt="Scanned state ${escapeHtml(shot.state)} at ${escapeHtml(shot.viewport)}"></a>
             </figure>`,
           )
           .join("")}</div>
@@ -397,6 +433,8 @@ export function renderHtmlReport(report) {
       font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
     }
     .contact-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:28px 18px; }
+    .state-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:24px 18px; }
+    .state-grid img { display:block; width:100%; height:auto; border:1px solid var(--line); background:#fff; }
     figure { margin:0; }
     figcaption {
       min-height:2.6em;
@@ -435,7 +473,7 @@ export function renderHtmlReport(report) {
       .metric:nth-child(2) { border-right:0; }
       .metric:nth-child(n+3) { border-bottom:0; }
       .finding { grid-template-columns:40px minmax(0,1fr); gap:10px; }
-      .contact-grid { grid-template-columns:1fr; }
+      .contact-grid, .state-grid { grid-template-columns:1fr; }
       .pair { grid-template-columns:1fr; }
       .pair a { border-right:0; border-bottom:1px solid var(--line); }
       .pair a:last-child { border-bottom:0; }
@@ -478,6 +516,7 @@ export function renderHtmlReport(report) {
       ${issueCards}
     </section>
     ${contactSheets}
+    ${stateGallery}
   </main>
   <footer class="shell">
     <span>Built by Paul Schwarz / visual-qa</span>

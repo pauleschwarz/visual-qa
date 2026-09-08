@@ -126,7 +126,14 @@ export function buildState({
             c.pressed == null || c.pressed === "" ? "" : `p=${c.pressed}`;
           const current =
             c.current == null || c.current === "" ? "" : `c=${c.current}`;
-          return `${c.role}:${scrubVolatile(c.name)}:${c.id || ""}:${c.testId || ""}:${c.href || ""}:${pressed}:${current}`;
+          const value =
+            c.valueState == null || c.valueState === ""
+              ? ""
+              : `v=${c.valueState}`;
+          const checked = c.checked == null ? "" : `k=${c.checked}`;
+          const selected =
+            c.selectedIndex == null ? "" : `s=${c.selectedIndex}`;
+          return `${c.role}:${scrubVolatile(c.name)}:${c.id || ""}:${c.testId || ""}:${c.href || ""}:${pressed}:${current}:${value}:${checked}:${selected}`;
         }),
       ),
     ]

@@ -1,4 +1,4 @@
-export { BrowserRuntime } from "./browser.mjs";
+export { BrowserRuntime, probeValueFor } from "./browser.mjs";
 export {
   classifyRisk,
   DEFAULT_BOUNDS,

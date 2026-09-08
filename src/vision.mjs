@@ -128,27 +128,26 @@ export async function runVisionReview({
         attempted,
         completed,
       };
-    // The call budget is global across skills: each pair x skill is one call,
-    // and the walk stops the moment the budget is spent, keeping later (more
-    // critical) pairs available for earlier skills rather than starving them.
+    // Round-robin by pair: each selected pair receives every review skill
+    // before the next pair consumes budget. This prevents low budgets from
+    // starving readability/slop/consistency on the most important image.
     let spent = 0;
-
-    for (const skill of SKILL_KEYS) {
+    for (const { entry, beforePath, afterPath } of pairs) {
       if (spent >= calls) break;
-      for (const { entry, beforePath, afterPath } of pairs) {
+      let beforeDataUrl;
+      let afterDataUrl;
+      try {
+        beforeDataUrl = `data:image/png;base64,${Buffer.from(
+          await readFile(beforePath),
+        ).toString("base64")}`;
+        afterDataUrl = `data:image/png;base64,${Buffer.from(
+          await readFile(afterPath),
+        ).toString("base64")}`;
+      } catch {
+        continue;
+      }
+      for (const skill of SKILL_KEYS) {
         if (spent >= calls) break;
-        let beforeDataUrl;
-        let afterDataUrl;
-        try {
-          beforeDataUrl = `data:image/png;base64,${Buffer.from(
-            await readFile(beforePath),
-          ).toString("base64")}`;
-          afterDataUrl = `data:image/png;base64,${Buffer.from(
-            await readFile(afterPath),
-          ).toString("base64")}`;
-        } catch {
-          continue;
-        }
 
         attempted += 1;
         const controller = new AbortController();

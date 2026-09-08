@@ -1,7 +1,7 @@
 // Visual QA - zero-setup demo: bundled defect fixture + one bounded run.
 //
 // First-run contract: complete the seeded fixture as FAIL (not
-// COVERAGE_INCOMPLETE) in under a minute on typical hardware.
+// COVERAGE_INCOMPLETE) in under two minutes on typical hardware.
 
 import { createServer } from "node:http";
 import { explore } from "./explore.mjs";
@@ -14,7 +14,7 @@ const DEMO_BOUNDS = {
   max_depth: 4,
   max_actions_per_state: 14,
   max_total_actions: 80,
-  max_runtime_ms: 90_000,
+  max_runtime_ms: 120_000,
 };
 
 /**
