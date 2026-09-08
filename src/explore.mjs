@@ -2,7 +2,7 @@
 
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { BrowserRuntime } from "./browser.mjs";
+import { BrowserRuntime, probeValueFor } from "./browser.mjs";
 import { classifyRisk, RISK, redact, resolveConfig } from "./config.mjs";
 import {
   compareScreenshots,
@@ -72,9 +72,15 @@ async function restoreOrIssue(runtime, target, issues, { severe } = {}) {
   }
 }
 
-async function screenshotOrIssue(runtime, path, issues, label) {
+async function screenshotOrIssue(
+  runtime,
+  path,
+  issues,
+  label,
+  { fullPage = false } = {},
+) {
   try {
-    await runtime.screenshot(path, { stable: false });
+    await runtime.screenshot(path, { stable: false, fullPage });
     return true;
   } catch (error) {
     issues.push(
@@ -117,9 +123,59 @@ function expectedFor(control) {
   if (control.role === "tab") return "content-change";
   if (["checkbox", "radio", "switch"].includes(control.role))
     return "value-change";
-  if (["textbox", "searchbox", "combobox"].includes(control.role))
+  if (
+    ["textbox", "searchbox", "spinbutton", "slider", "combobox"].includes(
+      control.role,
+    )
+  )
     return "input-or-validation";
   return "content-change";
+}
+
+const FILL_ROLES = new Set(["textbox", "searchbox", "spinbutton"]);
+
+/**
+ * Drive one control the same way in live explore and SPA replay.
+ * Never auto-submits forms — fill/Tab or click is enough.
+ */
+async function driveControl(runtime, control, { onSoftError } = {}) {
+  if (FILL_ROLES.has(control.role)) {
+    await runtime.fill(control, probeValueFor(control));
+    await runtime.press("Tab");
+    return;
+  }
+  if (control.role === "slider") {
+    const value = probeValueFor(control);
+    try {
+      await runtime.fill(control, value);
+    } catch {
+      const locator = await runtime.locate(control);
+      await locator.focus({ timeout: 1_500 });
+      await runtime.press("ArrowRight");
+    }
+    await runtime.press("Tab");
+    return;
+  }
+  if (control.role === "combobox") {
+    if (control.tag === "select") {
+      try {
+        await runtime.selectFirstOption(control);
+        await runtime.press("Tab");
+        return;
+      } catch (error) {
+        onSoftError?.(error, "select");
+      }
+    }
+    try {
+      await (await runtime.locate(control)).press("ArrowDown");
+    } catch (error) {
+      onSoftError?.(error, "combobox");
+    }
+    await runtime.press("Tab");
+    return;
+  }
+  // option / menuitem / checkbox / radio / switch / button / link / tab
+  await runtime.click(control);
 }
 
 function changed(before, after) {
@@ -162,19 +218,14 @@ async function snapshot(runtime, config) {
 }
 
 async function replayControl(runtime, control) {
-  // Text-entry probes use one deterministic value and are safe to reconstruct.
-  // Potentially mutating/destructive controls are never replayed.
-  if (["textbox", "searchbox"].includes(control.role)) {
-    await runtime.fill(
-      control,
-      control.type === "email" ? "qa@example.invalid" : "Visual QA",
-    );
-    await runtime.press("Tab");
-    return;
-  }
-  if (control.role === "combobox") {
-    await (await runtime.locate(control)).press("ArrowDown");
-    await runtime.press("Tab");
+  // Text-entry / input probes reconstruct via driveControl. Mutating or
+  // destructive controls are never replayed into a queued SPA path.
+  if (
+    FILL_ROLES.has(control.role) ||
+    control.role === "slider" ||
+    control.role === "combobox"
+  ) {
+    await driveControl(runtime, control);
     return;
   }
   const risk = classifyRisk(control.name, control.tag, control.type);
@@ -183,7 +234,34 @@ async function replayControl(runtime, control) {
       `unsafe replay step: ${risk} ${control.role} '${control.name || "unnamed"}'`,
     );
   }
-  await runtime.click(control);
+  await driveControl(runtime, control);
+}
+
+async function captureStateScreenshot(
+  runtime,
+  outDir,
+  stateId,
+  viewport,
+  issues,
+  evidence,
+) {
+  const shot = join(
+    outDir,
+    "screenshots",
+    `state-${safe(stateId)}-${safe(viewport?.name || "vp")}.png`,
+  );
+  const ok = await screenshotOrIssue(runtime, shot, issues, "state-scan", {
+    fullPage: true,
+  });
+  if (ok) {
+    evidence.push({
+      kind: "state_scan",
+      state_id: stateId,
+      viewport: viewport?.name || null,
+      screenshot: shot,
+    });
+  }
+  return ok ? shot : null;
 }
 
 /** Rebuild a queued SPA state from its entry point and deterministic action path. */
@@ -249,6 +327,9 @@ function controlSignalChanged(
   return (
     before.pressed !== after.pressed ||
     before.current !== after.current ||
+    before.valueState !== after.valueState ||
+    before.checked !== after.checked ||
+    before.selectedIndex !== after.selectedIndex ||
     before.name !== after.name
   );
 }
@@ -320,6 +401,14 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
         path: [],
       });
       scanned.add(entry.state.state_id);
+      await captureStateScreenshot(
+        runtime,
+        outDir,
+        entry.state.state_id,
+        viewport,
+        issues,
+        evidence,
+      );
       issues.push(...(await runA11y(runtime.page)));
       issues.push(...(await runLayoutChecks(runtime.page, viewport)));
       issues.push(...(await runScrollChecks(runtime.page, viewport)));
@@ -599,33 +688,24 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
           attempts = attempt;
           try {
-            if (["textbox", "searchbox"].includes(control.role)) {
-              await runtime.fill(
-                control,
-                control.type === "email" ? "qa@example.invalid" : "Visual QA",
-              );
-              await runtime.press("Tab");
-            } else if (control.role === "combobox") {
-              await (await runtime.locate(control))
-                .press("ArrowDown")
-                .catch((pressError) => {
-                  issues.push(
-                    explorerIssue(
-                      "explorer",
-                      "Keyboard interaction failed",
-                      "low",
-                      "The combobox keyboard probe could not run on this control.",
-                      {
-                        action_id: id,
-                        error: redact({ message: String(pressError) }),
-                      },
-                    ),
-                  );
-                });
-              await runtime.press("Tab");
-            } else {
-              await runtime.click(liveControl);
-            }
+            await driveControl(runtime, liveControl, {
+              onSoftError(pressError, kind) {
+                issues.push(
+                  explorerIssue(
+                    "explorer",
+                    "Keyboard interaction failed",
+                    "low",
+                    kind === "select"
+                      ? "The native selectOption probe could not run on this combobox."
+                      : "The combobox keyboard probe could not run on this control.",
+                    {
+                      action_id: id,
+                      error: redact({ message: String(pressError) }),
+                    },
+                  ),
+                );
+              },
+            });
             // click()/fill() already waited for stability once; a second
             // full stable poll doubled action cost without new signal.
             status = "observed";
@@ -785,6 +865,14 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
         // without ever writing a report.
         if (!scanned.has(after.state.state_id)) {
           scanned.add(after.state.state_id);
+          await captureStateScreenshot(
+            runtime,
+            outDir,
+            after.state.state_id,
+            viewport,
+            issues,
+            evidence,
+          );
           issues.push(...(await runA11y(runtime.page)));
           issues.push(...(await runLayoutChecks(runtime.page, viewport)));
           issues.push(...(await runScrollChecks(runtime.page, viewport)));

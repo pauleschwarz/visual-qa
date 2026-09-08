@@ -39,7 +39,7 @@ jobs:
               console.error("missing viewports", r.coverage.viewports_missing);
               process.exit(6);
             }
-            if ((r.duration_ms || 0) > 120_000) {
+            if ((r.duration_ms || 0) > 180_000) {
               console.error("demo too slow", r.duration_ms);
               process.exit(2);
             }

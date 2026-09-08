@@ -54,6 +54,40 @@ test("prepare exports pairs x skill requests with prompts and ids", async () => 
   }
 });
 
+test("prepare includes every state scan plus bounded action pairs", async () => {
+  const dir = await mkdtemp(`${tmpdir()}/vqa-hprep-states-`);
+  const report = fakeReport([
+    PAIR("action-one"),
+    PAIR("action-two"),
+    {
+      kind: "state_scan",
+      state_id: "home@abc",
+      viewport: "mobile",
+      screenshot: "screenshots/state-home.png",
+    },
+    {
+      kind: "state_scan",
+      state_id: "settings@def",
+      viewport: "desktop",
+      screenshot: "screenshots/state-settings.png",
+    },
+  ]);
+  const { file, requests } = await prepareHarnessReview(report, dir, {
+    maxPairs: 1,
+  });
+  assert.equal(requests, 12, "2 states + 1 action, each across 4 skills");
+  const written = JSON.parse(await readFile(file, "utf8"));
+  const stateRequests = written.requests.filter(
+    (request) => request.context.kind === "state_scan",
+  );
+  assert.equal(stateRequests.length, 8);
+  assert.ok(stateRequests.every((request) => request.before === request.after));
+  assert.deepEqual(
+    [...new Set(stateRequests.map((request) => request.state_id))].sort(),
+    ["home@abc", "settings@def"],
+  );
+});
+
 test("apply caps severity, records request ids, and is idempotent", async () => {
   const dir = await mkdtemp(`${tmpdir()}/vqa-happly-`);
   const report = fakeReport([PAIR("state1:button:Save::0")]);

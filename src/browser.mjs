@@ -17,12 +17,65 @@ const SEMANTIC_ROLES = [
   "combobox",
   "textbox",
   "searchbox",
+  "spinbutton",
   "slider",
   "option",
 ];
 
 function escapeSelector(value) {
   return String(value).replace(/["\\]/g, "\\$&");
+}
+
+/**
+ * Deterministic probe values for input-like controls. Explore and replay share
+ * this helper so reconstructed SPA paths type the same values as live walks.
+ */
+export function probeValueFor(control = {}) {
+  const type = String(control.type || "").toLowerCase();
+  const role = String(control.role || "").toLowerCase();
+  const tag = String(control.tag || "").toLowerCase();
+
+  if (type === "email") return "qa@example.invalid";
+  if (type === "password") return "Visual-QA-Probe-1!";
+  if (type === "tel") return "+15550100";
+  if (type === "url") return "https://example.invalid/qa";
+  if (type === "date") return "2026-01-15";
+  if (type === "time") return "12:30";
+  if (type === "datetime-local") return "2026-01-15T12:30";
+  if (type === "month") return "2026-01";
+  if (type === "week") return "2026-W03";
+
+  if (type === "number" || role === "spinbutton") {
+    if (control.min != null && String(control.min).trim() !== "")
+      return String(control.min);
+    return "1";
+  }
+
+  if (type === "range" || role === "slider") {
+    const minRaw = control.min;
+    const maxRaw = control.max;
+    const min =
+      minRaw != null && String(minRaw).trim() !== "" ? Number(minRaw) : 0;
+    const max =
+      maxRaw != null && String(maxRaw).trim() !== "" ? Number(maxRaw) : 100;
+    if (Number.isFinite(min) && Number.isFinite(max))
+      return String(Math.round((min + max) / 2));
+    if (minRaw != null && String(minRaw).trim() !== "") return String(minRaw);
+    return "50";
+  }
+
+  if (
+    type === "search" ||
+    type === "text" ||
+    type === "" ||
+    role === "searchbox" ||
+    role === "textbox" ||
+    tag === "textarea"
+  ) {
+    return "Visual QA";
+  }
+
+  return "Visual QA";
 }
 
 export class BrowserRuntime {
@@ -381,6 +434,8 @@ export class BrowserRuntime {
             if (["radio"].includes(t)) return "radio";
             if (["submit", "button", "reset"].includes(t)) return "button";
             if (t === "search") return "searchbox";
+            if (t === "number") return "spinbutton";
+            if (t === "range") return "slider";
             return "textbox";
           }
           return "generic";
@@ -430,6 +485,15 @@ export class BrowserRuntime {
             max: el.getAttribute("max"),
             maxLength: el.getAttribute("maxlength"),
             pattern: el.getAttribute("pattern"),
+            valueState:
+              "value" in el && typeof el.value === "string"
+                ? el.value === ""
+                  ? "empty"
+                  : `set:${el.value.length}`
+                : null,
+            checked: "checked" in el ? Boolean(el.checked) : null,
+            selectedIndex:
+              el.tagName.toLowerCase() === "select" ? el.selectedIndex : null,
             pressed: el.getAttribute("aria-pressed"),
             current: el.getAttribute("aria-current"),
             // Component signature: repeated cards share this, enabling sampling.
@@ -538,6 +602,20 @@ export class BrowserRuntime {
     await this.waitForStableState({ frames: 2, gap: 20 });
   }
 
+  /** Prefer the first enabled, non-placeholder native option. */
+  async selectFirstOption(control) {
+    const locator = await this.locate(control);
+    const value = await locator.evaluate((select) => {
+      const option = [...select.options].find(
+        (item) => !item.disabled && item.value !== "",
+      );
+      return option?.value ?? null;
+    });
+    if (value == null) throw new Error("select has no selectable option");
+    await locator.selectOption(value, { timeout: 1_500 });
+    await this.waitForStableState({ frames: 2, gap: 20 });
+  }
+
   async press(key) {
     await this.page.keyboard.press(key);
     await this.waitForStableState({ frames: 2, gap: 15 });
@@ -548,11 +626,32 @@ export class BrowserRuntime {
     await this.waitForStableState();
   }
 
-  async screenshot(path, { fullPage = false, stable = true } = {}) {
+  async screenshot(
+    path,
+    { fullPage = false, stable = true, maxFullPageHeight = 12_000 } = {},
+  ) {
     if (stable) await this.waitForStableState({ frames: 2, gap: 15 });
+    if (fullPage) {
+      const dimensions = await this.page.evaluate((heightCap) => ({
+        width: Math.max(1, Math.ceil(document.documentElement.scrollWidth)),
+        height: Math.max(
+          1,
+          Math.min(
+            heightCap,
+            Math.ceil(document.documentElement.scrollHeight),
+          ),
+        ),
+      }), maxFullPageHeight);
+      return this.page.screenshot({
+        path,
+        clip: { x: 0, y: 0, ...dimensions },
+        animations: "disabled",
+        caret: "hide",
+      });
+    }
     return this.page.screenshot({
       path,
-      fullPage,
+      fullPage: false,
       animations: "disabled",
       caret: "hide",
     });

@@ -77,23 +77,44 @@ export async function prepareHarnessReview(
   { maxPairs = 6 } = {},
 ) {
   const evidence = Array.isArray(report?.evidence) ? report.evidence : [];
-  const pairs = evidence
+  const actionPairs = evidence
     .map(screenshotPair)
     .filter(Boolean)
     .sort((left, right) => priority(left.entry) - priority(right.entry))
     .slice(0, Math.max(1, maxPairs));
+  // Every unique state image is a page-level review target. Represent it as a
+  // same-image pair so the existing reviewer/apply contract stays compatible;
+  // maxPairs continues to bound action-transition pairs only.
+  const seenStates = new Set();
+  const statePairs = evidence
+    .filter((entry) => entry?.kind === "state_scan" && entry.screenshot)
+    .filter((entry) => {
+      const path = portableEvidencePath(entry.screenshot);
+      if (!path || seenStates.has(path)) return false;
+      seenStates.add(path);
+      return true;
+    })
+    .map((entry) => ({
+      entry,
+      beforePath: entry.screenshot,
+      afterPath: entry.screenshot,
+    }));
+  const pairs = [...statePairs, ...actionPairs];
   const requests = [];
   for (const { entry, beforePath, afterPath } of pairs) {
     for (const skill of Object.keys(SKILLS)) {
       requests.push({
-        id: `${report.run_id || "run"}-${skill}-${slug(String(entry.action_id || "unknown")).slice(0, 40)}`,
+        id: `${report.run_id || "run"}-${skill}-${slug(String(entry.action_id || entry.state_id || "unknown")).slice(0, 40)}`,
         skill,
         action_id: entry.action_id ?? null,
+        state_id: entry.state_id ?? null,
         system: skillPrompt(skill),
         before: portableEvidencePath(beforePath),
         after: portableEvidencePath(afterPath),
         // The answering model may see the observation that triggered the pick.
         context: {
+          kind: entry.kind || "action_pair",
+          viewport: entry.viewport ?? null,
           status: entry.observation?.status ?? null,
           pixel_ratio: entry.observation?.pixel_ratio ?? null,
         },

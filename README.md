@@ -137,6 +137,27 @@ Full agent contract: [`docs/harness.md`](docs/harness.md). Machine contract
    re-run until `PASS` or you consciously accept remaining findings.
 4. Never ship on `COVERAGE_INCOMPLETE` — raise bounds, re-run.
 
+## Startup app: full visual improvement loop
+
+Use a disposable local/staging environment so form probes can safely exercise
+real state without touching customer data:
+
+```sh
+visual-qa run --url http://127.0.0.1:3000 --out .qa --isolated
+visual-qa review-prepare .qa --max-pairs 12
+npx impeccable detect src --viewport 390x844
+npx impeccable detect src --viewport 1440x900
+```
+
+The explorer fills supported fields with deterministic type-aware values,
+operates semantic controls without submitting forms, writes before/after images
+for every observed action, and writes one full-page image for every newly
+scanned state. Review requests distribute the same image pairs across layout,
+readability, slop, and consistency critics. Apply accepted findings, fix via the
+repo workflow, then rerun until coverage is complete and the ship gate passes.
+`DESIGN.md` is the project style authority; Impeccable and visual-qa complement
+it with source-level and rendered-browser evidence.
+
 Optional vision without baking a vendor into the CLI:
 
 ```sh
@@ -151,7 +172,7 @@ visual-qa review-apply .qa findings.json
 - run: npx playwright install --with-deps chromium
 - run: npm run verify
 - run: node bin/visual-qa.mjs demo --out .qa-ci-demo
-- run: node -e 'const r=require("./.qa-ci-demo/report.json"); if(r.verdict!=="FAIL") process.exit(1); if((r.duration_ms||0)>120000) process.exit(2)'
+- run: node -e 'const r=require("./.qa-ci-demo/report.json"); if(r.verdict!=="FAIL") process.exit(1); if((r.duration_ms||0)>180000) process.exit(2)'
 ```
 
 ## License

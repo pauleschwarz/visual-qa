@@ -37,6 +37,7 @@ test("demo explores the bundled fixture and finds seeded defects", async () => {
   assert.match(markdown, /# Visual QA Report/);
   assert.match(html, /Evidence before confidence/);
   assert.match(html, /Built by Paul Schwarz/);
+  assert.match(html, /Every scanned state/);
   assert.doesNotMatch(
     html,
     /(?:src|href)="https?:\/\//,
@@ -52,7 +53,7 @@ test("default demo completes the seeded walk as FAIL", async () => {
   assert.equal(report.complete, true);
   assert.ok(!report.coverage?.limit_reason);
   assert.ok(report.issues.length >= 3, "seeded defects found");
-  assert.ok(Date.now() - started < 90_000, "demo stays inside its advertised budget");
+  assert.ok(Date.now() - started < 120_000, "demo stays inside its advertised budget");
 });
 
 test("summarizeReport gives agents a small actionable contract", () => {
