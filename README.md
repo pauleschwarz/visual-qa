@@ -31,8 +31,9 @@ Chromium-only today — not multi-browser parity with raw Playwright.
 
 **Known limits:** no authenticated areas — the explorer fills placeholder
 test values, never real credentials, so login-gated pages are out of reach
-(on purpose: wrong logins on a real app are mutating actions). No hover/
-drag/multi-tab probes yet. Nothing here renders a PASS for you — you own the
+(on purpose: wrong logins on a real app are mutating actions). Hover and
+edge-input probes (empty / hostile / overlong) run by default; no
+drag/multi-tab yet. Nothing here renders a PASS for you — you own the
 verdict.
 
 **vs [pi-verity](https://github.com/pauleschwarz/pi-verity):** Verity proves
@@ -114,6 +115,7 @@ visual-qa report .qa --json
 visual-qa demo [--out DIR] [bounds]
 visual-qa run --url URL [--out DIR] [--isolated] [--autofix verified] [--fix-dir DIR]
               [--intent "…"] [--max-agent-calls N] [--mode off|changed|full] [bounds]
+              [--no-prepare-review] [--no-edge-input-probes]
 visual-qa explore --url URL [--out DIR] [bounds]     # deterministic core only
 visual-qa report <DIR> [--json]                      # agent-friendly summary
 visual-qa intent --intent "…" --fix-dir DIR [--json]  # catalog dry-run, no browser
@@ -126,6 +128,10 @@ visual-qa review-apply <DIR> <findings.json>         # apply harness findings (a
 **Mode:** `--mode off|changed|full` · `--changed-target URL` (repeatable;
 required for `changed`) · `--baseline-dir DIR` · `--allow-destructive` (only
 with `--isolated`).
+
+**Review defaults (`run`):** auto-exports harness vision tasks after the walk
+(`--no-prepare-review` to skip) · edge input probes on text fields
+(`--no-edge-input-probes` to skip).
 
 **Bounds:** `--max-states N` · `--max-depth N` · `--max-actions N` ·
 `--max-actions-per-state N` · `--max-runtime-ms N`.
@@ -150,15 +156,18 @@ real state without touching customer data:
 
 ```sh
 visual-qa run --url http://127.0.0.1:3000 --out .qa --isolated
+# vision tasks already at .qa/vision/requests.json (or re-export):
 visual-qa review-prepare .qa --max-pairs 12
 npx impeccable detect src --viewport 390x844
 npx impeccable detect src --viewport 1440x900
 ```
 
 The explorer fills supported fields with deterministic type-aware values,
-operates semantic controls without submitting forms, writes before/after images
-for every observed action, and writes one full-page image for every newly
-scanned state. Review requests distribute the same image pairs across layout,
+then probes empty / hostile / overlong input on text-like controls; hovers
+before clicks; types into editable comboboxes (typeahead); writes
+before / mid / after frames for every observed action; and writes one
+full-page image for every newly scanned state. `run` auto-exports harness
+vision tasks. Review requests distribute image pairs across layout,
 readability, slop, and consistency critics. Apply accepted findings, fix via the
 repo workflow, then rerun until coverage is complete and the ship gate passes.
 `DESIGN.md` is the project style authority; Impeccable and visual-qa complement
@@ -167,6 +176,7 @@ it with source-level and rendered-browser evidence.
 Optional vision without baking a vendor into the CLI:
 
 ```sh
+# after run, or re-export:
 visual-qa review-prepare .qa
 # hand images + system prompts to your model → findings.json
 visual-qa review-apply .qa findings.json

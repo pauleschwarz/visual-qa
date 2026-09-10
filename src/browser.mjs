@@ -78,6 +78,48 @@ export function probeValueFor(control = {}) {
   return "Visual QA";
 }
 
+/**
+ * Extra values a real user (or attacker) would try. Explore runs these after
+ * the primary probe so empty/hostile/overlong input surfaces are covered
+ * without expanding the graph. Deterministic order; password skips hostile
+ * markup so evidence never stores credential-looking XSS payloads.
+ */
+export function probeEdgeValuesFor(control = {}) {
+  const type = String(control.type || "").toLowerCase();
+  const role = String(control.role || "").toLowerCase();
+  const tag = String(control.tag || "").toLowerCase();
+  const textLike =
+    type === "search" ||
+    type === "text" ||
+    type === "" ||
+    type === "email" ||
+    type === "url" ||
+    type === "tel" ||
+    role === "searchbox" ||
+    role === "textbox" ||
+    tag === "textarea";
+  if (!textLike) return [];
+  if (type === "password") {
+    return [
+      { kind: "empty", value: "" },
+      { kind: "overlong", value: "X".repeat(200) },
+    ];
+  }
+  const edges = [
+    { kind: "empty", value: "" },
+    { kind: "hostile", value: "<img src=x onerror=alert(1)>" },
+    { kind: "overlong", value: "X".repeat(200) },
+  ];
+  if (type === "email") edges.push({ kind: "invalid", value: "not-an-email" });
+  if (type === "url") edges.push({ kind: "invalid", value: "not-a-url" });
+  if (type === "number" || role === "spinbutton")
+    return [
+      { kind: "empty", value: "" },
+      { kind: "overlong", value: "999999999999" },
+    ];
+  return edges;
+}
+
 export class BrowserRuntime {
   constructor({
     baseUrl,
@@ -597,9 +639,39 @@ export class BrowserRuntime {
     await this.waitForStableState({ frames: 2, gap: 20 });
   }
 
+  /** Hover affordance probe — records CSS :hover without committing a click. */
+  async hover(control) {
+    await (await this.locate(control)).hover({ timeout: 1_500 });
+    await this.waitForStableState({ frames: 1, gap: 15 });
+  }
+
   async fill(control, value) {
     await (await this.locate(control)).fill(String(value), { timeout: 1_500 });
     await this.waitForStableState({ frames: 2, gap: 20 });
+  }
+
+  /**
+   * Character-by-character typing for controls that only react to key events
+   * (typeahead comboboxes, masked inputs). Falls back to fill on failure.
+   */
+  async typeText(control, value, { delay = 15 } = {}) {
+    const locator = await this.locate(control);
+    try {
+      await locator.click({ timeout: 1_500 });
+      await locator.fill("");
+      await locator.pressSequentially(String(value), {
+        delay,
+        timeout: 5_000,
+      });
+    } catch {
+      await locator.fill(String(value), { timeout: 1_500 });
+    }
+    await this.waitForStableState({ frames: 2, gap: 20 });
+  }
+
+  /** Pause without stability wait — used for mid-animation frames. */
+  async pause(ms = 100) {
+    await this.page.waitForTimeout(Math.max(0, ms));
   }
 
   /** Prefer the first enabled, non-placeholder native option. */

@@ -228,6 +228,12 @@ export function resolveConfig(input = {}) {
     fixDir: input.fixDir || null,
     slopChecks: input.slopChecks !== false,
     securityChecks: input.securityChecks !== false,
+    // Empty / hostile / overlong fills on text-like controls after the primary
+    // probe. Opt out with edgeInputProbes: false when a surface is too fragile.
+    edgeInputProbes: input.edgeInputProbes !== false,
+    // After every `run`, export harness vision tasks unless the caller opts out.
+    // explore() never prepares — only the full run pipeline does.
+    prepareReview: input.prepareReview !== false,
     // Parsed intents are supplied by the run pipeline (see intent.mjs);
     // explore only verifies them against computed styles, it never parses
     // raw instruction strings itself.

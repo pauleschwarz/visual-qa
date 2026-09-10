@@ -15,6 +15,7 @@ function usage({ error = false, message = null } = {}) {
     "  visual-qa demo [--out DIR] [bounds flags]              zero-setup first run\n" +
     "  visual-qa run --url URL [--out DIR] [--isolated] [--autofix verified] [--fix-dir DIR]\n" +
     '                 [--intent "instruction"] [--max-agent-calls N] [--mode off|changed|full] [bounds flags]\n' +
+    "                 [--no-prepare-review] [--no-edge-input-probes]\n" +
     "  visual-qa explore --url URL [--out DIR] [bounds flags]  deterministic core only\n" +
     "  visual-qa report <DIR> [--json]                         summarize an out-dir for agents\n" +
     '  visual-qa intent --intent "..." --fix-dir DIR [--json]   catalog dry-run, no browser\n' +
@@ -24,6 +25,8 @@ function usage({ error = false, message = null } = {}) {
     "Mode flags:   --changed-target URL (repeatable, required for --mode changed)\n" +
     "              --baseline-dir DIR (per-viewport <name>.png baselines)\n" +
     "              --allow-destructive (only with --isolated)\n" +
+    "Review flags (run): --no-prepare-review  skip auto vision task export\n" +
+    "              --no-edge-input-probes     skip empty/hostile/overlong fills\n" +
     "Bounds flags: --max-states N --max-depth N --max-actions N --max-actions-per-state N --max-runtime-ms N\n" +
     "Help:         visual-qa --help    Version: visual-qa --version";
   const output = message ? `${message}\n\n${text}` : text;
@@ -297,7 +300,9 @@ if (command === "report") {
     intent = null,
     baselineDir = null,
     format = "human",
-    outFile = null;
+    outFile = null,
+    prepareReview = true,
+    edgeInputProbes = true;
   const bounds = {};
   const changedTargets = [];
   for (let i = 0; i < args.length; i++) {
@@ -314,6 +319,8 @@ if (command === "report") {
     else if (arg === "--intent") intent = args[++i];
     else if (arg === "--format") format = args[++i];
     else if (arg === "--out-file") outFile = args[++i];
+    else if (arg === "--no-prepare-review") prepareReview = false;
+    else if (arg === "--no-edge-input-probes") edgeInputProbes = false;
     else if (arg === "--max-states") bounds.max_states = Number(args[++i]);
     else if (arg === "--max-depth") bounds.max_depth = Number(args[++i]);
     else if (arg === "--max-actions")
@@ -374,6 +381,8 @@ if (command === "report") {
       fixDir,
       intent,
       bounds,
+      prepareReview,
+      edgeInputProbes,
     };
     if (format === "human") {
       const seconds = Math.ceil((bounds.max_runtime_ms ?? 900_000) / 1000);

@@ -4,7 +4,7 @@ import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { chromium } from "playwright";
-import { probeValueFor } from "../src/browser.mjs";
+import { probeEdgeValuesFor, probeValueFor } from "../src/browser.mjs";
 import { explore } from "../src/explore.mjs";
 import { runSlopChecks } from "../src/slop.mjs";
 
@@ -42,6 +42,27 @@ test("probeValueFor covers supported input types deterministically", () => {
   assert.equal(probeValueFor({ role: "textbox", tag: "textarea" }), "Visual QA");
 });
 
+test("probeEdgeValuesFor covers empty/hostile/overlong text surfaces", () => {
+  const text = probeEdgeValuesFor({ role: "textbox", type: "text" });
+  assert.deepEqual(
+    text.map((edge) => edge.kind),
+    ["empty", "hostile", "overlong"],
+  );
+  assert.equal(text.find((edge) => edge.kind === "hostile").value.includes("onerror"), true);
+  assert.equal(text.find((edge) => edge.kind === "overlong").value.length, 200);
+
+  const password = probeEdgeValuesFor({ role: "textbox", type: "password" });
+  assert.deepEqual(
+    password.map((edge) => edge.kind),
+    ["empty", "overlong"],
+  );
+
+  const email = probeEdgeValuesFor({ role: "textbox", type: "email" });
+  assert.ok(email.some((edge) => edge.kind === "invalid"));
+
+  assert.deepEqual(probeEdgeValuesFor({ role: "button" }), []);
+});
+
 test("form-heavy exploration types values and writes action plus state images", async () => {
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Form surface</title><meta name="description" content="QA form"></head><body>
   <h1>Profile</h1>
@@ -77,7 +98,11 @@ test("form-heavy exploration types values and writes action plus state images", 
       },
     });
     const observed = report.evidence.filter(
-      (entry) => entry.observation?.status === "observed",
+      (entry) =>
+        entry.observation?.status === "observed" &&
+        entry.kind !== "edge_input" &&
+        entry.kind !== "state_scan" &&
+        entry.control,
     );
     assert.ok(observed.length >= 10, `observed=${observed.length}`);
     for (const entry of observed) {
@@ -95,6 +120,101 @@ test("form-heavy exploration types values and writes action plus state images", 
     assert.equal(byId.get("count")?.observation.control_changed, true);
     assert.equal(byId.get("plan")?.control.role, "combobox");
     assert.equal(byId.get("plan")?.observation.control_changed, true);
+
+    // Edge probes + mid frames are part of a thorough walk.
+    const edges = report.evidence.filter((entry) => entry.kind === "edge_input");
+    assert.ok(edges.length >= 3, `edge_input=${edges.length}`);
+    const edgeKinds = new Set(edges.map((entry) => entry.edge));
+    assert.ok(edgeKinds.has("empty"));
+    assert.ok(edgeKinds.has("hostile") || edgeKinds.has("overlong"));
+    for (const edge of edges) {
+      assert.ok(await exists(edge.before.screenshot), edge.before.screenshot);
+      assert.ok(await exists(edge.after.screenshot), edge.after.screenshot);
+    }
+    const withMid = observed.filter((entry) => entry.mid?.screenshot);
+    assert.ok(withMid.length >= 1, "expected at least one mid-action frame");
+    for (const entry of withMid)
+      assert.ok(await exists(entry.mid.screenshot), entry.mid.screenshot);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("edge input probes can be disabled", async () => {
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>T</title><meta name="description" content="t"></head><body>
+  <label>Name <input id="name" type="text"></label>
+  </body></html>`;
+  const server = await serve(html);
+  const outDir = await mkdtemp(`${tmpdir()}/vqa-no-edge-`);
+  try {
+    const port = server.address().port;
+    const report = await explore({
+      baseUrl: `http://127.0.0.1:${port}/`,
+      outDir,
+      viewports: [{ name: "desktop", width: 800, height: 600 }],
+      edgeInputProbes: false,
+      bounds: {
+        max_states: 4,
+        max_depth: 2,
+        max_actions_per_state: 4,
+        max_total_actions: 8,
+        max_runtime_ms: 30_000,
+      },
+    });
+    assert.equal(
+      report.evidence.filter((entry) => entry.kind === "edge_input").length,
+      0,
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("editable combobox is typed into for typeahead", async () => {
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Typeahead</title><meta name="description" content="t"></head><body>
+  <label>City
+    <input id="city" role="combobox" aria-autocomplete="list" aria-expanded="false">
+  </label>
+  <ul id="list" role="listbox" hidden></ul>
+  <script>
+    const input = document.getElementById('city');
+    const list = document.getElementById('list');
+    input.addEventListener('input', () => {
+      list.hidden = !input.value;
+      input.setAttribute('aria-expanded', String(Boolean(input.value)));
+      list.innerHTML = input.value
+        ? '<li role="option">Visual QA City</li>'
+        : '';
+    });
+  </script>
+  </body></html>`;
+  const server = await serve(html);
+  const outDir = await mkdtemp(`${tmpdir()}/vqa-combo-type-`);
+  try {
+    const port = server.address().port;
+    const report = await explore({
+      baseUrl: `http://127.0.0.1:${port}/`,
+      outDir,
+      viewports: [{ name: "desktop", width: 800, height: 600 }],
+      edgeInputProbes: false,
+      bounds: {
+        max_states: 6,
+        max_depth: 2,
+        max_actions_per_state: 6,
+        max_total_actions: 10,
+        max_runtime_ms: 45_000,
+      },
+    });
+    const combo = report.evidence.find(
+      (entry) =>
+        entry.control?.role === "combobox" &&
+        entry.kind !== "edge_input" &&
+        entry.observation?.status === "observed",
+    );
+    assert.ok(combo, "expected combobox action");
+    assert.equal(combo.after.dom.includes("Visual QA"), true);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await rm(outDir, { recursive: true, force: true });

@@ -2,7 +2,11 @@
 
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { BrowserRuntime, probeValueFor } from "./browser.mjs";
+import {
+  BrowserRuntime,
+  probeEdgeValuesFor,
+  probeValueFor,
+} from "./browser.mjs";
 import { classifyRisk, RISK, redact, resolveConfig } from "./config.mjs";
 import {
   compareScreenshots,
@@ -137,10 +141,15 @@ const FILL_ROLES = new Set(["textbox", "searchbox", "spinbutton"]);
 /**
  * Drive one control the same way in live explore and SPA replay.
  * Never auto-submits forms — fill/Tab or click is enough.
+ * Editable comboboxes are typed into (typeahead), not only ArrowDown'd.
+ * Clickables get a hover first so :hover affordances are exercised.
+ * `afterPrime` runs once the control is primed (hovered / partially filled)
+ * and before the committing step — used for mid-action motion frames.
  */
-async function driveControl(runtime, control, { onSoftError } = {}) {
+async function driveControl(runtime, control, { onSoftError, afterPrime } = {}) {
   if (FILL_ROLES.has(control.role)) {
     await runtime.fill(control, probeValueFor(control));
+    if (afterPrime) await afterPrime();
     await runtime.press("Tab");
     return;
   }
@@ -153,6 +162,7 @@ async function driveControl(runtime, control, { onSoftError } = {}) {
       await locator.focus({ timeout: 1_500 });
       await runtime.press("ArrowRight");
     }
+    if (afterPrime) await afterPrime();
     await runtime.press("Tab");
     return;
   }
@@ -160,22 +170,51 @@ async function driveControl(runtime, control, { onSoftError } = {}) {
     if (control.tag === "select") {
       try {
         await runtime.selectFirstOption(control);
+        if (afterPrime) await afterPrime();
         await runtime.press("Tab");
         return;
       } catch (error) {
         onSoftError?.(error, "select");
       }
     }
+    // ARIA combobox / input[role=combobox]: type the probe so typeahead opens.
     try {
-      await (await runtime.locate(control)).press("ArrowDown");
+      await runtime.typeText(control, probeValueFor(control));
+      if (afterPrime) await afterPrime();
+      try {
+        await (await runtime.locate(control)).press("ArrowDown");
+      } catch (error) {
+        onSoftError?.(error, "combobox");
+      }
+      await runtime.press("Tab");
+      return;
     } catch (error) {
-      onSoftError?.(error, "combobox");
+      onSoftError?.(error, "combobox-type");
+      try {
+        await (await runtime.locate(control)).press("ArrowDown");
+      } catch (pressError) {
+        onSoftError?.(pressError, "combobox");
+      }
+      if (afterPrime) await afterPrime();
+      await runtime.press("Tab");
+      return;
     }
-    await runtime.press("Tab");
-    return;
   }
   // option / menuitem / checkbox / radio / switch / button / link / tab
+  try {
+    await runtime.hover(control);
+  } catch {
+    // Hover is best-effort; a missing hover target must not block the click.
+  }
+  if (afterPrime) await afterPrime();
   await runtime.click(control);
+}
+
+function isFillable(control) {
+  return (
+    FILL_ROLES.has(control.role) ||
+    (control.role === "combobox" && control.tag !== "select")
+  );
 }
 
 function changed(before, after) {
@@ -676,6 +715,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           "screenshots",
           `${safe(id)}-before.png`,
         );
+        const midShot = join(outDir, "screenshots", `${safe(id)}-mid.png`);
         const afterShot = join(outDir, "screenshots", `${safe(id)}-after.png`);
         const trace = join(outDir, "traces", `${safe(id)}.zip`);
         const beforeCaptured = await screenshotOrIssue(
@@ -688,6 +728,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
         let error = null;
         let attempts = 0;
         let timedOut = false;
+        let midCaptured = false;
         const maxAttempts =
           1 + Math.max(0, config.bounds.max_retries_per_action ?? 0);
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -695,20 +736,40 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           try {
             await driveControl(runtime, liveControl, {
               onSoftError(pressError, kind) {
+                const detail =
+                  kind === "select"
+                    ? "The native selectOption probe could not run on this combobox."
+                    : kind === "combobox-type"
+                      ? "The combobox typeahead probe could not run on this control."
+                      : "The combobox keyboard probe could not run on this control.";
                 issues.push(
                   explorerIssue(
                     "explorer",
                     "Keyboard interaction failed",
                     "low",
-                    kind === "select"
-                      ? "The native selectOption probe could not run on this combobox."
-                      : "The combobox keyboard probe could not run on this control.",
+                    detail,
                     {
                       action_id: id,
                       error: redact({ message: String(pressError) }),
                     },
                   ),
                 );
+              },
+              // Sequential mid frame after prime (hover/fill), before commit.
+              // Same-page ops must not race Playwright's single dispatcher.
+              async afterPrime() {
+                if (attempt !== 1 || midCaptured) return;
+                try {
+                  await runtime.pause(80);
+                  midCaptured = await screenshotOrIssue(
+                    runtime,
+                    midShot,
+                    issues,
+                    "mid-action",
+                  );
+                } catch {
+                  midCaptured = false;
+                }
               },
             });
             // click()/fill() already waited for stability once; a second
@@ -862,6 +923,9 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
               focus: before.focus,
               screenshot: beforeShot,
             },
+            mid: midCaptured
+              ? { screenshot: midShot }
+              : null,
             after: {
               url: after.url,
               theme: after.theme,
@@ -874,6 +938,88 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           }),
         );
         actions++;
+
+        // Edge input probes: empty / hostile / overlong on fillable controls.
+        // Evidence-only — does not expand the state graph or burn action budget
+        // beyond a hard per-control cap. Restore to the pre-action URL first so
+        // a successful primary fill does not poison the edge attempts.
+        if (
+          status === "observed" &&
+          isFillable(liveControl) &&
+          config.edgeInputProbes !== false
+        ) {
+          const edges = probeEdgeValuesFor(liveControl).slice(0, 3);
+          if (edges.length) {
+            await restoreOrIssue(
+              runtime,
+              { url: before.url, theme: before.theme },
+              issues,
+            );
+            for (const edge of edges) {
+              if (now() - started > config.bounds.max_runtime_ms) break;
+              const edgeId = `${safe(id)}-edge-${edge.kind}`;
+              const edgeBefore = join(
+                outDir,
+                "screenshots",
+                `${edgeId}-before.png`,
+              );
+              const edgeAfter = join(
+                outDir,
+                "screenshots",
+                `${edgeId}-after.png`,
+              );
+              await screenshotOrIssue(
+                runtime,
+                edgeBefore,
+                issues,
+                "edge-before",
+              );
+              let edgeStatus = "observed";
+              let edgeError = null;
+              try {
+                if (edge.kind === "empty") {
+                  await runtime.fill(liveControl, "");
+                } else {
+                  await runtime.typeText(liveControl, edge.value, {
+                    delay: 0,
+                  });
+                }
+                await runtime.press("Tab");
+              } catch (edgeErr) {
+                edgeStatus = "error";
+                edgeError = redact({
+                  name: edgeErr?.name,
+                  message: edgeErr?.message,
+                });
+              }
+              await screenshotOrIssue(runtime, edgeAfter, issues, "edge-after");
+              evidence.push(
+                redact({
+                  kind: "edge_input",
+                  action_id: edgeId,
+                  parent_action_id: id,
+                  edge: edge.kind,
+                  state_id: before.state.state_id,
+                  control: liveControl,
+                  observation: { status: edgeStatus, error: edgeError },
+                  before: { screenshot: edgeBefore, url: before.url },
+                  after: {
+                    screenshot: edgeAfter,
+                    url: runtime.page.url(),
+                  },
+                }),
+              );
+              // Return to the origin so the next edge starts clean.
+              await restoreOrIssue(
+                runtime,
+                { url: before.url, theme: before.theme },
+                issues,
+              );
+            }
+            // Keep the sibling loop's liveIsCurrent assumption honest.
+            liveIsCurrent = false;
+          }
+        }
 
         // Static checks describe a STATE, not an action. Re-sampling the whole
         // runway after every click multiplied runtime until runs timed out

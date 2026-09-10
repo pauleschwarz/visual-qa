@@ -75,10 +75,12 @@ visual-qa intent --fix-dir ./app \
 `--json` returns `{ ok, results: [{ intent, parsed, found, file, reason }] }`.
 Use it before a real run to validate what the agent is about to ask for.
 
-## Optional: vision review
+## Vision review (default on `run`)
 
-Deterministic and offline by default. Two ways to add vision, both additive
-and capped at `medium` (they flag, they never gate):
+Deterministic and offline by default. `visual-qa run` exports harness vision
+tasks automatically into `.qa/vision/requests.json` after the walk (opt out
+with `--no-prepare-review`). Two ways to answer them, both additive and
+capped at `medium` (they flag, they never gate):
 
 **Option A — endpoint.** With `VQA_VISION_API_KEY` and `--max-agent-calls
 N`, the runtime dispatches screenshot pairs to four review skills (layout,
@@ -89,6 +91,7 @@ agent's own vision model does the review.
 
 ```sh
 visual-qa run --url http://127.0.0.1:3000 --out .qa
+# requests already at .qa/vision/requests.json — or re-export:
 visual-qa review-prepare .qa --max-pairs 6
 # -> .qa/vision/requests.json  (pairs x skills, each with system prompt + image paths)
 # your harness answers each request with its own vision model:

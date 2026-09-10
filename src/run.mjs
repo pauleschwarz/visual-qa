@@ -13,7 +13,16 @@ import { explore } from "./explore.mjs";
 import { applyFixes, collectFixes, diffIssues } from "./fix.mjs";
 import { applyIntent, parseIntent } from "./intent.mjs";
 import { writeReportArtifacts } from "./report.mjs";
+import { prepareHarnessReview, reviewRequestsDir } from "./review.mjs";
 import { runVisionReview } from "./vision.mjs";
+
+function reviewDirFallback(outDir) {
+  try {
+    return reviewRequestsDir(outDir);
+  } catch {
+    return null;
+  }
+}
 
 export async function run(input = {}) {
   const config = resolveConfig(input);
@@ -162,5 +171,33 @@ export async function run(input = {}) {
   };
 
   await writeReportArtifacts(outDir, result);
+
+  // Export harness vision tasks by default so an agent never has to remember
+  // `review-prepare`. Opt out with prepareReview: false / --no-prepare-review.
+  if (config.prepareReview !== false) {
+    try {
+      const prepared = await prepareHarnessReview(result, outDir, {
+        maxPairs: Number.isInteger(input.reviewMaxPairs)
+          ? input.reviewMaxPairs
+          : 6,
+      });
+      phases.harness_review = {
+        status: "prepared",
+        requests: Array.isArray(prepared?.requests)
+          ? prepared.requests.length
+          : (prepared?.count ?? null),
+        dir: prepared?.dir ?? reviewDirFallback(outDir),
+      };
+      result.phases = { ...result.phases, ...phases };
+      await writeReportArtifacts(outDir, result);
+    } catch (error) {
+      phases.harness_review = {
+        status: `error: ${error.message}`,
+      };
+      result.phases = { ...result.phases, ...phases };
+      await writeReportArtifacts(outDir, result);
+    }
+  }
+
   return result;
 }
