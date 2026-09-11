@@ -19,6 +19,7 @@ import {
 } from "./checks.mjs";
 import {
   buildState,
+  diffSignals,
   normalizeUrl,
   sameOrigin,
   scrubVolatile,
@@ -232,17 +233,27 @@ async function snapshot(runtime, config) {
   // cost seconds per step. They observe the same settled page, so issue them
   // together and let the driver pipeline them.
   const url = runtime.page.url();
-  const [controls, aria, theme, headings, dialogOpen, dom, text, focus] =
-    await Promise.all([
-      runtime.inventory(),
-      runtime.ariaSnapshot(),
-      runtime.themeSignal(),
-      runtime.headings(),
-      runtime.dialogOpen(),
-      runtime.domSnapshot(),
-      runtime.visibleText(),
-      runtime.focusSnapshot(),
-    ]);
+  const [
+    controls,
+    aria,
+    theme,
+    locale,
+    headings,
+    dialogOpen,
+    dom,
+    text,
+    focus,
+  ] = await Promise.all([
+    runtime.inventory(),
+    runtime.ariaSnapshot(),
+    runtime.themeSignal(),
+    runtime.localeSignal(),
+    runtime.headings(),
+    runtime.dialogOpen(),
+    runtime.domSnapshot(),
+    runtime.visibleText(),
+    runtime.focusSnapshot(),
+  ]);
   const state = buildState({
     url,
     baseUrl: config.baseUrl,
@@ -252,28 +263,121 @@ async function snapshot(runtime, config) {
     dialogOpen,
     viewport: runtime.viewport.name,
     theme,
+    locale,
   });
-  return { state, url, theme, controls, aria, dom, text, focus };
+  return { state, url, theme, locale, controls, aria, dom, text, focus };
 }
 
-async function replayControl(runtime, control) {
+/** Resolve a recorded control against the live inventory before replay. */
+function resolveLiveControl(liveControls = [], recorded = {}) {
+  if (!recorded || typeof recorded !== "object") return null;
+  const byTestId =
+    recorded.testId &&
+    liveControls.filter((c) => c.testId && c.testId === recorded.testId);
+  if (byTestId?.length === 1) return byTestId[0];
+  const byId =
+    recorded.id && liveControls.filter((c) => c.id && c.id === recorded.id);
+  if (byId?.length === 1) return byId[0];
+  const byHref =
+    recorded.href &&
+    liveControls.filter(
+      (c) => c.role === recorded.role && c.href && c.href === recorded.href,
+    );
+  if (byHref?.length === 1) return byHref[0];
+  const bySig =
+    recorded.signature &&
+    liveControls.filter(
+      (c) => c.role === recorded.role && c.signature === recorded.signature,
+    );
+  if (bySig?.length === 1) return bySig[0];
+  // Toggle already flipped: name may be DE→EN; match stable role+id/testId first,
+  // then role+box proximity, label last.
+  const sameRole = liveControls.filter((c) => c.role === recorded.role);
+  if (recorded.box && sameRole.length) {
+    const scored = sameRole
+      .map((c) => {
+        const dx = Math.abs((c.box?.x ?? 0) - (recorded.box?.x ?? 0));
+        const dy = Math.abs((c.box?.y ?? 0) - (recorded.box?.y ?? 0));
+        return { c, d: dx + dy };
+      })
+      .sort((a, b) => a.d - b.d);
+    if (scored[0] && scored[0].d <= 48) {
+      if (scored.length === 1 || scored[0].d + 8 < (scored[1]?.d ?? Infinity))
+        return scored[0].c;
+    }
+  }
+  const byName = sameRole.filter(
+    (c) => scrubVolatile(c.name) === scrubVolatile(recorded.name),
+  );
+  if (byName.length === 1) return byName[0];
+  return null;
+}
+
+function effectSatisfied(live, step = {}) {
+  const expected = step.effect || {};
+  if (!live) return false;
+  if (expected.alreadySatisfied) return true;
+  if (expected.pressed != null && String(live.pressed) === String(expected.pressed))
+    return true;
+  if (expected.current != null && String(live.current) === String(expected.current))
+    return true;
+  if (
+    expected.valueState != null &&
+    String(live.valueState) === String(expected.valueState)
+  )
+    return true;
+  if (expected.checked != null && Boolean(live.checked) === Boolean(expected.checked))
+    return true;
+  // Language toggle pattern: target name already showing a *renamed* after
+  // state. Navigation labels normally do not change, so never mark those
+  // controls satisfied merely because their label still matches.
+  if (
+    expected.afterName &&
+    scrubVolatile(expected.afterName) !== scrubVolatile(step.control?.name) &&
+    scrubVolatile(live.name) === scrubVolatile(expected.afterName)
+  )
+    return true;
+  return false;
+}
+
+async function replayControl(runtime, stepOrControl) {
+  const step =
+    stepOrControl && stepOrControl.control
+      ? stepOrControl
+      : { control: stepOrControl };
+  const recorded = step.control;
+  const liveInventory = await runtime.inventory({ includeDisabled: true });
+  const live = resolveLiveControl(liveInventory, recorded);
+  if (!live) {
+    throw new Error(
+      `replay control not found: ${recorded?.role || "?"} '${recorded?.name || "unnamed"}'`,
+    );
+  }
+  if (
+    live.disabled === true ||
+    effectSatisfied(live, step) ||
+    alreadySatisfied(live)
+  ) {
+    return { status: "already-satisfied", control: live };
+  }
   // Text-entry / input probes reconstruct via driveControl. Mutating or
   // destructive controls are never replayed into a queued SPA path.
   if (
-    FILL_ROLES.has(control.role) ||
-    control.role === "slider" ||
-    control.role === "combobox"
+    FILL_ROLES.has(live.role) ||
+    live.role === "slider" ||
+    live.role === "combobox"
   ) {
-    await driveControl(runtime, control);
-    return;
+    await driveControl(runtime, live);
+    return { status: "driven", control: live };
   }
-  const risk = classifyRisk(control.name, control.tag, control.type);
+  const risk = classifyRisk(live.name, live.tag, live.type);
   if (risk !== RISK.SAFE) {
     throw new Error(
-      `unsafe replay step: ${risk} ${control.role} '${control.name || "unnamed"}'`,
+      `unsafe replay step: ${risk} ${live.role} '${live.name || "unnamed"}'`,
     );
   }
-  await driveControl(runtime, control);
+  await driveControl(runtime, live);
+  return { status: "driven", control: live };
 }
 
 async function captureStateScreenshot(
@@ -283,6 +387,7 @@ async function captureStateScreenshot(
   viewport,
   issues,
   evidence,
+  config = {},
 ) {
   const shot = join(
     outDir,
@@ -300,6 +405,57 @@ async function captureStateScreenshot(
       screenshot: shot,
     });
   }
+  // Scroll ladder: capture mid-page viewports so vision sees the same
+  // situations humans swipe through (photo grids, sparse sections, sticky chrome).
+  if (config?.visionEvidence !== true) return ok ? shot : null;
+  try {
+    const ladder = await runtime.page.evaluate(() => {
+      const root = document.documentElement;
+      const max = Math.max(0, root.scrollHeight - window.innerHeight);
+      if (max < window.innerHeight * 0.4) return [];
+      const marks = [0.25, 0.5, 0.75, 1].map((p) => Math.round(max * p));
+      return [...new Set(marks)].filter((y) => y > 0);
+    });
+    const startY = await runtime.page.evaluate(() => window.scrollY);
+    for (const y of ladder.slice(0, 4)) {
+      await runtime.page.evaluate((top) => window.scrollTo(0, top), y);
+      await runtime.page.waitForTimeout(50);
+      try {
+        await runtime.page.evaluate(
+          () =>
+            new Promise((r) =>
+              requestAnimationFrame(() => requestAnimationFrame(r)),
+            ),
+        );
+      } catch {
+        /* ignore */
+      }
+      const scrollShot = join(
+        outDir,
+        "screenshots",
+        `state-${safe(stateId)}-${safe(viewport?.name || "vp")}-scroll-${y}.png`,
+      );
+      const scrollOk = await screenshotOrIssue(
+        runtime,
+        scrollShot,
+        issues,
+        "state-scroll-scan",
+        { fullPage: false },
+      );
+      if (scrollOk) {
+        evidence.push({
+          kind: "state_scroll_scan",
+          state_id: stateId,
+          viewport: viewport?.name || null,
+          scrollY: y,
+          screenshot: scrollShot,
+        });
+      }
+    }
+    await runtime.page.evaluate((top) => window.scrollTo(0, top), startY);
+  } catch {
+    // Scroll evidence is additive; a failure here must not kill the state walk.
+  }
   return ok ? shot : null;
 }
 
@@ -307,13 +463,17 @@ async function captureStateScreenshot(
 async function reenterQueuedState(runtime, queued, config, issues) {
   const restored = await restoreOrIssue(
     runtime,
-    { url: queued.entry.url, theme: queued.entry.theme },
+    {
+      url: queued.entry.url,
+      theme: queued.entry.theme,
+      locale: queued.entry.locale,
+    },
     issues,
     { severe: true },
   );
   if (!restored) return { ok: false, snapshot: await snapshot(runtime, config) };
   try {
-    for (const step of queued.path) await replayControl(runtime, step.control);
+    for (const step of queued.path) await replayControl(runtime, step);
   } catch (error) {
     issues.push(
       explorerIssue(
@@ -323,7 +483,7 @@ async function reenterQueuedState(runtime, queued, config, issues) {
         "The explorer could not replay the actions required to re-enter a queued SPA state.",
         {
           target_state_id: queued.snapshot.state.state_id,
-          path: queued.path.map((step) => step.control),
+          path: queued.path.map((step) => step.control || step),
           error: { name: error?.name, message: error?.message },
         },
       ),
@@ -341,7 +501,11 @@ async function reenterQueuedState(runtime, queued, config, issues) {
         {
           expected_state_id: queued.snapshot.state.state_id,
           actual_state_id: live.state.state_id,
-          path: queued.path.map((step) => step.control),
+          path: queued.path.map((step) => step.control || step),
+          signal_diff: diffSignals(
+            queued.snapshot.state.signals,
+            live.state.signals,
+          ),
         },
       ),
     );
@@ -374,9 +538,8 @@ function controlSignalChanged(
 }
 
 function alreadySatisfied(control) {
-  // Active plate / selected tab / pressed toggle: re-click is a documented no-op.
+  // Active plate / selected tab: re-click is a documented no-op.
   if (control.current === "true" || control.current === "page") return true;
-  if (control.pressed === "true" && control.role === "button") return false;
   return false;
 }
 
@@ -436,7 +599,11 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
       queue.push({
         snapshot: entry,
         depth: 0,
-        entry: { url: entry.url, theme: entry.theme },
+        entry: {
+          url: entry.url,
+          theme: entry.theme,
+          locale: entry.locale,
+        },
         path: [],
       });
       scanned.add(entry.state.state_id);
@@ -447,6 +614,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
         viewport,
         issues,
         evidence,
+        config,
       );
       issues.push(...(await runA11y(runtime.page)));
       issues.push(...(await runLayoutChecks(runtime.page, viewport)));
@@ -696,6 +864,15 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
             status: "skipped",
             skip_reason: "CONTROL_NOT_PRESENT",
             control,
+          });
+          continue;
+        }
+        if (liveControl.disabled === true) {
+          evidence.push({
+            action_id: id,
+            status: "skipped",
+            skip_reason: "DISABLED",
+            control: liveControl,
           });
           continue;
         }
@@ -1033,6 +1210,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
             viewport,
             issues,
             evidence,
+            config,
           );
           issues.push(...(await runA11y(runtime.page)));
           issues.push(...(await runLayoutChecks(runtime.page, viewport)));
@@ -1073,11 +1251,39 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           // input probes still produce evidence/findings, but do not fork the
           // BFS into state paths that require replaying form mutations.
           if (replayable) {
+            const afterControl = resolveLiveControl(after.controls, liveControl);
             queue.push({
               snapshot: after,
               depth: current.depth + 1,
               entry: queued.entry,
-              path: [...queued.path, { control: liveControl }],
+              path: [
+                ...queued.path,
+                {
+                  control: liveControl,
+                  effect: {
+                    pressed:
+                      afterControl?.pressed !== liveControl.pressed
+                        ? afterControl?.pressed ?? null
+                        : null,
+                    current:
+                      afterControl?.current !== liveControl.current
+                        ? afterControl?.current ?? null
+                        : null,
+                    valueState:
+                      afterControl?.valueState !== liveControl.valueState
+                        ? afterControl?.valueState ?? null
+                        : null,
+                    checked:
+                      afterControl?.checked !== liveControl.checked
+                        ? afterControl?.checked ?? null
+                        : null,
+                    afterName:
+                      afterControl?.name !== liveControl.name
+                        ? afterControl?.name ?? null
+                        : null,
+                  },
+                },
+              ],
             });
           }
         }
@@ -1085,7 +1291,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           // Reset every branch to the live node origin before the next sibling.
           await restoreOrIssue(
             runtime,
-            { url: live.url, theme: live.theme },
+            { url: live.url, theme: live.theme, locale: live.locale },
             issues,
           );
           // The restore reloaded the node origin: the live snapshot is the

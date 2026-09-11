@@ -6,6 +6,7 @@ import { dedupeIssues, verdictFor } from "../src/checks.mjs";
 import { classifyRisk, redact, resolveConfig } from "../src/config.mjs";
 import {
   buildState,
+  diffSignals,
   normalizeUrl,
   sameOrigin,
   scrubVolatile,
@@ -158,6 +159,7 @@ test("state identity is stable for volatile values and differs for UI changes", 
     controls: [{ role: "button", name: "Save" }],
     viewport: "desktop",
     theme: "light",
+    locale: "en",
   };
   const a = buildState({ ...common, aria: "- button Save" });
   const b = buildState({
@@ -172,10 +174,14 @@ test("state identity is stable for volatile values and differs for UI changes", 
     controls: [{ role: "button", name: "Save", pressed: "true" }],
     aria: "- button Save",
   });
+  const de = buildState({ ...common, locale: "de", aria: "- button Save" });
   assert.equal(a.state_id, b.state_id);
   assert.notEqual(a.state_id, c.state_id);
   assert.notEqual(a.state_id, dark.state_id);
   assert.notEqual(a.state_id, pressed.state_id);
+  assert.notEqual(a.state_id, de.state_id);
+  const diff = diffSignals(a.signals, de.signals);
+  assert.ok(diff.some((row) => row.field === "locale"));
 });
 
 test("runtime checks report only step deltas with matching severity", async () => {

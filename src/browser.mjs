@@ -91,7 +91,6 @@ export function probeEdgeValuesFor(control = {}) {
   const textLike =
     type === "search" ||
     type === "text" ||
-    type === "" ||
     type === "email" ||
     type === "url" ||
     type === "tel" ||
@@ -398,46 +397,125 @@ export class BrowserRuntime {
       .catch(() => "");
   }
 
+  /** Document language for state identity and SPA reentry. */
+  async localeSignal() {
+    return this.page
+      .evaluate(() => {
+        const root = document.documentElement;
+        return (
+          root.getAttribute("lang") ||
+          root.lang ||
+          root.getAttribute("xml:lang") ||
+          ""
+        );
+      })
+      .catch(() => "");
+  }
+
   /**
    * Re-enter an explored state before branching. URL is the primary key;
-   * optional theme is restored so localStorage-sticky themes cannot drift.
+   * optional theme/locale are restored so sticky document signals cannot drift.
    * Always navigate: an SPA can mutate its state without changing its URL.
    * Exception: sameTarget=true opts into a skip when the browser already
-   * sits on the exact URL+theme — used by the explore sibling loop, where
-   * the post-action restore just reloaded this node. Never pass sameTarget
-   * for state resets: the reload IS the reset for SPA mutations.
+   * sits on the exact URL+theme+locale — used by the explore sibling loop.
    */
-  async restoreState({ url, theme, sameTarget = false } = {}) {
+  async restoreState({ url, theme, locale, sameTarget = false } = {}) {
     if (url && sameTarget && this.page.url() === url) {
-      const current = await this.themeSignal();
-      if (!theme || current === theme) return;
+      const [currentTheme, currentLocale] = await Promise.all([
+        this.themeSignal(),
+        this.localeSignal(),
+      ]);
+      const themeOk = !theme || currentTheme === theme;
+      const localeOk = !locale || currentLocale === locale;
+      if (themeOk && localeOk) return;
     }
     if (url) await this.navigate(url);
-    if (theme) {
-      // Site-agnostic: mirror the theme onto the documented root signal and
-      // into whichever storage key already holds a theme token. Hard-coding
-      // one product's selectors would make restore silently wrong elsewhere.
-      await this.page
+    // Reload only when an existing locale-like storage value must be changed.
+    // Root `lang` alone may differ on ordinary pages; reloading those pages
+    // doubles every BFS branch without restoring application state.
+    const localeNeedsReload = Boolean(locale && url) &&
+      (await this.page
         .evaluate((value) => {
-          const root = document.documentElement;
-          root.dataset.theme = value;
-          root.style.colorScheme = value;
           try {
             for (let i = 0; i < localStorage.length; i++) {
-              const key = localStorage.key(i);
-              if (/^(light|dark|auto|system)$/i.test(localStorage.getItem(key)))
-                localStorage.setItem(key, value);
+              const key = localStorage.key(i) || "";
+              const current = localStorage.getItem(key) || "";
+              if (
+                /(locale|lang|language|i18n)/i.test(key) &&
+                /^[a-z]{2}([-_][a-zA-Z]{2})?$/.test(current) &&
+                current !== value
+              )
+                return true;
             }
           } catch {
             /* private mode */
           }
-          for (const el of document.querySelectorAll("[aria-pressed]")) {
-            const scheme = el.dataset.theme || el.dataset.setTheme;
-            if (scheme)
-              el.setAttribute("aria-pressed", String(scheme === value));
-          }
-        }, theme)
+          return false;
+        }, locale)
+        .catch(() => false));
+    if (theme || locale) {
+      // Site-agnostic: mirror documented root signals and storage keys that
+      // already hold theme/locale tokens. No product-specific key names.
+      await this.page
+        .evaluate(
+          ({ themeValue, localeValue }) => {
+            const root = document.documentElement;
+            if (themeValue) {
+              root.dataset.theme = themeValue;
+              root.style.colorScheme = themeValue;
+              try {
+                for (let i = 0; i < localStorage.length; i++) {
+                  const key = localStorage.key(i);
+                  if (
+                    /^(light|dark|auto|system)$/i.test(localStorage.getItem(key))
+                  )
+                    localStorage.setItem(key, themeValue);
+                }
+              } catch {
+                /* private mode */
+              }
+              for (const el of document.querySelectorAll("[aria-pressed]")) {
+                const scheme = el.dataset.theme || el.dataset.setTheme;
+                if (scheme)
+                  el.setAttribute(
+                    "aria-pressed",
+                    String(scheme === themeValue),
+                  );
+              }
+            }
+            if (localeValue) {
+              root.setAttribute("lang", localeValue);
+              root.lang = localeValue;
+              try {
+                for (let i = 0; i < localStorage.length; i++) {
+                  const key = localStorage.key(i);
+                  const val = localStorage.getItem(key);
+                  if (!val) continue;
+                  // Only rewrite short language-looking tokens already stored.
+                  if (/^[a-z]{2}([-_][a-zA-Z]{2})?$/.test(val))
+                    localStorage.setItem(key, localeValue);
+                }
+              } catch {
+                /* private mode */
+              }
+            }
+          },
+          { themeValue: theme || null, localeValue: locale || null },
+        )
         .catch(() => {});
+      // Locale often drives an SPA's first render from storage. Persist it,
+      // then reload once so application code (not a guessed selector) applies
+      // its own translation/toggle state before replay.
+      if (localeNeedsReload && url) await this.navigate(url);
+      if (locale) {
+        await this.page
+          .evaluate((value) => {
+            const root = document.documentElement;
+            root.setAttribute("lang", value);
+            root.lang = value;
+          }, locale)
+          .catch(() => {});
+      }
       await this.waitForStableState({
         frames: this.stableFrames,
         gap: this.stableGap,
@@ -449,9 +527,9 @@ export class BrowserRuntime {
    * Inventory interactive controls via the accessibility tree, not CSS.
    * Returns a stable, ranked, deduplicated list with semantic locators.
    */
-  async inventory() {
+  async inventory({ includeDisabled = false } = {}) {
     const raw = await this.page
-      .evaluate((roles) => {
+      .evaluate(({ roles, includeDisabled: includeDisabledControls }) => {
         const visible = (el) => {
           const r = el.getBoundingClientRect();
           if (r.width < 2 || r.height < 2) return false;
@@ -508,7 +586,10 @@ export class BrowserRuntime {
         for (const el of nodes) {
           const role = roleOf(el);
           if (!roles.includes(role)) continue;
-          if (el.disabled) continue;
+          // Keep disabled controls in inventory so SPA replay can resolve a
+          // toggle that flipped label/disabled state (e.g. DE → EN).
+          const disabled = Boolean(el.disabled) || el.getAttribute("aria-disabled") === "true";
+          if (disabled && !includeDisabledControls) continue;
           if (!visible(el)) continue;
           const r = el.getBoundingClientRect();
           out.push({
@@ -527,6 +608,7 @@ export class BrowserRuntime {
             max: el.getAttribute("max"),
             maxLength: el.getAttribute("maxlength"),
             pattern: el.getAttribute("pattern"),
+            disabled,
             valueState:
               "value" in el && typeof el.value === "string"
                 ? el.value === ""
@@ -554,7 +636,7 @@ export class BrowserRuntime {
           });
         }
         return out;
-      }, SEMANTIC_ROLES)
+      }, { roles: SEMANTIC_ROLES, includeDisabled })
       .catch(() => []);
 
     // Deduplicate identical component instances: keep at most 2 per signature.

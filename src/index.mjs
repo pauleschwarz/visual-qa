@@ -36,4 +36,10 @@ export { applyHarnessReview, prepareHarnessReview } from "./review.mjs";
 export { runSlopChecks } from "./slop.mjs";
 export { runSecurityChecks } from "./security.mjs";
 export { runVisionReview } from "./vision.mjs";
-export { buildState, foldAria, normalizeUrl, scrubVolatile } from "./state.mjs";
+export {
+  buildState,
+  diffSignals,
+  foldAria,
+  normalizeUrl,
+  scrubVolatile,
+} from "./state.mjs";

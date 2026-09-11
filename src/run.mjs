@@ -39,13 +39,22 @@ export async function run(input = {}) {
 
   // Phase 1: deterministic exploration (a11y, layout, runtime, slop,
   // security, intent baseline).
-  const report = await explore({ ...input, intentChecks });
+  const report = await explore({
+    ...input,
+    visionEvidence: true,
+    intentChecks,
+  });
   const phases = { run_id: runId };
 
   // Phase 2: vision review. Additive by contract: findings can extend the
   // report, never remove or downgrade deterministic results, and severity is
   // capped at medium so vision alone cannot flip a verdict to FAIL.
+  //
+  // Vision is REQUIRED for a complete ship gate. Skipping because no key /
+  // no calls / no pairs / endpoint error marks coverage incomplete and emits
+  // an explicit high finding — silent "looks green without eyes" is forbidden.
   let visionIssues = [];
+  let visionCoverageGap = false;
   try {
     const vision = await runVisionReview({ report, config });
     visionIssues = vision.issues || [];
@@ -55,9 +64,46 @@ export async function run(input = {}) {
       completed: vision.completed ?? 0,
       issues: visionIssues.length,
     };
+    const status = String(vision.status || "");
+    if (
+      status.startsWith("skipped_") ||
+      status.startsWith("error") ||
+      (Number(vision.attempted || 0) === 0 &&
+        Number(config?.bounds?.max_agent_calls || 0) < 1)
+    ) {
+      visionCoverageGap = true;
+      visionIssues = dedupeIssues([
+        ...visionIssues,
+        {
+          issue_id: "vqa-vision-required-unavailable",
+          type: "vqa-vision",
+          title: "Vision review unavailable",
+          severity: "high",
+          detail:
+            "No vision model completed a review for this run. Layout/slop defects that only a model can see are unproven. Provide a vision endpoint (VQA_VISION_*) or complete harness review-apply, or pass prepareReview with applied answers.",
+          evidence: redact({
+            status: vision.status,
+            attempted: vision.attempted ?? 0,
+            completed: vision.completed ?? 0,
+            max_agent_calls: config?.bounds?.max_agent_calls ?? 0,
+            hint: "set VQA_VISION_API_KEY + max_agent_calls>0, or finish harness review",
+          }),
+        },
+      ]);
+    }
   } catch (error) {
-    // A broken vision endpoint degrades the review, never the run.
+    visionCoverageGap = true;
     phases.vision = { status: `error: ${error.message}`, issues: 0 };
+    visionIssues = [
+      {
+        issue_id: "vqa-vision-required-unavailable",
+        type: "vqa-vision",
+        title: "Vision review unavailable",
+        severity: "high",
+        detail: `Vision review threw: ${error.message}`,
+        evidence: redact({ error: String(error.message || error) }),
+      },
+    ];
   }
 
   // Phase 3: verified source changes. Whitelisted autofixes and explicit
@@ -155,14 +201,20 @@ export async function run(input = {}) {
         ])
       : report.issues;
   const issues = dedupeIssues([...deterministicIssues, ...visionIssues]);
-  const verdict = verdictFor({ issues, complete: authoritative.complete });
+  const complete = Boolean(authoritative.complete) && !visionCoverageGap;
+  const verdict = verdictFor({ issues, complete });
 
   const result = {
     ...report,
     run_id: runId,
     verdict,
-    complete: authoritative.complete,
-    coverage: authoritative.coverage,
+    complete,
+    coverage: {
+      ...(authoritative.coverage || report.coverage || {}),
+      vision_required: true,
+      vision_complete: !visionCoverageGap,
+      vision_status: phases.vision?.status ?? null,
+    },
     issues,
     evidence: authoritative.evidence,
     states: authoritative.states ?? report.states,

@@ -98,6 +98,26 @@ export function foldAria(snapshot, { maxDepth = 6, maxSiblings = 3 } = {}) {
 }
 
 /**
+ * Structured diff of two state.signals objects. Restore-mismatch evidence
+ * needs field names, not only two opaque hashes.
+ */
+export function diffSignals(expected = {}, actual = {}) {
+  const keys = [...new Set([...Object.keys(expected), ...Object.keys(actual)])].sort();
+  const changed = [];
+  for (const key of keys) {
+    const a = expected[key];
+    const b = actual[key];
+    if (JSON.stringify(a) === JSON.stringify(b)) continue;
+    changed.push({
+      field: key,
+      expected: a,
+      actual: b,
+    });
+  }
+  return changed;
+}
+
+/**
  * Build the state fingerprint. Signals are deliberately explicit so a diff of
  * two state records tells you *why* they were considered different.
  */
@@ -110,11 +130,13 @@ export function buildState({
   dialogOpen,
   viewport,
   theme = "",
+  locale = "",
 }) {
   const signals = {
     route: normalizeUrl(url, baseUrl),
     dialog: dialogOpen ? "open" : "closed",
     theme: scrubVolatile(theme || "") || "default",
+    locale: scrubVolatile(locale || "") || "und",
     viewport: viewport || "desktop",
     headings_count: (headings || []).length,
     headings: (headings || []).slice(0, 12).map(scrubVolatile),
@@ -145,6 +167,6 @@ export function buildState({
     .update(JSON.stringify(signals))
     .digest("hex")
     .slice(0, 12);
-  const label = `${signals.route}${dialogOpen ? "#dialog" : ""}:${signals.theme}:${signals.viewport}`;
+  const label = `${signals.route}${dialogOpen ? "#dialog" : ""}:${signals.theme}:${signals.locale}:${signals.viewport}`;
   return { state_id: `${label}@${id}`, label, signals };
 }

@@ -234,6 +234,9 @@ export function resolveConfig(input = {}) {
     // After every `run`, export harness vision tasks unless the caller opts out.
     // explore() never prepares — only the full run pipeline does.
     prepareReview: input.prepareReview !== false,
+    // Full run() enables scroll ladder screenshots for mandatory vision review.
+    // explore() remains the deterministic core and keeps its documented budget.
+    visionEvidence: input.visionEvidence === true,
     // Parsed intents are supplied by the run pipeline (see intent.mjs);
     // explore only verifies them against computed styles, it never parses
     // raw instruction strings itself.

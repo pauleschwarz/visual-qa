@@ -45,6 +45,11 @@ test("run pipeline applies verified fixes and aggregates report.md", async () =>
     assert.ok(report.phases.fix?.applied?.length >= 1, "title/lang fixes applied");
     assert.ok(report.phases.verify, "verify phase ran");
     assert.equal(report.phases.vision.status, "skipped_no_calls");
+    assert.equal(report.coverage?.vision_complete, false);
+    assert.ok(
+      report.issues.some((i) => i.issue_id === "vqa-vision-required-unavailable"),
+      "missing vision must be an explicit finding, not silent skip",
+    );
     assert.ok(
       !report.issues.some((i) => i.evidence?.rule === "document-title"),
       "document-title issue cleared after fix",
@@ -331,6 +336,10 @@ test("run pipeline without fixDir plans nothing and stays deterministic-only", a
     assert.equal(report.phases.fix, undefined);
     assert.equal(report.phases.verify, undefined);
     assert.equal(report.phases.vision.status, "skipped_no_calls");
+    assert.equal(report.coverage?.vision_complete, false);
+    assert.ok(
+      report.issues.some((i) => i.issue_id === "vqa-vision-required-unavailable"),
+    );
     assert.ok(report.issues.length > 0, "failures still reported");
   } finally {
     if (previousKey === undefined) delete process.env.VQA_VISION_API_KEY;

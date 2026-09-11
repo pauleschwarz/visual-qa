@@ -80,12 +80,69 @@ export async function runLayoutChecks(page, viewport) {
   let findings;
   try {
     findings = await page.evaluate(() => {
+      // Shared visibility gate for layout/touch/name probes. Zero-size rects
+      // alone are not enough: visibility:hidden skip-links keep a layout box
+      // and would otherwise look like tiny touch targets.
+      const isActuallyVisible = (el) => {
+        if (!(el instanceof Element)) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width < 0.5 || r.height < 0.5) return false;
+        if (r.bottom <= 0 && r.top <= 0 && r.right <= 0 && r.left <= 0) {
+          // fully collapsed off origin with no box — still check styles
+        }
+        let opacity = 1;
+        for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+          const cs = getComputedStyle(n);
+          if (cs.display === "none" || cs.visibility === "hidden") return false;
+          if (cs.pointerEvents === "none" && n === el) return false;
+          opacity *= Number(cs.opacity);
+          if (opacity < 0.05) return false;
+        }
+        // Off-screen / clipped out of the layout viewport is not operable.
+        const vw = window.innerWidth;
+        const vh = Math.max(
+          window.innerHeight,
+          document.documentElement.clientHeight,
+        );
+        if (r.right < -1 || r.bottom < -1 || r.left > vw + 1 || r.top > vh + 1)
+          return false;
+        try {
+          const points = [
+            [r.left + r.width / 2, r.top + r.height / 2],
+            [r.left + 1, r.top + 1],
+            [r.right - 1, r.bottom - 1],
+          ];
+          const hit = points.some(([x, y]) => {
+            if (x < 0 || y < 0 || x > vw || y > vh) return false;
+            const top = document.elementFromPoint(x, y);
+            return top === el || (top && el.contains(top)) || (top && top.contains?.(el));
+          });
+          // If every sample is outside the viewport, treat as not visible.
+          const anyInView = points.some(
+            ([x, y]) => x >= 0 && y >= 0 && x <= vw && y <= vh,
+          );
+          if (anyInView && !hit) {
+            // Covered by another layer or clipped — still count if opacity ok
+            // only when the element itself participates in hit-testing.
+            const cs = getComputedStyle(el);
+            if (cs.pointerEvents === "none") return false;
+          }
+        } catch {
+          /* elementFromPoint can throw on detached nodes */
+        }
+        return true;
+      };
+      const labelOf = (el) =>
+        (el.textContent || el.getAttribute("aria-label") || "")
+          .trim()
+          .slice(0, 80);
       const root = document.documentElement;
       const overflow = root.scrollWidth > root.clientWidth + 1;
       const clipped = [
         ...document.querySelectorAll("button,a,input,select,textarea,[role]"),
       ]
         .filter((el) => {
+          if (!isActuallyVisible(el)) return false;
           const r = el.getBoundingClientRect();
           return (
             r.right > window.innerWidth + 1 ||
@@ -96,9 +153,7 @@ export async function runLayoutChecks(page, viewport) {
         .slice(0, 10)
         .map((el) => ({
           tag: el.tagName,
-          text: (el.textContent || el.getAttribute("aria-label") || "")
-            .trim()
-            .slice(0, 80),
+          text: labelOf(el),
         }));
       const smallTargets = [
         ...document.querySelectorAll(
@@ -106,15 +161,14 @@ export async function runLayoutChecks(page, viewport) {
         ),
       ]
         .filter((el) => {
+          if (!isActuallyVisible(el)) return false;
           const r = el.getBoundingClientRect();
           return r.width > 0 && r.height > 0 && (r.width < 24 || r.height < 24);
         })
         .slice(0, 10)
         .map((el) => ({
           tag: el.tagName,
-          text: (el.textContent || el.getAttribute("aria-label") || "")
-            .trim()
-            .slice(0, 80),
+          text: labelOf(el),
         }));
       const missingNames = [
         ...document.querySelectorAll(
@@ -123,6 +177,7 @@ export async function runLayoutChecks(page, viewport) {
       ]
         .filter(
           (el) =>
+            isActuallyVisible(el) &&
             !el.getAttribute("aria-label") &&
             !el.textContent?.trim() &&
             !el.getAttribute("placeholder") &&
@@ -229,6 +284,12 @@ export async function runScrollChecks(page, viewport, { samples = 12 } = {}) {
         }
       const blank = [];
       const step = max / Math.max(1, steps);
+      const vh = window.innerHeight;
+      const vw = window.innerWidth;
+      const viewportArea = Math.max(1, vh * vw);
+      // Media / controls count as content even when text is sparse (photo grids).
+      const contentSelector =
+        "img,svg,canvas,video,picture,input,select,textarea,button,a,[role=button],[role=link],[role=img],main,article,[data-testid]";
       for (let n = 0; n <= steps; n++) {
         const y = Math.round(n * step);
         window.scrollTo(0, y);
@@ -252,11 +313,11 @@ export async function runScrollChecks(page, viewport, { samples = 12 } = {}) {
           let opacity = 1;
           let chrome = false;
           for (
-            let n = el;
-            n && n !== document.documentElement;
-            n = n.parentElement
+            let nodeEl = el;
+            nodeEl && nodeEl !== document.documentElement;
+            nodeEl = nodeEl.parentElement
           ) {
-            const cs = getComputedStyle(n);
+            const cs = getComputedStyle(nodeEl);
             opacity *= Number(cs.opacity);
             if (cs.position === "fixed" || cs.position === "sticky")
               chrome = true;
@@ -269,11 +330,70 @@ export async function runScrollChecks(page, viewport, { samples = 12 } = {}) {
           if (r.right <= 0 || r.left >= window.innerWidth) continue;
           chars += text.length;
         }
-        if (chars < 40) blank.push({ scrollY: y, chars });
+        let contentArea = 0;
+        let contentNodes = 0;
+        for (const el of document.querySelectorAll(contentSelector)) {
+          const cs = getComputedStyle(el);
+          if (cs.display === "none" || cs.visibility === "hidden") continue;
+          let opacity = 1;
+          let chrome = false;
+          for (
+            let nodeEl = el;
+            nodeEl && nodeEl !== document.documentElement;
+            nodeEl = nodeEl.parentElement
+          ) {
+            const pcs = getComputedStyle(nodeEl);
+            opacity *= Number(pcs.opacity);
+            if (pcs.position === "fixed" || pcs.position === "sticky")
+              chrome = true;
+          }
+          if (chrome || opacity < 0.15) continue;
+          const r = el.getBoundingClientRect();
+          const top = Math.max(0, r.top);
+          const bottom = Math.min(vh, r.bottom);
+          const left = Math.max(0, r.left);
+          const right = Math.min(vw, r.right);
+          const w = right - left;
+          const h = bottom - top;
+          if (w < 2 || h < 2) continue;
+          contentArea += w * h;
+          contentNodes += 1;
+        }
+        const coverage = Math.min(1, contentArea / viewportArea);
+        // Empty only when BOTH readable text and geometric content are sparse.
+        if (chars < 40 && coverage < 0.08 && contentNodes < 2)
+          blank.push({
+            scrollY: y,
+            chars,
+            coverage: Number(coverage.toFixed(3)),
+            contentNodes,
+          });
       }
+      // Require a contiguous run so a single sparse sample mid-page is noise.
+      const runs = [];
+      let run = [];
+      for (const sample of blank) {
+        if (
+          run.length &&
+          sample.scrollY - run[run.length - 1].scrollY > step * 1.5 + 1
+        ) {
+          if (run.length >= 2) runs.push(...run);
+          run = [];
+        }
+        run.push(sample);
+      }
+      if (run.length >= 2) runs.push(...run);
+      // Short pages: a single terminal sample is still a real blank gap when
+      // the page can scroll at least ~one viewport and that sample is empty.
+      const reported =
+        runs.length > 0
+          ? runs
+          : max >= vh * 0.9 && blank.length
+            ? blank.slice(0, 1)
+            : [];
       window.scrollTo(0, start);
       return {
-        blank: blank.slice(0, 10),
+        blank: reported.slice(0, 10),
         overlaps: overlaps.slice(0, 10),
         max,
       };

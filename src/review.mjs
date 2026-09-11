@@ -87,7 +87,11 @@ export async function prepareHarnessReview(
   // maxPairs continues to bound action-transition pairs only.
   const seenStates = new Set();
   const statePairs = evidence
-    .filter((entry) => entry?.kind === "state_scan" && entry.screenshot)
+    .filter(
+      (entry) =>
+        (entry?.kind === "state_scan" || entry?.kind === "state_scroll_scan") &&
+        entry.screenshot,
+    )
     .filter((entry) => {
       const path = portableEvidencePath(entry.screenshot);
       if (!path || seenStates.has(path)) return false;

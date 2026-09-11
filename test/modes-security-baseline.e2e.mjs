@@ -294,3 +294,70 @@ test("changed mode walks only the declared targets", async () => {
     await rm(outDir, { recursive: true, force: true });
   }
 });
+
+test("language toggle replay resolves renamed disabled control", async () => {
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Lang toggle</title></head>
+<body>
+<h1 id="title">Hello</h1>
+<button id="lang" data-testid="lang-toggle">DE</button>
+<button id="next">Open panel</button>
+<dialog id="panel"><p id="result">closed</p><button id="close">Close</button></dialog>
+<script>
+const lang=document.getElementById('lang');
+const root=document.documentElement;
+const applyLocale=(locale)=>{
+  root.lang=locale;
+  const toDe=locale==='de';
+  lang.textContent=toDe?'EN':'DE';
+  lang.disabled=toDe;
+  document.getElementById('title').textContent=toDe?'Hallo':'Hello';
+};
+applyLocale(localStorage.getItem('locale')||'en');
+lang.onclick=()=>{
+  const locale=root.lang!=='de'?'de':'en';
+  localStorage.setItem('locale',locale);
+  applyLocale(locale);
+};
+document.getElementById('next').onclick=()=>document.getElementById('panel').showModal();
+document.getElementById('close').onclick=()=>document.getElementById('panel').close();
+</script>
+</body></html>`;
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(html);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const outDir = await mkdtemp(`${tmpdir()}/vqa-lang-toggle-`);
+  try {
+    const report = await explore({
+      baseUrl: `http://127.0.0.1:${port}/`,
+      outDir,
+      viewports: [{ name: "desktop", width: 1280, height: 800 }],
+      bounds: {
+        max_states: 10,
+        max_depth: 4,
+        max_actions_per_state: 6,
+        max_total_actions: 24,
+        max_runtime_ms: 60_000,
+      },
+    });
+    assert.ok(
+      !report.issues.some(
+        (issue) =>
+          issue.title === "State identity restore mismatch" ||
+          issue.title === "State action path replay failed",
+      ),
+      "language toggle must not break SPA path replay",
+    );
+    assert.ok(
+      report.states.some((s) => (s.signals?.locale || "").startsWith("de")) ||
+        report.evidence.some((e) => e.control?.id === "lang"),
+      "locale change or lang control must be observed",
+    );
+  } finally {
+    server.close();
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
