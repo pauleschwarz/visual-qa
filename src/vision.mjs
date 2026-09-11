@@ -13,24 +13,24 @@ import { redact } from "./config.mjs";
 export const SKILLS = {
   layout: {
     focus:
-      "Broken layout: overlapping, clipped or off-screen elements, collapsed containers, misaligned grids, horizontal overflow.",
+      "Broken layout: overlapping, clipped or off-screen elements, collapsed containers, misaligned grids/columns, uneven gutters, stuck sticky chrome, horizontal overflow, dead empty bands that waste the viewport, content trapped under fixed headers/footers.",
   },
   readability: {
     focus:
-      "Readability: text too small or low contrast, unreadable text over images, cramped spacing, truncated labels, missing focus states.",
+      "Readability & hierarchy: text too small or low contrast, weak heading ladder, unreadable text over images/gradients, cramped or uneven spacing, truncated labels, missing or invisible focus states, icons that replace labels without meaning, controls that look disabled but are active (or reverse).",
   },
   slop: {
     focus:
-      "AI slop: placeholder copy, lorem ipsum, scaffold defaults, emoji soup, generic marketing filler, inconsistent tone.",
+      "AI/template slop a harsh direct observer would call cheap or fake: purple/pink/blue rainbow or mesh gradients, AI purple glow, glassmorphism/neon overuse, stock-photo chrome, emoji-as-UI, lorem/placeholder/TODO copy, fake-SaaS fluff (supercharge, seamless, AI-powered, unlock the power), generic Inter+gradient CTA+three identical feature cards, center-stacked marketing blocks without product voice, decorative noise that forces attention instead of guiding it.",
   },
   consistency: {
     focus:
-      "Consistency: mixed fonts or button styles, inconsistent spacing, conflicting colors, mismatched icon sets, dead or duplicated controls.",
+      "System consistency: mixed font families or ad-hoc type sizes, button styles that do not share one system, random radii/shadows, conflicting accent colors, mismatched icon sets, duplicated or dead controls, spacing that jumps off any scale, light/dark or density breaks inside one surface.",
   },
 };
 
 const SHARED_CONTRACT =
-  'You are a visual QA reviewer. You see two screenshots of one user action (before, after). Report ONLY visible UI defects in your focus area. Ignore animations/carets. Reply with JSON ONLY: {"findings":[{"title":string,"severity":"high"|"medium"|"low","detail":string}]}. Empty findings array if the action looks fine.';
+  'You are a harsh direct-observer visual QA reviewer for a product UI (app or website). You see screenshot evidence of one situation (before/after of an action, or the same state including scrolled viewports). Report ONLY defects you can see. Prefer specificity over politeness: if it looks AI-slop, template-cheap, misaligned, or aesthetically broken, say so with concrete visual evidence. Do not invent bugs. Ignore pure animation/caret flicker. Severity: high = clearly broken or embarrassing in production; medium = sloppy/incoherent; low = polish. Reply with JSON ONLY: {"findings":[{"title":string,"severity":"high"|"medium"|"low","detail":string}]}. Empty findings array only if the situation truly looks intentional and clean.';
 
 export function skillPrompt(skill) {
   if (!SKILLS[skill]) throw new Error(`Unknown vision skill "${skill}"`);

@@ -89,8 +89,8 @@ do not alone flip FAIL). Missing vision is different: it blocks completeness.
 
 **Option A — endpoint.** With `VQA_VISION_API_KEY` and `--max-agent-calls N`,
 the runtime dispatches screenshot pairs (incl. scroll ladder shots) to four
-review skills (layout, readability, slop, consistency) against any
-OpenAI-compatible endpoint.
+harsh direct-observer skills (layout, readability/hierarchy, AI/template slop,
+system consistency) against any OpenAI-compatible endpoint.
 
 **Option B — your harness's own model.** No key, no endpoint: the calling
 agent's own vision model does the review.

@@ -48,6 +48,21 @@ const FINDINGS_RESPONSE = {
   ],
 };
 
+test("vision skill prompts demand harsh direct-observer slop critique", async () => {
+  const { skillPrompt, SKILLS } = await import("../src/vision.mjs");
+  assert.deepEqual(Object.keys(SKILLS).sort(), [
+    "consistency",
+    "layout",
+    "readability",
+    "slop",
+  ]);
+  const slop = skillPrompt("slop");
+  assert.match(slop, /harsh direct-observer/i);
+  assert.match(slop, /purple|mesh|glassmorphism|supercharge|feature cards/i);
+  assert.match(skillPrompt("layout"), /dead empty bands|sticky/i);
+  assert.match(skillPrompt("consistency"), /spacing that jumps|font families/i);
+});
+
 test("vision review dispatches one call per skill and caps severity", async () => {
   const dir = await mkdtemp(`${tmpdir()}/vqa-vision-`);
   const before = await pngFile(dir, "before.png");

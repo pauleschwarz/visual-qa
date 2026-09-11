@@ -245,3 +245,58 @@ test("deterministic slop checks catch gradient glow glass and multi-accent chrom
     await browser.close();
   }
 });
+
+test("deterministic slop checks catch marketing fluff type chaos and template cards", async () => {
+  const browser = await chromium.launch();
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  try {
+    await page.setContent(`<!doctype html><html><head>
+      <title>Acme</title><meta name="description" content="product">
+      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400&family=Comic+Neue&family=Papyrus&display=swap" rel="stylesheet">
+      <style>
+        body{margin:0;font-family:Inter,sans-serif}
+        .hero{width:100%;height:200px;background-image:linear-gradient(120deg,#7c3aed,#ec4899,#3b82f6);text-align:center;padding:40px}
+        .grid{display:flex;gap:16px;padding:24px}
+        .card{width:220px;height:160px;border-radius:12px;background:#fff;box-shadow:0 2px 8px #0002;padding:16px}
+        .t1{font-family:"Comic Neue",cursive;font-size:11px;margin-top:5px}
+        .t2{font-family:Papyrus,fantasy;font-size:13px;margin-top:7px}
+        .t3{font-size:15px;margin-top:9px}
+        .t4{font-size:17px;margin-top:11px}
+        .t5{font-size:19px;margin-top:14px}
+        .t6{font-size:22px;margin-top:18px}
+        .t7{font-size:28px;margin-top:23px}
+        .r1{border-radius:4px}.r2{border-radius:9px}.r3{border-radius:14px}.r4{border-radius:22px}.r5{border-radius:31px}
+      </style></head>
+      <body>
+        <section class="hero">
+          <h1 class="t7">Supercharge your workflow</h1>
+          <p class="t6">Unlock the power of our AI-powered platform</p>
+          <a href="#">Get started now</a>
+        </section>
+        <div class="grid">
+          <div class="card r1"><h2 class="t5">One</h2><p class="t1">Seamless delight</p></div>
+          <div class="card r2"><h2 class="t4">Two</h2><p class="t2">Cutting-edge</p></div>
+          <div class="card r3"><h2 class="t3">Three</h2><p class="t3">Next-gen</p></div>
+        </div>
+        <p class="t1 r4">a</p><p class="t2 r5">b</p><p class="t3">c</p><p class="t4">d</p>
+        <p class="t5">e</p><p class="t6">f</p><p class="t7">g</p>
+      </body></html>`);
+    const issues = await runSlopChecks(page, { viewport: { name: "desktop" } });
+    const titles = new Set(issues.map((issue) => issue.title));
+    assert.ok(
+      titles.has("Fake-SaaS / AI marketing fluff copy"),
+      [...titles].join(" | "),
+    );
+    assert.ok(
+      titles.has("Too many font families") || titles.has("Type scale is chaotic"),
+      [...titles].join(" | "),
+    );
+    assert.ok(
+      titles.has("Generic template feature-card chrome") ||
+        titles.has("Gradient soup / mesh-style chrome"),
+      [...titles].join(" | "),
+    );
+  } finally {
+    await browser.close();
+  }
+});

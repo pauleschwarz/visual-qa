@@ -10,7 +10,7 @@ Runs unattended. You still own the verdict and product judgment.
 [![CI](https://github.com/pauleschwarz/visual-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/pauleschwarz/visual-qa/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-0f766e.svg)](LICENSE)
 
-Status: **v0.2.0**. Not on npm yet — install from Git. **Chromium
+Status: **v0.2.1**. Not on npm yet — install from Git. **Chromium
 only.** Node >= 20. macOS/Linux tested; Windows untested. CLI flags may change
 before 1.0. Always run `npx playwright install chromium` once per machine.
 

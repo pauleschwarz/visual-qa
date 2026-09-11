@@ -13,7 +13,10 @@ const SCAFFOLD_TITLES = new Set([
   "New Tab",
 ]);
 const PLACEHOLDER_RE =
-  /\b(?:TODO|TBD|FIXME|XXX)\b|placeholder text|your text here|coming soon/gi;
+  /\b(?:TODO|TBD|FIXME|XXX)\b|placeholder text|your text here|coming soon|lorem ipsum|dolor sit amet|consectetur adipiscing|sample text|dummy text|click here|learn more(?!\s+about)|get started now/gi;
+// Fake-SaaS / AI-template marketing fluff that almost never belongs in product UI.
+const MARKETING_FLOFF_RE =
+  /\b(?:supercharge|revolutionize|unlock the power|next-?gen(?:eration)?|seamless(?:ly)?|cutting-?edge|game-?chang(?:er|ing)|one-?stop shop|all-in-one platform|ai-powered|powered by ai|delight(?:ful)? experience|world-?class|best-in-class|transform your|elevate your|reimagine|disrupt(?:ive|ion)?|synerg(?:y|ies)|holistic approach|leverage our|empower(?:ing)? (?:your|teams?)|10x your)\b/gi;
 const EMOJI_RE =
   /[\u{1f300}-\u{1faff}\u{2600}-\u{27bf}\u{fe0f}\u{2764}]/gu;
 
@@ -123,11 +126,84 @@ export async function runSlopChecks(page, { viewport } = {}) {
         const glassNodes = [];
         const accentColors = new Set();
         const stockLikeImages = [];
+        const fontFamilies = new Set();
+        const fontSizes = new Map();
+        const radiusBuckets = new Map();
+        const marginGaps = new Map();
+        const centeredCardBlocks = [];
+        let featureCardPattern = 0;
         const nodes = [...document.querySelectorAll("*")].slice(0, 3_000);
         for (const el of nodes) {
           if (!visible(el)) continue;
           const style = getComputedStyle(el);
           const box = el.getBoundingClientRect();
+          // Type + chrome rhythm samples (body text and controls only).
+          const tag = el.tagName.toLowerCase();
+          if (
+            ["p", "li", "span", "a", "button", "label", "h1", "h2", "h3", "h4"].includes(
+              tag,
+            ) ||
+            el.getAttribute("role") === "button"
+          ) {
+            const family = (style.fontFamily || "")
+              .split(",")[0]
+              .replace(/["']/g, "")
+              .trim()
+              .toLowerCase();
+            if (family) fontFamilies.add(family);
+            const size = Math.round(Number.parseFloat(style.fontSize) || 0);
+            if (size >= 10 && size <= 72) {
+              fontSizes.set(size, (fontSizes.get(size) || 0) + 1);
+            }
+            const radius = Math.round(Number.parseFloat(style.borderRadius) || 0);
+            if (radius > 0 && radius <= 64 && box.width * box.height >= 400) {
+              radiusBuckets.set(radius, (radiusBuckets.get(radius) || 0) + 1);
+            }
+            const mt = Math.round(Number.parseFloat(style.marginTop) || 0);
+            if (mt >= 4 && mt <= 96) {
+              marginGaps.set(mt, (marginGaps.get(mt) || 0) + 1);
+            }
+          }
+          // Template "3 equal feature cards" heuristic: same-sized card children.
+          if (
+            (tag === "section" || tag === "div" || tag === "ul") &&
+            el.children.length >= 3 &&
+            el.children.length <= 6
+          ) {
+            const kids = [...el.children].filter(visible);
+            if (kids.length >= 3) {
+              const widths = kids.map((c) => Math.round(c.getBoundingClientRect().width));
+              const heights = kids.map((c) => Math.round(c.getBoundingClientRect().height));
+              const w0 = widths[0];
+              const h0 = heights[0];
+              const uniform =
+                widths.every((w) => Math.abs(w - w0) <= 8) &&
+                heights.every((h) => Math.abs(h - h0) <= 12) &&
+                w0 >= 140 &&
+                h0 >= 80;
+              if (uniform) featureCardPattern += 1;
+            }
+          }
+          // Centered marketing block with long uppercase-ish CTA density.
+          if (
+            (tag === "section" || tag === "div" || tag === "header") &&
+            box.width >= viewportWidth * 0.5 &&
+            box.height >= 120
+          ) {
+            const textAlign = style.textAlign;
+            const buttons = [...el.querySelectorAll("button, a")].filter(visible);
+            if (
+              (textAlign === "center" || style.justifyContent === "center") &&
+              buttons.length >= 1 &&
+              buttons.length <= 3
+            ) {
+              centeredCardBlocks.push({
+                tag,
+                id: el.id || null,
+                buttons: buttons.length,
+              });
+            }
+          }
           const backgroundImage = style.backgroundImage || "";
           const gradientLayers = (backgroundImage.match(
             /(?:linear|radial|conic)-gradient\(/gi,
@@ -212,6 +288,24 @@ export async function runSlopChecks(page, { viewport } = {}) {
           glassNodes: glassNodes.slice(0, 8),
           accentColors: [...accentColors].slice(0, 12),
           stockLikeImages: stockLikeImages.slice(0, 5),
+          fontFamilies: [...fontFamilies].slice(0, 8),
+          fontSizeCount: fontSizes.size,
+          fontSizes: [...fontSizes.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 10)
+            .map(([size, count]) => ({ size, count })),
+          radiusCount: radiusBuckets.size,
+          radii: [...radiusBuckets.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 8)
+            .map(([radius, count]) => ({ radius, count })),
+          marginGapCount: marginGaps.size,
+          marginGaps: [...marginGaps.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 10)
+            .map(([gap, count]) => ({ gap, count })),
+          featureCardPattern,
+          centeredCardBlocks: centeredCardBlocks.slice(0, 6),
         };
       })(),
     }));
@@ -267,6 +361,21 @@ export async function runSlopChecks(page, { viewport } = {}) {
         "medium",
         "Placeholder markers appear in visible text or headings.",
         { matches: placeholderMatches },
+        viewport,
+      ),
+    );
+  }
+
+  const marketingMatches = [
+    ...new Set(copy.match(MARKETING_FLOFF_RE) ?? []),
+  ].slice(0, 6);
+  if (marketingMatches.length >= 2) {
+    issues.push(
+      makeIssue(
+        "Fake-SaaS / AI marketing fluff copy",
+        "medium",
+        "Product UI copy leans on generic template marketing phrases a careful reviewer would reject.",
+        { matches: marketingMatches },
         viewport,
       ),
     );
@@ -397,5 +506,83 @@ export async function runSlopChecks(page, { viewport } = {}) {
     );
   }
 
-  return issues.slice(0, 12);
+  if ((visual.fontFamilies?.length ?? 0) > 2) {
+    issues.push(
+      makeIssue(
+        "Too many font families",
+        "medium",
+        "Visible text uses more than two primary font families — type system looks accidental.",
+        { families: visual.fontFamilies },
+        viewport,
+      ),
+    );
+  }
+
+  if ((visual.fontSizeCount ?? 0) >= 7) {
+    issues.push(
+      makeIssue(
+        "Type scale is chaotic",
+        "medium",
+        "Seven or more distinct font sizes appear in body/chrome text; hierarchy reads as random rather than designed.",
+        { sizes: visual.fontSizes },
+        viewport,
+      ),
+    );
+  }
+
+  if ((visual.radiusCount ?? 0) >= 5) {
+    issues.push(
+      makeIssue(
+        "Inconsistent corner radii",
+        "low",
+        "Five or more distinct border-radius values on visible chrome; cards/controls do not share one system.",
+        { radii: visual.radii },
+        viewport,
+      ),
+    );
+  }
+
+  if ((visual.marginGapCount ?? 0) >= 8) {
+    issues.push(
+      makeIssue(
+        "Spacing rhythm is irregular",
+        "medium",
+        "Eight or more distinct margin-top gaps on text/controls; spacing looks hand-tweaked, not on a scale.",
+        { gaps: visual.marginGaps },
+        viewport,
+      ),
+    );
+  }
+
+  if ((visual.featureCardPattern ?? 0) >= 1 && (visual.gradientNodes?.length ?? 0) >= 1) {
+    issues.push(
+      makeIssue(
+        "Generic template feature-card chrome",
+        "medium",
+        "Uniform equal-sized feature cards sit with gradient chrome — classic AI/template landing pattern without product voice.",
+        {
+          feature_card_groups: visual.featureCardPattern,
+          gradients: visual.gradientNodes?.length ?? 0,
+        },
+        viewport,
+      ),
+    );
+  }
+
+  if ((visual.centeredCardBlocks?.length ?? 0) >= 3 && marketingMatches.length >= 1) {
+    issues.push(
+      makeIssue(
+        "Centered marketing blocks without product specificity",
+        "low",
+        "Multiple large centered CTA blocks plus fluff phrases — looks like a stock SaaS landing, not this product.",
+        {
+          blocks: visual.centeredCardBlocks,
+          fluff: marketingMatches,
+        },
+        viewport,
+      ),
+    );
+  }
+
+  return issues.slice(0, 18);
 }

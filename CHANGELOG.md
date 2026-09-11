@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.1 — 2026-09-11
+
+### Direct-observer aesthetics
+- Deterministic slop expands beyond gradients/glow/glass:
+  fake-SaaS marketing fluff, type-family soup, chaotic type scale, irregular
+  spacing rhythm, inconsistent radii, generic equal feature-card + gradient
+  template chrome, centered marketing blocks with fluff.
+- Vision skill prompts rewritten as harsh direct-observer critics (layout,
+  readability/hierarchy, AI/template slop, system consistency), including
+  scroll situations and empty/dead viewport bands.
+- Higher finding budget for deterministic slop (18).
+
 ## 0.2.0 — 2026-09-11
 
 ### Ship gate
