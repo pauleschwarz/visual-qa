@@ -75,16 +75,22 @@ visual-qa intent --fix-dir ./app \
 `--json` returns `{ ok, results: [{ intent, parsed, found, file, reason }] }`.
 Use it before a real run to validate what the agent is about to ask for.
 
-## Vision review (default on `run`)
+## Vision review (required on `run`)
 
-Deterministic and offline by default. `visual-qa run` exports harness vision
-tasks automatically into `.qa/vision/requests.json` after the walk (opt out
-with `--no-prepare-review`). Two ways to answer them, both additive and
-capped at `medium` (they flag, they never gate):
+`visual-qa run` is fail-closed on vision. After the deterministic walk it
+exports harness tasks to `.qa/vision/requests.json` (opt out of *export* with
+`--no-prepare-review`; that does **not** make the run complete). Without either
+a completed built-in vision pass or `review-apply`, the report sets
+`coverage.vision_complete=false`, `complete=false`, and adds high finding
+`vqa-vision-required-unavailable`.
 
-**Option A — endpoint.** With `VQA_VISION_API_KEY` and `--max-agent-calls
-N`, the runtime dispatches screenshot pairs to four review skills (layout,
-readability, slop, consistency) against any OpenAI-compatible endpoint.
+Vision findings stay additive and severity-capped at `medium` (they flag; they
+do not alone flip FAIL). Missing vision is different: it blocks completeness.
+
+**Option A — endpoint.** With `VQA_VISION_API_KEY` and `--max-agent-calls N`,
+the runtime dispatches screenshot pairs (incl. scroll ladder shots) to four
+review skills (layout, readability, slop, consistency) against any
+OpenAI-compatible endpoint.
 
 **Option B — your harness's own model.** No key, no endpoint: the calling
 agent's own vision model does the review.

@@ -1,6 +1,6 @@
 {
   "name": "@pauleschwarz/visual-qa",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Bounded browser QA for web apps: explore, find, fix, and prove with portable evidence.",
   "type": "module",
   "license": "MIT",
@@ -33,6 +33,7 @@
     "schemas",
     "docs/README.md",
     "docs/harness.md",
+    "CHANGELOG.md",
     "CONTRIBUTING.md",
     "README.md",
     "LICENSE"

@@ -10,7 +10,7 @@ Runs unattended. You still own the verdict and product judgment.
 [![CI](https://github.com/pauleschwarz/visual-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/pauleschwarz/visual-qa/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-0f766e.svg)](LICENSE)
 
-Status: **v0.1.0 pre-release**. Not on npm yet — install from Git. **Chromium
+Status: **v0.2.0**. Not on npm yet — install from Git. **Chromium
 only.** Node >= 20. macOS/Linux tested; Windows untested. CLI flags may change
 before 1.0. Always run `npx playwright install chromium` once per machine.
 
@@ -68,9 +68,13 @@ actions, 15 minutes. Learn with
 `--max-states 8 --max-actions 24 --max-runtime-ms 60000`.
 
 - `--format junit` → CI
+- **Vision is required for a complete `run`.** Without a vision endpoint or a
+  finished harness `review-apply`, the report stays `COVERAGE_INCOMPLETE` and
+  emits finding `vqa-vision-required-unavailable`. Silent green without eyes is
+  forbidden. `demo` / bare `explore` stay deterministic-only.
 - `review-prepare` / `review-apply` → your harness vision model (human/agent
   in the loop for visual judgment)
-- `--max-agent-calls N` → optional built-in vision (needs `VQA_VISION_*`)
+- `--max-agent-calls N` → built-in vision (needs `VQA_VISION_*`)
 - `--autofix verified --fix-dir ./app` → prove title/lang/contrast only
 - `--intent 'ändere die Farbe von "Add item" auf grün'` → verified visual
   change (DE or EN)
@@ -89,10 +93,10 @@ actions, 15 minutes. Learn with
 
 | Verdict | Meaning |
 | --- | --- |
-| `PASS` | Explored completely, zero blocking findings |
+| `PASS` | Explored completely, zero blocking findings, **and** vision review completed |
 | `FAIL` | Findings exist |
 | `UNPROVEN` | Clean surface, but only low-severity notes — not a ship gate pass |
-| `COVERAGE_INCOMPLETE` | Bounded budget stopped the walk — **never** a pass; raise bounds and re-run |
+| `COVERAGE_INCOMPLETE` | Bounded budget stopped the walk **or** vision review missing — **never** a pass |
 
 ## Exit codes
 

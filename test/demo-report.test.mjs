@@ -45,15 +45,15 @@ test("demo explores the bundled fixture and finds seeded defects", async () => {
   );
 });
 
-test("default deterministic demo is a bounded smoke run", async () => {
+test("default deterministic demo completes the seeded walk as FAIL", async () => {
   const outDir = await mkdtemp(`${tmpdir()}/vqa-demo-default-`);
   const started = Date.now();
   const report = await demo({ outDir });
-  assert.equal(report.verdict, "COVERAGE_INCOMPLETE");
-  assert.equal(report.complete, false);
-  assert.equal(report.coverage?.limit_reason, "max_states");
+  assert.equal(report.verdict, "FAIL");
+  assert.equal(report.complete, true);
+  assert.equal(report.coverage?.limit_reason, null);
   assert.ok(report.issues.length >= 3, "seeded defects found");
-  assert.ok(Date.now() - started < 30_000, "demo stays a fast smoke run");
+  assert.ok(Date.now() - started < 180_000, "demo finishes under CI wall (3 min)");
 });
 
 test("summarizeReport gives agents a small actionable contract", () => {

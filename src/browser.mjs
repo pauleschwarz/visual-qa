@@ -560,12 +560,25 @@ export class BrowserRuntime {
           }
           return "generic";
         };
-        const nameOf = (el) =>
-          (
+        const nameOf = (el) => {
+          const labelledBy = (el.getAttribute("aria-labelledby") || "")
+            .split(/\s+/)
+            .filter(Boolean)
+            .map((id) => document.getElementById(id)?.textContent || "")
+            .join(" ")
+            .trim();
+          // Solo-style rating radios: empty button + sibling <span id> label.
+          let siblingLabel = "";
+          if (!labelledBy) {
+            const next = el.nextElementSibling;
+            if (next && /^(SPAN|LABEL|P|DIV)$/i.test(next.tagName)) {
+              siblingLabel = (next.textContent || "").trim();
+            }
+          }
+          return (
             el.getAttribute("aria-label") ||
-            (el.getAttribute("aria-labelledby") &&
-              document.getElementById(el.getAttribute("aria-labelledby"))
-                ?.textContent) ||
+            labelledBy ||
+            siblingLabel ||
             el.labels?.[0]?.textContent ||
             el.getAttribute("placeholder") ||
             el.getAttribute("alt") ||
@@ -576,6 +589,7 @@ export class BrowserRuntime {
           )
             .trim()
             .slice(0, 80);
+        };
 
         const nodes = [
           ...document.querySelectorAll(

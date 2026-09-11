@@ -2,25 +2,28 @@
 //
 // First-run contract: complete the seeded fixture as FAIL (not
 // COVERAGE_INCOMPLETE) in under two minutes on typical hardware.
+// Demo is explore-only: vision ship-gate rules apply to `run`, not demo.
 
 import { createServer } from "node:http";
 import { explore } from "./explore.mjs";
 import { DEMO_HTML } from "./demo-html.mjs";
 
-// Sized as fast deterministic smoke coverage. Full visual proof belongs to
-// run() with mandatory vision review; demo intentionally never claims it.
+// Sized to the fixture graph: enough room to hit seeded defects, small
+// enough that wall-clock stays under ~90s with the walker defaults.
 const DEMO_BOUNDS = {
-  max_states: 4,
-  max_depth: 3,
-  max_actions_per_state: 8,
-  max_total_actions: 20,
-  max_runtime_ms: 60_000,
+  max_states: 16,
+  max_depth: 4,
+  max_actions_per_state: 14,
+  max_total_actions: 80,
+  // Explore-only smoke: seeded FAIL must finish under CI's 180s wall, with
+  // headroom for slower runners after scroll/edge-input work landed.
+  max_runtime_ms: 150_000,
 };
 
 /**
  * Serve the demo fixture on a random localhost port and explore it.
- * Defaults to mobile: defect-richest viewport. Expect seeded findings and
- * COVERAGE_INCOMPLETE: demo is smoke coverage, never a ship verdict.
+ * Defaults to mobile: defect-richest viewport. Expect verdict FAIL with
+ * seeded findings when the walk completes inside the budget.
  * `overrides` exist for tests.
  */
 export async function demo({

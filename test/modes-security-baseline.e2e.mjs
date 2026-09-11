@@ -295,6 +295,50 @@ test("changed mode walks only the declared targets", async () => {
   }
 });
 
+test("inventory resolves multi-id aria-labelledby and sibling radio labels", async () => {
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Names</title></head>
+<body>
+  <h1>Names</h1>
+  <div role="radiogroup" aria-label="Fit-out">
+    <button type="button" role="radio" aria-checked="false" aria-labelledby="lbl-high" id="r-high"></button>
+    <span id="lbl-high">High</span>
+    <button type="button" role="radio" aria-checked="false" id="r-simple"></button>
+    <span>Simple</span>
+  </div>
+  <button type="button" aria-labelledby="a b" id="multi">x</button>
+  <span id="a">Save</span>
+  <span id="b">draft</span>
+</body></html>`;
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(html);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const { BrowserRuntime } = await import("../src/browser.mjs");
+  const runtime = new BrowserRuntime({
+    baseUrl: `http://127.0.0.1:${port}/`,
+    outDir: await mkdtemp(`${tmpdir()}/vqa-names-`),
+    viewport: { name: "desktop", width: 1280, height: 800 },
+    trace: false,
+  });
+  try {
+    await runtime.start();
+    await runtime.navigate(`http://127.0.0.1:${port}/`);
+    const items = await runtime.inventory({ includeDisabled: true });
+    const byId = Object.fromEntries(
+      items.filter((c) => c.id).map((c) => [c.id, c.name]),
+    );
+    assert.equal(byId["r-high"], "High");
+    assert.equal(byId["r-simple"], "Simple");
+    assert.equal(byId.multi, "Save draft");
+  } finally {
+    await runtime.stop().catch(() => {});
+    server.close();
+  }
+});
+
 test("language toggle replay resolves renamed disabled control", async () => {
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Lang toggle</title></head>
