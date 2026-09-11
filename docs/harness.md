@@ -87,10 +87,17 @@ a completed built-in vision pass or `review-apply`, the report sets
 Vision findings stay additive and severity-capped at `medium` (they flag; they
 do not alone flip FAIL). Missing vision is different: it blocks completeness.
 
-**Option A — endpoint.** With `VQA_VISION_API_KEY` and `--max-agent-calls N`,
-the runtime dispatches screenshot pairs (incl. scroll ladder shots) to four
-harsh direct-observer skills (layout, readability/hierarchy, AI/template slop,
-system consistency) against any OpenAI-compatible endpoint.
+**Option A — endpoint (OmniRoute / OpenAI-compatible).** Auth via
+`VQA_VISION_API_KEY` or `OPENAI_API_KEY` (OmniRoute local bus) or
+`OMNIROUTE_API_KEY`. Endpoint via `VQA_VISION_ENDPOINT` or `OPENAI_BASE_URL`
+(default OmniRoute: `http://127.0.0.1:20128/v1`). With a key present, `run`
+auto-arms a vision budget (override with `--max-agent-calls N`, opt out with
+`VQA_VISION_DISABLE=1`). Models: `VQA_VISION_MODELS` (comma list) or auto-
+discover multimodal ids from `GET /models`. Screenshots (state scans, scroll
+ladder, action before/after) go round-robin across **five** harsh
+direct-observer skills — layout, readability/hierarchy, **color/contrast**,
+AI/template slop, system consistency — so color defects and multi-model
+disagreement both surface.
 
 **Option B — your harness's own model.** No key, no endpoint: the calling
 agent's own vision model does the review.

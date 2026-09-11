@@ -10,7 +10,7 @@ Runs unattended. You still own the verdict and product judgment.
 [![CI](https://github.com/pauleschwarz/visual-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/pauleschwarz/visual-qa/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-0f766e.svg)](LICENSE)
 
-Status: **v0.2.1**. Not on npm yet — install from Git. **Chromium
+Status: **v0.2.2**. Not on npm yet — install from Git. **Chromium
 only.** Node >= 20. macOS/Linux tested; Windows untested. CLI flags may change
 before 1.0. Always run `npx playwright install chromium` once per machine.
 
@@ -74,7 +74,7 @@ actions, 15 minutes. Learn with
   forbidden. `demo` / bare `explore` stay deterministic-only.
 - `review-prepare` / `review-apply` → your harness vision model (human/agent
   in the loop for visual judgment)
-- `--max-agent-calls N` → built-in vision (needs `VQA_VISION_*`)
+- `--max-agent-calls N` → built-in multi-model vision (`OPENAI_*` / OmniRoute or `VQA_VISION_*`)
 - `--autofix verified --fix-dir ./app` → prove title/lang/contrast only
 - `--intent 'ändere die Farbe von "Add item" auf grün'` → verified visual
   change (DE or EN)
@@ -172,7 +172,7 @@ before clicks; types into editable comboboxes (typeahead); writes
 before / mid / after frames for every observed action; and writes one
 full-page image for every newly scanned state. `run` auto-exports harness
 vision tasks. Review requests distribute image pairs across layout,
-readability, slop, and consistency critics. Apply accepted findings, fix via the
+readability, color, slop, and consistency critics. Apply accepted findings, fix via the
 repo workflow, then rerun until coverage is complete and the ship gate passes.
 `DESIGN.md` is the project style authority; Impeccable and visual-qa complement
 it with source-level and rendered-browser evidence.
@@ -180,7 +180,13 @@ it with source-level and rendered-browser evidence.
 Optional vision without baking a vendor into the CLI:
 
 ```sh
-# after run, or re-export:
+# OmniRoute local bus (auto-discovers multimodal models when VQA_VISION_MODELS unset):
+export OPENAI_BASE_URL=http://127.0.0.1:20128/v1
+export OPENAI_API_KEY=…   # same key OmniRoute expects
+# optional pin: export VQA_VISION_MODELS=auto/best-vision,auto/pro-vision,smart,worker
+visual-qa run --url http://127.0.0.1:3000 --out .qa
+
+# or harness-owned model:
 visual-qa review-prepare .qa
 # hand images + system prompts to your model → findings.json
 visual-qa review-apply .qa findings.json

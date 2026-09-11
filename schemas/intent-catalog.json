@@ -5,7 +5,7 @@
   "run_flow": [
     "explore (deterministic BFS per viewport; expectation oracle; screenshots)",
     "checks (a11y incl. axe violations AND unverifiable contrast nodes, layout, scroll, runtime, slop, security when isolated, intent baseline)",
-    "vision (deterministic orchestrator dispatches screenshot pairs to skills: layout, readability, slop, consistency; additive-only, severity capped at medium)",
+    "vision (deterministic orchestrator dispatches screenshot pairs to skills: layout, readability, color, slop, consistency; additive-only, severity capped at medium)",
     "intent (parse instruction -> patch fix-dir sources -> verify against live computed style)",
     "fix (whitelisted autofixes -> patch fix-dir sources)",
     "verify (ONE fresh complete exploration proves every patch; an incomplete verify run proves nothing)",

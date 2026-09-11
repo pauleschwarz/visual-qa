@@ -6,6 +6,31 @@ import { join } from "node:path";
 import test from "node:test";
 import { run } from "../src/run.mjs";
 
+function silenceVisionEnv() {
+  const previous = {
+    VQA_VISION_API_KEY: process.env.VQA_VISION_API_KEY,
+    VQA_VISION_ENDPOINT: process.env.VQA_VISION_ENDPOINT,
+    VQA_VISION_MODELS: process.env.VQA_VISION_MODELS,
+    VQA_VISION_DISABLE: process.env.VQA_VISION_DISABLE,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
+    OMNIROUTE_API_KEY: process.env.OMNIROUTE_API_KEY,
+  };
+  delete process.env.VQA_VISION_API_KEY;
+  delete process.env.VQA_VISION_ENDPOINT;
+  delete process.env.VQA_VISION_MODELS;
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_BASE_URL;
+  delete process.env.OMNIROUTE_API_KEY;
+  process.env.VQA_VISION_DISABLE = "1";
+  return () => {
+    for (const [k, v] of Object.entries(previous)) {
+      if (v == null) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+}
+
 const BROKEN_HTML =
   '<!doctype html>\n<html>\n<head><meta charset="utf-8"></head>\n<body><h1>Demo app</h1><button id="inc">Increment</button><p id="count">0</p><script>let n=0;inc.onclick=()=>{n++;count.textContent=String(n)};</script></body></html>\n';
 
@@ -23,8 +48,7 @@ test("run pipeline applies verified fixes and aggregates report.md", async () =>
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
   const outDir = await mkdtemp(`${tmpdir()}/vqa-pipeline-out-`);
-  const previousKey = process.env.VQA_VISION_API_KEY;
-  delete process.env.VQA_VISION_API_KEY;
+  const restoreVision = silenceVisionEnv();
 
   try {
     const report = await run({
@@ -44,7 +68,7 @@ test("run pipeline applies verified fixes and aggregates report.md", async () =>
 
     assert.ok(report.phases.fix?.applied?.length >= 1, "title/lang fixes applied");
     assert.ok(report.phases.verify, "verify phase ran");
-    assert.equal(report.phases.vision.status, "skipped_no_calls");
+    assert.equal(report.phases.vision.status, "skipped_disabled");
     assert.equal(report.coverage?.vision_complete, false);
     assert.ok(
       report.issues.some((i) => i.issue_id === "vqa-vision-required-unavailable"),
@@ -64,8 +88,7 @@ test("run pipeline applies verified fixes and aggregates report.md", async () =>
     const markdown = await readFile(join(outDir, "report.md"), "utf8");
     assert.match(markdown, /\*\*Verdict:\*\* `/);
   } finally {
-    if (previousKey === undefined) delete process.env.VQA_VISION_API_KEY;
-    else process.env.VQA_VISION_API_KEY = previousKey;
+    restoreVision();
     server.close();
     await rm(appDir, { recursive: true, force: true });
   }
@@ -318,8 +341,7 @@ test("run pipeline without fixDir plans nothing and stays deterministic-only", a
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
   const outDir = await mkdtemp(`${tmpdir()}/vqa-pipeline-nofix-`);
-  const previousKey = process.env.VQA_VISION_API_KEY;
-  delete process.env.VQA_VISION_API_KEY;
+  const restoreVision = silenceVisionEnv();
   try {
     const report = await run({
       baseUrl: `http://127.0.0.1:${port}/`,
@@ -335,15 +357,14 @@ test("run pipeline without fixDir plans nothing and stays deterministic-only", a
     });
     assert.equal(report.phases.fix, undefined);
     assert.equal(report.phases.verify, undefined);
-    assert.equal(report.phases.vision.status, "skipped_no_calls");
+    assert.equal(report.phases.vision.status, "skipped_disabled");
     assert.equal(report.coverage?.vision_complete, false);
     assert.ok(
       report.issues.some((i) => i.issue_id === "vqa-vision-required-unavailable"),
     );
     assert.ok(report.issues.length > 0, "failures still reported");
   } finally {
-    if (previousKey === undefined) delete process.env.VQA_VISION_API_KEY;
-    else process.env.VQA_VISION_API_KEY = previousKey;
+    restoreVision();
     server.close();
   }
 });

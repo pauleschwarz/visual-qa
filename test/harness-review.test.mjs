@@ -35,13 +35,13 @@ test("prepare exports pairs x skill requests with prompts and ids", async () => 
   const dir = await mkdtemp(`${tmpdir()}/vqa-hprep-`);
   const report = fakeReport([PAIR("state1:button:Save::0"), PAIR("state2:link:Home::1")]);
   const { file, requests } = await prepareHarnessReview(report, dir, { maxPairs: 2 });
-  // 2 pairs x 4 skills
-  assert.equal(requests, 8);
+  // 2 pairs x 5 skills
+  assert.equal(requests, 10);
   const written = JSON.parse(await readFile(file, "utf8"));
   assert.equal(written.run_id, "abc12345");
   assert.match(written.contract, /review-apply/);
   const skills = new Set(written.requests.map((r) => r.skill));
-  assert.deepEqual([...skills].sort(), ["consistency", "layout", "readability", "slop"]);
+  assert.deepEqual([...skills].sort(), ["color", "consistency", "layout", "readability", "slop"]);
   for (const request of written.requests) {
     assert.ok(request.id.startsWith("abc12345-"));
     assert.match(request.system, /visual QA reviewer/);
@@ -75,12 +75,12 @@ test("prepare includes every state scan plus bounded action pairs", async () => 
   const { file, requests } = await prepareHarnessReview(report, dir, {
     maxPairs: 1,
   });
-  assert.equal(requests, 12, "2 states + 1 action, each across 4 skills");
+  assert.equal(requests, 15, "2 states + 1 action, each across 5 skills");
   const written = JSON.parse(await readFile(file, "utf8"));
   const stateRequests = written.requests.filter(
     (request) => request.context.kind === "state_scan",
   );
-  assert.equal(stateRequests.length, 8);
+  assert.equal(stateRequests.length, 10);
   assert.ok(stateRequests.every((request) => request.before === request.after));
   assert.deepEqual(
     [...new Set(stateRequests.map((request) => request.state_id))].sort(),

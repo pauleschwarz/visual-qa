@@ -63,13 +63,17 @@ export async function run(input = {}) {
       attempted: vision.attempted ?? 0,
       completed: vision.completed ?? 0,
       issues: visionIssues.length,
+      models: vision.models || [],
     };
     const status = String(vision.status || "");
     if (
       status.startsWith("skipped_") ||
       status.startsWith("error") ||
       (Number(vision.attempted || 0) === 0 &&
-        Number(config?.bounds?.max_agent_calls || 0) < 1)
+        Number(config?.bounds?.max_agent_calls || 0) < 1 &&
+        !process.env.VQA_VISION_API_KEY &&
+        !process.env.OPENAI_API_KEY &&
+        !process.env.OMNIROUTE_API_KEY)
     ) {
       visionCoverageGap = true;
       visionIssues = dedupeIssues([
@@ -80,13 +84,14 @@ export async function run(input = {}) {
           title: "Vision review unavailable",
           severity: "high",
           detail:
-            "No vision model completed a review for this run. Layout/slop defects that only a model can see are unproven. Provide a vision endpoint (VQA_VISION_*) or complete harness review-apply, or pass prepareReview with applied answers.",
+            "No vision model completed a review for this run. Layout/slop/color defects that only a model can see are unproven. Provide OmniRoute/OpenAI-compatible vision (OPENAI_BASE_URL + OPENAI_API_KEY, or VQA_VISION_*), optionally VQA_VISION_MODELS, or finish harness review-apply.",
           evidence: redact({
             status: vision.status,
             attempted: vision.attempted ?? 0,
             completed: vision.completed ?? 0,
             max_agent_calls: config?.bounds?.max_agent_calls ?? 0,
-            hint: "set VQA_VISION_API_KEY + max_agent_calls>0, or finish harness review",
+            models: vision.models || [],
+            hint: "OmniRoute: OPENAI_BASE_URL=http://127.0.0.1:20128/v1 OPENAI_API_KEY=… VQA_VISION_MODELS=smart,worker",
           }),
         },
       ]);

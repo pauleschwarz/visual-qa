@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.2 — 2026-09-11
+
+### Multi-model vision (OmniRoute)
+- Vision transport resolves `VQA_VISION_*` then `OPENAI_BASE_URL`/`OPENAI_API_KEY`
+  (OmniRoute :20128) then `OMNIROUTE_API_KEY`.
+- With a key present, `run` auto-arms a vision budget (`VQA_VISION_MAX_CALLS`,
+  default 24; opt out `VQA_VISION_DISABLE=1`).
+- Discovers multimodal models via `GET /models` or pin with `VQA_VISION_MODELS`.
+- Jobs = (state scan + scroll ladder + action pairs) × 5 skills, round-robin
+  across all available vision models.
+- New **color** skill (contrast, multi-accent, neon, gray-on-gray, status colors).
+- Dispatch log at `.qa/vision/dispatch.json`.
+
 ## 0.2.1 — 2026-09-11
 
 ### Direct-observer aesthetics
