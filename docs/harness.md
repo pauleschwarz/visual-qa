@@ -87,30 +87,27 @@ a completed built-in vision pass or `review-apply`, the report sets
 Vision findings stay additive and severity-capped at `medium` (they flag; they
 do not alone flip FAIL). Missing vision is different: it blocks completeness.
 
-**Option A — endpoint (OmniRoute / OpenAI-compatible).** Auth via
-`VQA_VISION_API_KEY` or `OPENAI_API_KEY` (OmniRoute local bus) or
-`OMNIROUTE_API_KEY`. Endpoint via `VQA_VISION_ENDPOINT` or `OPENAI_BASE_URL`
-(default OmniRoute: `http://127.0.0.1:20128/v1`). With a key present, `run`
-auto-arms a vision budget (override with `--max-agent-calls N`, opt out with
-`VQA_VISION_DISABLE=1`). Models: `VQA_VISION_MODELS` (comma list) or auto-
-discover multimodal ids from `GET /models`. Screenshots (state scans, scroll
-ladder, action before/after) go round-robin across **five** harsh
-direct-observer skills — layout, readability/hierarchy, **color/contrast**,
-AI/template slop, system consistency — so color defects and multi-model
-disagreement both surface.
-
-**Option B — your harness's own model.** No key, no endpoint: the calling
-agent's own vision model does the review.
+**Option B — DEFAULT: calling agent / subagents (no key).** After `run`,
+`.qa/vision/` already has `plan.md`, `plan.json`, and `batches/batch-XX.json`.
+The parent agent spawns one short-lived reviewer per batch (same model family,
+e.g. `smart`): open batch → vision-read `before_abs`/`after_abs` → JSON findings
+→ exit. Parent merges into `vision/findings.json` and runs `review-apply`.
+Open → review → close. No OmniRoute key required.
 
 ```sh
 visual-qa run --url http://127.0.0.1:3000 --out .qa
-# requests already at .qa/vision/requests.json — or re-export:
-visual-qa review-prepare .qa --max-pairs 6
-# -> .qa/vision/requests.json  (pairs x skills, each with system prompt + image paths)
-# your harness answers each request with its own vision model:
-#   {"results": [{"id": "...", "skill": "layout", "findings": [{"title","severity","detail"}]}]}
-visual-qa review-apply .qa findings.json
+# or re-export:
+visual-qa review-prepare .qa --max-pairs 6 --batch-size 4
+# -> .qa/vision/plan.md + batches/batch-01.json …
+# spawn N subagents (smart), merge results, then:
+visual-qa review-apply .qa .qa/vision/findings.json
 ```
+
+**Option A — optional endpoint (OmniRoute / OpenAI-compatible).** For unattended
+CI only. Auth via `VQA_VISION_API_KEY` or `OPENAI_API_KEY` or `OMNIROUTE_API_KEY`.
+Endpoint via `VQA_VISION_ENDPOINT` or `OPENAI_BASE_URL`. Auto-arms budget when a
+key is present (`VQA_VISION_DISABLE=1` to opt out). Models via `VQA_VISION_MODELS`
+or `GET /models`. Same five skills, round-robin across models.
 
 Apply validates the answers, caps `high` at `medium`, records request ids
 (re-applying is a no-op, retries cannot duplicate), recomputes the verdict,

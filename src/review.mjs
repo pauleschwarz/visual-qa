@@ -74,7 +74,7 @@ export function reviewRequestsDir(outDir) {
 export async function prepareHarnessReview(
   report,
   outDir,
-  { maxPairs = 6 } = {},
+  { maxPairs = 6, batchSize: batchSizeOpt } = {},
 ) {
   const evidence = Array.isArray(report?.evidence) ? report.evidence : [];
   const actionPairs = evidence
@@ -127,21 +127,155 @@ export async function prepareHarnessReview(
   }
   const dir = reviewRequestsDir(outDir);
   await mkdir(dir, { recursive: true }).catch(() => {});
+  const batchesDir = join(dir, "batches");
+  await mkdir(batchesDir, { recursive: true }).catch(() => {});
+
+  // Default vision path: calling agent spawns short-lived reviewers (e.g.
+  // smart subagents), one batch each — open, judge screenshots, close.
+  // No API key required. Endpoint mode is optional.
+  const batchSize = Math.max(
+    1,
+    Number(
+      batchSizeOpt ?? process.env.VQA_VISION_BATCH_SIZE ?? 4,
+    ) || 4,
+  );
+  const batches = chunkRequests(requests, batchSize).map((chunk, index) => {
+    const id = `batch-${String(index + 1).padStart(2, "0")}`;
+    const skills = [...new Set(chunk.map((r) => r.skill))];
+    return {
+      id,
+      index: index + 1,
+      skills,
+      requests: chunk.map((request) => ({
+        ...request,
+        // Absolute paths help agent tools that cannot resolve relative out-dir.
+        before_abs: join(outDir, request.before),
+        after_abs: join(outDir, request.after),
+      })),
+    };
+  });
+
+  for (const batch of batches) {
+    await writeFile(
+      join(batchesDir, `${batch.id}.json`),
+      `${JSON.stringify(
+        {
+          run_id: report.run_id || null,
+          batch_id: batch.id,
+          contract: SUBAGENT_BATCH_CONTRACT,
+          requests: batch.requests,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  }
+
+  const plan = {
+    run_id: report.run_id || null,
+    mode: "harness-subagent",
+    out_dir: outDir,
+    requests_file: "vision/requests.json",
+    findings_file: "vision/findings.json",
+    apply_command: `visual-qa review-apply ${outDir} ${join(outDir, "vision", "findings.json")}`,
+    batch_size: batchSize,
+    batch_count: batches.length,
+    request_count: requests.length,
+    skills: Object.keys(SKILLS),
+    batches: batches.map((batch) => ({
+      id: batch.id,
+      file: `vision/batches/${batch.id}.json`,
+      request_count: batch.requests.length,
+      skills: batch.skills,
+      model_hint: "same as caller (e.g. smart) or any multimodal reviewer",
+    })),
+    contract: HARNESS_PLAN_CONTRACT,
+  };
+
+  await writeFile(
+    join(dir, "plan.json"),
+    `${JSON.stringify(plan, null, 2)}\n`,
+  );
+  await writeFile(join(dir, "plan.md"), renderHarnessPlanMarkdown(plan, outDir));
+
   const file = join(dir, "requests.json");
   await writeFile(
     file,
     `${JSON.stringify(
       {
         run_id: report.run_id || null,
-        contract:
-          'Answer each request with your own vision model as {"id": string, "findings": [{"title": string, "severity": "high"|"medium"|"low", "detail": string}]}. Collect all answers into one JSON file {"results": [...]} and run: visual-qa review-apply <dir> <findings.json>',
+        contract: HARNESS_PLAN_CONTRACT,
+        plan_file: "vision/plan.md",
+        batches_dir: "vision/batches",
+        batch_count: batches.length,
         requests,
       },
       null,
       2,
     )}\n`,
   );
-  return { file, requests: requests.length };
+  return {
+    file,
+    requests: requests.length,
+    batches: batches.length,
+    planFile: join(dir, "plan.md"),
+  };
+}
+
+const HARNESS_PLAN_CONTRACT =
+  "DEFAULT vision path (no API key): the agent that launched visual-qa spawns short-lived subagents (same model family, e.g. smart). Each subagent opens one vision/batches/batch-XX.json, reads before_abs/after_abs screenshots with vision, answers every request as {id, findings:[{title,severity,detail}]}, then exits. Parent merges all answers into vision/findings.json as {results:[...]} and runs visual-qa review-apply. Open → review → close. Optional endpoint mode (OPENAI_*/VQA_VISION_*) is only for unattended CI.";
+
+const SUBAGENT_BATCH_CONTRACT =
+  'You are a harsh direct-observer visual QA reviewer. For EACH request: load before_abs and after_abs images, obey the request.system prompt and skill focus, report only defects you can see. Reply with JSON only: {"results":[{"id":"<request.id>","skill":"<request.skill>","findings":[{"title":string,"severity":"high"|"medium"|"low","detail":string}]}]}. Empty findings only if the situation truly looks intentional and clean. Then exit.';
+
+function chunkRequests(requests, size) {
+  const out = [];
+  for (let i = 0; i < requests.length; i += size) {
+    out.push(requests.slice(i, i + size));
+  }
+  return out;
+}
+
+function renderHarnessPlanMarkdown(plan, outDir) {
+  const lines = [
+    `# visual-qa harness vision plan`,
+    ``,
+    `Mode: **harness-subagent** (default). No API key required.`,
+    ``,
+    `Out dir: \`${outDir}\``,
+    `Requests: **${plan.request_count}** in **${plan.batch_count}** batches (size ${plan.batch_size}).`,
+    `Skills: ${plan.skills.join(", ")}`,
+    ``,
+    `## Parent agent steps`,
+    ``,
+    `1. Spawn one short-lived subagent per batch below (model: same as you / smart).`,
+    `2. Each child: open its batch JSON → vision-read screenshots → write findings for that batch → exit.`,
+    `3. Merge every child \`results\` array into \`${plan.findings_file}\` as \`{"results":[...]}\`.`,
+    `4. Run: \`${plan.apply_command}\``,
+    `5. Read \`report.json\` verdict / \`coverage.vision_complete\`.`,
+    ``,
+    `## Batches`,
+    ``,
+  ];
+  for (const batch of plan.batches) {
+    lines.push(
+      `- **${batch.id}** · ${batch.request_count} requests · skills: ${batch.skills.join(", ")} · \`${batch.file}\``,
+    );
+  }
+  lines.push(
+    ``,
+    `## Child prompt (copy)`,
+    ``,
+    "```",
+    SUBAGENT_BATCH_CONTRACT,
+    "Batch file: <absolute path to batch-XX.json>",
+    "Return only the JSON object with results for every request id in the batch.",
+    "```",
+    ``,
+    plan.contract,
+    ``,
+  );
+  return `${lines.join("\n")}\n`;
 }
 
 function toVisionIssue(answer, finding, index) {

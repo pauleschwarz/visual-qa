@@ -19,8 +19,9 @@ function usage({ error = false, message = null } = {}) {
     "  visual-qa explore --url URL [--out DIR] [bounds flags]  deterministic core only\n" +
     "  visual-qa report <DIR> [--json]                         summarize an out-dir for agents\n" +
     '  visual-qa intent --intent "..." --fix-dir DIR [--json]   catalog dry-run, no browser\n' +
-    "  visual-qa review-prepare <DIR> [--max-pairs N]          export vision tasks for your harness\n" +
-    "  visual-qa review-apply <DIR> <findings.json>            apply your model's findings (additive)\n" +
+    "  visual-qa review-prepare <DIR> [--max-pairs N] [--batch-size N]\n" +
+    "                                                         export subagent vision batches (default path)\n" +
+    "  visual-qa review-apply <DIR> <findings.json>            apply harness/subagent findings (additive)\n" +
     "Output flags (run/explore): --format human|json|junit, --out-file FILE (junit)\n" +
     "Mode flags:   --changed-target URL (repeatable, required for --mode changed)\n" +
     "              --baseline-dir DIR (per-viewport <name>.png baselines)\n" +
@@ -203,9 +204,11 @@ if (command === "report") {
 } else if (command === "review-prepare" || command === "review-apply") {
   const positional = [];
   let maxPairs = 6;
+  let batchSize = 4;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--max-pairs") maxPairs = Number(args[++i]);
+    else if (arg === "--batch-size") batchSize = Number(args[++i]);
     else if (!arg.startsWith("--")) positional.push(arg);
     else {
       usage();
@@ -215,6 +218,8 @@ if (command === "report") {
   try {
     if (!Number.isInteger(maxPairs) || maxPairs < 1)
       throw new Error("--max-pairs must be an integer >= 1");
+    if (!Number.isInteger(batchSize) || batchSize < 1)
+      throw new Error("--batch-size must be an integer >= 1");
     if (command === "review-prepare") {
       const [dir] = positional;
       if (!dir) {
@@ -224,16 +229,16 @@ if (command === "report") {
       const report = JSON.parse(
         await readFile(join(resolve(dir), "report.json"), "utf8"),
       );
-      const { file, requests } = await prepareHarnessReview(
-        report,
-        resolve(dir),
-        {
-          maxPairs,
-        },
-      );
-      console.log(`vision review tasks: ${requests} requests -> ${file}`);
+      const prepared = await prepareHarnessReview(report, resolve(dir), {
+        maxPairs,
+        batchSize,
+      });
       console.log(
-        'hand each request\'s images + system prompt to your harness vision model, collect {"results":[{"id","findings"}]}, then: visual-qa review-apply',
+        `vision review tasks: ${prepared.requests} requests in ${prepared.batches} batches -> ${prepared.file}`,
+      );
+      console.log(`subagent plan: ${prepared.planFile}`);
+      console.log(
+        "DEFAULT: spawn one short-lived reviewer (e.g. smart) per vision/batches/batch-XX.json; merge results into vision/findings.json; visual-qa review-apply. No API key.",
       );
       process.exitCode = 0;
     } else {

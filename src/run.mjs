@@ -84,14 +84,14 @@ export async function run(input = {}) {
           title: "Vision review unavailable",
           severity: "high",
           detail:
-            "No vision model completed a review for this run. Layout/slop/color defects that only a model can see are unproven. Provide OmniRoute/OpenAI-compatible vision (OPENAI_BASE_URL + OPENAI_API_KEY, or VQA_VISION_*), optionally VQA_VISION_MODELS, or finish harness review-apply.",
+            "No vision model completed a review for this run. Layout/slop/color defects that only a model can see are unproven. DEFAULT: spawn short-lived smart subagents from vision/plan.md (batches under vision/batches/), merge into vision/findings.json, run review-apply. Optional CI: OPENAI_*/VQA_VISION_* endpoint.",
           evidence: redact({
             status: vision.status,
             attempted: vision.attempted ?? 0,
             completed: vision.completed ?? 0,
             max_agent_calls: config?.bounds?.max_agent_calls ?? 0,
             models: vision.models || [],
-            hint: "OmniRoute: OPENAI_BASE_URL=http://127.0.0.1:20128/v1 OPENAI_API_KEY=… VQA_VISION_MODELS=smart,worker",
+            hint: "read vision/plan.md → spawn one subagent per batch-XX.json → review-apply",
           }),
         },
       ]);
@@ -237,12 +237,21 @@ export async function run(input = {}) {
         maxPairs: Number.isInteger(input.reviewMaxPairs)
           ? input.reviewMaxPairs
           : 6,
+        batchSize: Number.isInteger(input.reviewBatchSize)
+          ? input.reviewBatchSize
+          : undefined,
       });
       phases.harness_review = {
         status: "prepared",
-        requests: Array.isArray(prepared?.requests)
-          ? prepared.requests.length
-          : (prepared?.count ?? null),
+        mode: "harness-subagent",
+        requests:
+          typeof prepared?.requests === "number"
+            ? prepared.requests
+            : Array.isArray(prepared?.requests)
+              ? prepared.requests.length
+              : (prepared?.count ?? null),
+        batches: prepared?.batches ?? null,
+        plan: prepared?.planFile ?? null,
         dir: prepared?.dir ?? reviewDirFallback(outDir),
       };
       result.phases = { ...result.phases, ...phases };

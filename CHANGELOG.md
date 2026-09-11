@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.3 — 2026-09-11
+
+### Harness subagent vision (default)
+- `review-prepare` writes `vision/plan.md`, `vision/plan.json`, and
+  `vision/batches/batch-XX.json` with absolute screenshot paths + child contract.
+- Calling agent spawns one short-lived reviewer per batch (same model / smart),
+  merges `{results}` into `vision/findings.json`, runs `review-apply`.
+- No API key required for complete vision. Endpoint/OmniRoute remains optional CI path.
+- CLI: `--batch-size N` (default 4). Env: `VQA_VISION_BATCH_SIZE`.
+
 ## 0.2.2 — 2026-09-11
 
 ### Multi-model vision (OmniRoute)

@@ -1,6 +1,6 @@
 {
   "name": "@pauleschwarz/visual-qa",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Bounded browser QA for web apps: explore, find, fix, and prove with portable evidence.",
   "type": "module",
   "license": "MIT",

@@ -34,12 +34,17 @@ async function persistReport(dir, report) {
 test("prepare exports pairs x skill requests with prompts and ids", async () => {
   const dir = await mkdtemp(`${tmpdir()}/vqa-hprep-`);
   const report = fakeReport([PAIR("state1:button:Save::0"), PAIR("state2:link:Home::1")]);
-  const { file, requests } = await prepareHarnessReview(report, dir, { maxPairs: 2 });
+  const prepared = await prepareHarnessReview(report, dir, {
+    maxPairs: 2,
+    batchSize: 4,
+  });
   // 2 pairs x 5 skills
-  assert.equal(requests, 10);
-  const written = JSON.parse(await readFile(file, "utf8"));
+  assert.equal(prepared.requests, 10);
+  assert.equal(prepared.batches, 3); // ceil(10/4)
+  const written = JSON.parse(await readFile(prepared.file, "utf8"));
   assert.equal(written.run_id, "abc12345");
-  assert.match(written.contract, /review-apply/);
+  assert.match(written.contract, /subagent|review-apply/i);
+  assert.equal(written.batch_count, 3);
   const skills = new Set(written.requests.map((r) => r.skill));
   assert.deepEqual([...skills].sort(), ["color", "consistency", "layout", "readability", "slop"]);
   for (const request of written.requests) {
@@ -52,6 +57,18 @@ test("prepare exports pairs x skill requests with prompts and ids", async () => 
     );
     assert.match(request.before, /^screenshots\//);
   }
+  const plan = JSON.parse(await readFile(join(dir, "vision", "plan.json"), "utf8"));
+  assert.equal(plan.mode, "harness-subagent");
+  assert.equal(plan.batch_count, 3);
+  assert.ok(plan.apply_command.includes("review-apply"));
+  const batch1 = JSON.parse(
+    await readFile(join(dir, "vision", "batches", "batch-01.json"), "utf8"),
+  );
+  assert.equal(batch1.requests.length, 4);
+  assert.ok(batch1.requests[0].before_abs.endsWith(batch1.requests[0].before));
+  assert.match(batch1.contract, /harsh direct-observer/i);
+  const planMd = await readFile(join(dir, "vision", "plan.md"), "utf8");
+  assert.match(planMd, /spawn one short-lived subagent/i);
 });
 
 test("prepare includes every state scan plus bounded action pairs", async () => {
