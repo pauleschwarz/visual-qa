@@ -10,8 +10,22 @@ function fakeReport(evidence) {
     run_id: "abc12345",
     verdict: "PASS",
     complete: true,
-    coverage: { states: 1, actions: 1, limit_reason: null },
-    issues: [],
+    coverage: {
+      states: 1,
+      actions: 1,
+      limit_reason: null,
+      vision_required: true,
+      vision_complete: false,
+    },
+    issues: [
+      {
+        issue_id: "vqa-vision-required-unavailable",
+        type: "vqa-vision",
+        title: "Vision review unavailable",
+        severity: "high",
+        detail: "gap",
+      },
+    ],
     phases: {},
     evidence,
   };
@@ -137,9 +151,13 @@ test("apply caps severity, records request ids, and is idempotent", async () => 
   // The high finding arrives capped at medium: vision can add, never gate.
   const applied = JSON.parse(await readFile(join(dir, "report.json"), "utf8"));
   assert.equal(first.accepted, 1);
-  assert.equal(first.ok, false, "invalid/empty answers keep apply non-ok");
+  // empty findings are valid; only missing/invalid ids keep ok=false
+  assert.equal(first.ok, false, "missing_id / invalid_finding keep apply non-ok");
   assert.ok(first.rejected > 0);
+  assert.equal(first.vision_complete, true);
+  assert.equal(applied.coverage.vision_complete, true);
   assert.equal(applied.issues.length, 1);
+  assert.ok(!applied.issues.some((i) => i.issue_id === "vqa-vision-required-unavailable"));
   assert.equal(applied.issues[0].severity, "medium");
   assert.equal(applied.issues[0].evidence.source, "harness-vision");
   assert.equal(applied.verdict, "UNPROVEN");
@@ -166,6 +184,7 @@ test("apply recomputes the verdict against stored completeness", async () => {
   const dir = await mkdtemp(`${tmpdir()}/vqa-hverd-`);
   const report = fakeReport([PAIR("a")]);
   report.complete = false;
+  report.coverage.limit_reason = "max_states";
   await persistReport(dir, report);
   await prepareHarnessReview(report, dir, { maxPairs: 1 });
   const findingsFile = join(dir, "f.json");
@@ -177,8 +196,43 @@ test("apply recomputes the verdict against stored completeness", async () => {
       ],
     }),
   );
-  await applyHarnessReview(dir, findingsFile);
+  const result = await applyHarnessReview(dir, findingsFile);
   const applied = JSON.parse(await readFile(join(dir, "report.json"), "utf8"));
-  // incomplete coverage can never be upgraded by findings
+  // Walk bounds still incomplete; vision can complete independently.
   assert.equal(applied.verdict, "COVERAGE_INCOMPLETE");
+  assert.equal(applied.complete, false);
+  assert.equal(applied.coverage.vision_complete, true);
+  assert.equal(result.vision_complete, true);
+  assert.ok(
+    !applied.issues.some((i) => i.issue_id === "vqa-vision-required-unavailable"),
+  );
+});
+
+test("apply closes vision when walk finished and harness answers land", async () => {
+  const dir = await mkdtemp(`${tmpdir()}/vqa-hclose-`);
+  const report = fakeReport([PAIR("a")]);
+  report.complete = false; // only blocked by vision gap
+  report.coverage.limit_reason = null;
+  report.coverage.vision_complete = false;
+  await persistReport(dir, report);
+  await prepareHarnessReview(report, dir, { maxPairs: 1 });
+  const findingsFile = join(dir, "f.json");
+  await writeFile(
+    findingsFile,
+    JSON.stringify({
+      results: [
+        { id: "abc12345-layout-a", skill: "layout", findings: [] },
+        { id: "abc12345-slop-a", skill: "slop", findings: [] },
+      ],
+    }),
+  );
+  const result = await applyHarnessReview(dir, findingsFile);
+  const applied = JSON.parse(await readFile(join(dir, "report.json"), "utf8"));
+  assert.equal(result.vision_complete, true);
+  assert.equal(applied.coverage.vision_complete, true);
+  assert.equal(applied.complete, true);
+  assert.equal(applied.verdict, "PASS");
+  assert.ok(
+    !applied.issues.some((i) => i.issue_id === "vqa-vision-required-unavailable"),
+  );
 });

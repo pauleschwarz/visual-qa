@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.4 — 2026-09-11
+
+### Harness apply closes vision
+- `review-apply` sets `coverage.vision_complete=true` and drops
+  `vqa-vision-required-unavailable` once request ids are answered.
+- Empty findings are valid ("looks clean") — no longer rejected.
+- Walk bounds (`limit_reason`) still keep `complete=false`; vision can finish independently.
+- Live E2E: run → batches → smart screenshot review → apply → vision_complete.
+
 ## 0.2.3 — 2026-09-11
 
 ### Harness subagent vision (default)

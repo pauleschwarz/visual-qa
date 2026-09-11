@@ -353,31 +353,69 @@ export async function applyHarnessReview(outDir, findingsFile) {
       acceptedHere += 1;
     }
     appliedIds.add(answer.id);
-    if (acceptedHere === 0 && answer.findings.length === 0)
-      rejected.push({ id: answer.id, reason: "empty_findings" });
+    if (acceptedHere === 0 && answer.findings.length === 0) {
+      // Empty findings is a valid "looks clean" answer for this request id.
+      // Do not reject — otherwise harness subagents cannot close vision.
+    }
   }
 
-  if (accepted.length) {
-    report.issues = dedupeIssues([...(report.issues || []), ...accepted]);
-    report.verdict = verdictFor({
-      issues: report.issues,
-      complete: report.complete,
-    });
-  }
+  // Drop the fail-closed gap finding once harness vision answers land.
+  const priorIssues = (report.issues || []).filter(
+    (issue) => issue?.issue_id !== "vqa-vision-required-unavailable",
+  );
+  report.issues = dedupeIssues([...priorIssues, ...accepted]);
+
+  // vision_complete when at least one request id was answered (findings may be empty).
+  const visionComplete =
+    appliedIds.size > 0 &&
+    !report.issues.some((i) => i.issue_id === "vqa-vision-required-unavailable");
+
+  const limited = report.coverage?.limit_reason != null;
+  const explorerComplete =
+    !limited && Number(report.coverage?.states || report.states?.length || 0) > 0;
+  // Walk may still be incomplete due to bounds; vision can complete independently.
+  const complete = explorerComplete && visionComplete;
+
+  report.coverage = {
+    ...(report.coverage || {}),
+    vision_required: true,
+    vision_complete: visionComplete,
+    vision_status: visionComplete
+      ? "harness_applied"
+      : report.coverage?.vision_status || "harness_pending",
+  };
+  report.complete = complete;
+  report.verdict = verdictFor({ issues: report.issues, complete });
+
   report.phases = report.phases || {};
   report.phases.harness_vision = {
     status: "applied",
     applied: [...appliedIds],
     accepted: accepted.length,
     rejected: rejected.length,
+    vision_complete: visionComplete,
   };
+  if (visionComplete && report.phases.vision) {
+    report.phases.vision = {
+      ...report.phases.vision,
+      status: "harness_applied",
+      completed: Math.max(
+        Number(report.phases.vision.completed || 0),
+        appliedIds.size,
+      ),
+    };
+  }
   await writeReportArtifacts(outDir, report);
-  const blocking = rejected.filter((entry) => entry.reason !== "already_applied");
+  const blocking = rejected.filter(
+    (entry) => entry.reason !== "already_applied",
+  );
   return {
     verdict: report.verdict,
     accepted: accepted.length,
     rejected: rejected.length,
     issues: report.issues.length,
+    vision_complete: visionComplete,
+    complete,
     ok: blocking.length === 0,
   };
 }
