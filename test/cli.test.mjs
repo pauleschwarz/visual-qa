@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -89,6 +89,45 @@ test("unsupported option combinations block instead of being ignored", async () 
   );
   assert.equal(unwritableOutput.status, 2);
   assert.match(unwritableOutput.stderr, /Could not write JUnit report/);
+});
+
+test("agent gate joins completed visual and fresh Verity receipts without spawning either tool", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "vqa-cli-agent-gate-"));
+  const verity = join(dir, "verity.json");
+  await writeFile(
+    join(dir, "report.json"),
+    JSON.stringify({
+      verdict: "PASS",
+      complete: true,
+      started_at: "2026-09-12T12:00:00.000Z",
+      duration_ms: 100,
+      coverage: { vision_complete: true },
+    }),
+  );
+  await writeFile(
+    verity,
+    JSON.stringify({
+      verdict: "PASS",
+      created_at: "2026-09-12T12:01:00.000Z",
+      repository_changed_since_baseline: false,
+    }),
+  );
+  const result = cli("agent-gate", dir, verity, "--json");
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).verdict, "PASS");
+});
+
+test("agent gate refuses to claim success from incomplete visual evidence", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "vqa-cli-agent-gate-fail-"));
+  const verity = join(dir, "verity.json");
+  await writeFile(
+    join(dir, "report.json"),
+    JSON.stringify({ verdict: "PASS", complete: false, coverage: { vision_complete: false } }),
+  );
+  await writeFile(verity, JSON.stringify({ verdict: "PASS", repository_changed_since_baseline: false }));
+  const result = cli("agent-gate", dir, verity);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /visual_qa_incomplete/);
 });
 
 test("a total browser startup failure uses blocked exit code 2", async () => {

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.6 — 2026-09-12
+
+### Autonomous-agent evidence gate
+- `agent-gate` joins a completed Visual QA report with a fresh Pi Verity receipt
+  and writes a fail-closed, portable `agent-gate.json`.
+- Gate is pure evidence evaluation: it never starts tools, mutates source,
+  calls models, or publishes.
+- Documented safe agent loop: narrow test → Verity → full Visual QA + vision →
+  explicit receipt gate.
+
 ## 0.2.5 — 2026-09-12
 
 ### Release hardening

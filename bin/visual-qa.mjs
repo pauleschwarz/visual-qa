@@ -7,6 +7,7 @@ import { dryRunIntent, parseIntent } from "../src/intent.mjs";
 import { renderJunitXml } from "../src/junit.mjs";
 import { renderSummaryLines, summarizeReport } from "../src/report.mjs";
 import { applyHarnessReview, prepareHarnessReview } from "../src/review.mjs";
+import { writeAgentGate } from "../src/agent-gate.mjs";
 import { run } from "../src/run.mjs";
 
 function usage({ error = false, message = null } = {}) {
@@ -22,6 +23,7 @@ function usage({ error = false, message = null } = {}) {
     "  visual-qa review-prepare <DIR> [--max-pairs N] [--batch-size N]\n" +
     "                                                         export subagent vision batches (default path)\n" +
     "  visual-qa review-apply <DIR> <findings.json>            apply harness/subagent findings (additive)\n" +
+    "  visual-qa agent-gate <QA-DIR> <verity.json> [--json]     join independent Visual QA + Verity evidence\n" +
     "Output flags (run/explore): --format human|json|junit, --out-file FILE (junit)\n" +
     "Mode flags:   --changed-target URL (repeatable, required for --mode changed)\n" +
     "              --baseline-dir DIR (per-viewport <name>.png baselines)\n" +
@@ -136,7 +138,34 @@ async function emitResult(report, { format, outDir, outFile }) {
   console.log(`machine report: ${join(resolve(outDir), "report.json")}`);
 }
 
-if (command === "report") {
+if (command === "agent-gate") {
+  const qaDir = args[0] && !args[0].startsWith("--") ? args.shift() : null;
+  const verityFile = args[0] && !args[0].startsWith("--") ? args.shift() : null;
+  const json = args.length === 1 && args[0] === "--json";
+  if (!qaDir || !verityFile || args.length > (json ? 1 : 0)) {
+    usage({
+      error: true,
+      message: "visual-qa agent-gate requires <QA-DIR> <verity.json> [--json]",
+    });
+    process.exit(2);
+  }
+  try {
+    const result = await writeAgentGate(resolve(qaDir), {
+      visualFile: join(resolve(qaDir), "report.json"),
+      verityFile: resolve(verityFile),
+    });
+    if (json) console.log(JSON.stringify(result, null, 2));
+    else {
+      console.log(`Agent gate ${result.verdict} | blockers=${result.blockers.length}`);
+      for (const blocker of result.blockers) console.log(`BLOCKER ${blocker}`);
+      console.log(`receipt: ${result.path}`);
+    }
+    process.exitCode = result.ok ? 0 : 1;
+  } catch (error) {
+    console.error(`Agent gate BLOCKED: ${error.message}`);
+    process.exitCode = 2;
+  }
+} else if (command === "report") {
   const dir = args[0] && !args[0].startsWith("--") ? args.shift() : null;
   const json = args.includes("--json");
   const unknown = args.filter((a) => a !== "--json");

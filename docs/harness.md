@@ -48,6 +48,42 @@ medium/low stay `<system-out>` notes. `COVERAGE_INCOMPLETE` is always a
 failure so a pipeline can never read an unexplored run as a pass.
 `--format json` prints the summary to stdout.
 
+## Agent gate: Visual QA + Pi Verity
+
+`visual-qa` and [Pi Verity](https://github.com/pauleschwarz/pi-verity)
+cover different failure classes. Visual QA proves a bounded running-app walk;
+Verity binds repository checks and evidence to an exact Git state. Neither is a
+replacement for the other.
+
+```sh
+# 1. Agent changes source and runs the app locally.
+visual-qa run --url "$APP_URL" --out .qa
+# Complete default harness vision review, then apply its findings:
+visual-qa review-apply .qa .qa/vision/findings.json
+
+# 2. Outer verifier inspects this repository. It never runs from visual-qa.
+npx --no-install pi-verity verify . --output .qa/verity.json
+
+# 3. Pure, fail-closed evidence join. No browser, agent, or verifier subprocess.
+visual-qa agent-gate .qa .qa/verity.json --json
+```
+
+Only `agent-gate` exit `0` permits a completion claim. It requires:
+
+- Visual QA `verdict=PASS`, `complete=true`, no critical/high issues, and no
+  unfinished vision review.
+- Pi Verity `PASS` (warnings require human review), with no stale receipt.
+- Verity receipt timestamp not older than completed Visual QA evidence.
+
+Anything else exits `1` with named blockers and writes `.qa/agent-gate.json`.
+Unreadable/malformed evidence exits `2`. The gate never edits app source, starts
+processes, calls models, or publishes. It cannot make a non-PASS report pass.
+
+**Important:** run Pi Verity last. Any repository change after its receipt makes
+that receipt stale; re-run the verifier and then `agent-gate`. For a regression,
+add a narrow candidate test first so Verity can prove baseline RED → candidate
+GREEN. `UNPROVEN` is evidence missing, not permission to ship.
+
 ## The agent loop
 
 1. Build or change the app; start it locally.

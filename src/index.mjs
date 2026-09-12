@@ -32,6 +32,7 @@ export {
   writeReportArtifacts,
 } from "./report.mjs";
 export { run } from "./run.mjs";
+export { evaluateAgentGate, writeAgentGate } from "./agent-gate.mjs";
 export { applyHarnessReview, prepareHarnessReview } from "./review.mjs";
 export { runSlopChecks } from "./slop.mjs";
 export { runSecurityChecks } from "./security.mjs";

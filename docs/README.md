@@ -7,7 +7,7 @@ verdicts, exit codes). This folder holds the stable contracts.
 
 | Path | What |
 | --- | --- |
-| [harness.md](harness.md) | Exit codes, report JSON, CI junit, agent loop, intent dry-run |
+| [harness.md](harness.md) | Exit codes, report JSON, agent gate, CI JUnit, agent loop, intent dry-run |
 | [../schemas/intent-catalog.json](../schemas/intent-catalog.json) | Intent catalog, verdict policy, autofix whitelist |
 
 Implementation plans stay in the source repository and are not part of the

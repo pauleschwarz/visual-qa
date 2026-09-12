@@ -10,7 +10,7 @@ Runs unattended. You still own the verdict and product judgment.
 [![CI](https://github.com/pauleschwarz/visual-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/pauleschwarz/visual-qa/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-0f766e.svg)](LICENSE)
 
-Status: **v0.2.5**. Not on npm yet — install from Git. **Chromium
+Status: **v0.2.6**. Not on npm yet — install from Git. **Chromium
 only.** Node >= 20. macOS/Linux tested; Windows untested. CLI flags may change
 before 1.0. Always run `npx playwright install chromium` once per machine.
 
@@ -125,6 +125,7 @@ visual-qa report <DIR> [--json]                      # agent-friendly summary
 visual-qa intent --intent "…" --fix-dir DIR [--json]  # catalog dry-run, no browser
 visual-qa review-prepare <DIR> [--max-pairs N]       # export vision tasks for your model
 visual-qa review-apply <DIR> <findings.json>         # apply harness findings (additive)
+visual-qa agent-gate <QA-DIR> <verity.json> [--json] # fail-closed Visual QA + Verity receipt
 ```
 
 **Output (run/explore):** `--format human|json|junit`, `--out-file FILE` (junit).
@@ -140,7 +141,8 @@ with `--isolated`).
 **Bounds:** `--max-states N` · `--max-depth N` · `--max-actions N` ·
 `--max-actions-per-state N` · `--max-runtime-ms N`.
 
-Full agent contract: [`docs/harness.md`](docs/harness.md). Machine contract
+Full agent contract, including a fail-closed Visual QA + Pi Verity receipt
+join: [`docs/harness.md`](docs/harness.md). Machine contract
 (verdict policy, intent catalog, autofix whitelist):
 [`schemas/intent-catalog.json`](schemas/intent-catalog.json).
 
