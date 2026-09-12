@@ -215,6 +215,7 @@ export async function prepareHarnessReview(
     )}\n`,
   );
   return {
+    dir,
     file,
     requests: requests.length,
     batches: batches.length,

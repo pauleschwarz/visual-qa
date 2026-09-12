@@ -1,6 +1,6 @@
 {
   "name": "@pauleschwarz/visual-qa",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Bounded browser QA for web apps: explore, find, fix, and prove with portable evidence.",
   "type": "module",
   "license": "MIT",
@@ -43,6 +43,7 @@
     "fixture": "node fixture/server.mjs",
     "selftest": "node --test --test-concurrency=1 test/e2e-fixture.mjs test/run-pipeline.e2e.mjs test/demo-report.test.mjs",
     "verify": "npm run test && npm run selftest",
+    "prepublishOnly": "npm run verify",
     "verity": "pi-verity"
   },
   "dependencies": {
@@ -56,5 +57,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

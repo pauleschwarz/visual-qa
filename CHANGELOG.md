@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.5 — 2026-09-12
+
+### Release hardening
+- Harness preparation now returns its `vision/` directory explicitly, matching
+  run metadata without relying on a fallback path.
+- npm publishes are public by default and run the full verification suite first.
+
 ## 0.2.4 — 2026-09-11
 
 ### Harness apply closes vision

@@ -53,6 +53,7 @@ test("prepare exports pairs x skill requests with prompts and ids", async () => 
     batchSize: 4,
   });
   // 2 pairs x 5 skills
+  assert.equal(prepared.dir, join(dir, "vision"));
   assert.equal(prepared.requests, 10);
   assert.equal(prepared.batches, 3); // ceil(10/4)
   const written = JSON.parse(await readFile(prepared.file, "utf8"));
