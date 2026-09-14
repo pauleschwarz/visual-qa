@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { agentRun } from "../src/agent-run.mjs";
+import { captureBaselines } from "../src/baseline.mjs";
 import { demo } from "../src/demo.mjs";
+import { DEFAULT_VIEWPORTS } from "../src/config.mjs";
+import { resolveDesignContract } from "../src/design-contract.mjs";
 import { explore } from "../src/explore.mjs";
 import { dryRunIntent, parseIntent } from "../src/intent.mjs";
 import { renderJunitXml } from "../src/junit.mjs";
@@ -16,22 +20,28 @@ function usage({ error = false, message = null } = {}) {
     "  visual-qa demo [--out DIR] [bounds flags]              zero-setup first run\n" +
     "  visual-qa run --url URL [--out DIR] [--isolated] [--autofix verified] [--fix-dir DIR]\n" +
     '                 [--intent "instruction"] [--max-agent-calls N] [--mode off|changed|full] [bounds flags]\n' +
-    "                 [--no-prepare-review] [--no-edge-input-probes]\n" +
+    "                 [--no-prepare-review] [--no-edge-input-probes] [--design-contract FILE]\n" +
     "  visual-qa explore --url URL [--out DIR] [bounds flags]  deterministic core only\n" +
     "  visual-qa report <DIR> [--json]                         summarize an out-dir for agents\n" +
     '  visual-qa intent --intent "..." --fix-dir DIR [--json]   catalog dry-run, no browser\n' +
     "  visual-qa review-prepare <DIR> [--max-pairs N] [--batch-size N]\n" +
     "                                                         export subagent vision batches (default path)\n" +
-    "  visual-qa review-apply <DIR> <findings.json>            apply harness/subagent findings (additive)\n" +
+    "  visual-qa review-apply <DIR> <findings.json>            apply harness findings (fail-closed coverage)\n" +
+    "  visual-qa baseline-capture --url URL --out DIR [--changed-target URL ...]\n" +
+    "                                                         capture hierarchical baselines from a live URL\n" +
+    "  visual-qa agent-run --url URL [--baseline-url URL] [--out DIR] [--git-ref REF]\n" +
+    "                 [--design-contract FILE]                git UI-diff → routes → observe/compare only\n" +
     "  visual-qa agent-gate <QA-DIR> <verity.json> [--json]     join independent Visual QA + Verity evidence\n" +
     "Output flags (run/explore): --format human|json|junit, --out-file FILE (junit)\n" +
     "Mode flags:   --changed-target URL (repeatable, required for --mode changed)\n" +
-    "              --baseline-dir DIR (per-viewport <name>.png baselines)\n" +
+    "              --baseline-dir DIR (<route-key>/<viewport>.png or legacy <viewport>.png)\n" +
+    "              --design-contract FILE (DESIGN.md; auto-discover DESIGN.md in cwd when present)\n" +
     "              --allow-destructive (only with --isolated)\n" +
     "Review flags (run): --no-prepare-review  skip auto vision task export\n" +
     "              --no-edge-input-probes     skip empty/hostile/overlong fills\n" +
     "Bounds flags: --max-states N --max-depth N --max-actions N --max-actions-per-state N --max-runtime-ms N\n" +
-    "Help:         visual-qa --help    Version: visual-qa --version";
+    "Help:         visual-qa --help    Version: visual-qa --version\n" +
+    "Note: visual-qa observes and evidences only; it does not redesign or auto-code UI.";
   const output = message ? `${message}\n\n${text}` : text;
   (error ? console.error : console.log)(output);
   process.exitCode = error ? 2 : 0;
@@ -42,7 +52,10 @@ const VALUE_OPTIONS = new Set([
   "--url",
   "--mode",
   "--baseline-dir",
+  "--baseline-url",
   "--changed-target",
+  "--design-contract",
+  "--git-ref",
   "--autofix",
   "--fix-dir",
   "--intent",
@@ -55,6 +68,7 @@ const VALUE_OPTIONS = new Set([
   "--max-runtime-ms",
   "--max-agent-calls",
   "--max-pairs",
+  "--batch-size",
 ]);
 
 function validateOptionValues(tokens) {
@@ -163,6 +177,84 @@ if (command === "agent-gate") {
     process.exitCode = result.ok ? 0 : 1;
   } catch (error) {
     console.error(`Agent gate BLOCKED: ${error.message}`);
+    process.exitCode = 2;
+  }
+} else if (command === "baseline-capture") {
+  let baseUrl = null;
+  let outDir = ".qa-baselines";
+  const targets = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--url") baseUrl = args[++i];
+    else if (arg === "--out") outDir = args[++i];
+    else if (arg === "--changed-target") targets.push(args[++i]);
+    else {
+      usage({ error: true, message: `Unknown baseline-capture flag: ${arg}` });
+      process.exit(2);
+    }
+  }
+  if (!baseUrl) {
+    usage({ error: true, message: "baseline-capture requires --url" });
+    process.exit(2);
+  }
+  try {
+    const result = await captureBaselines({
+      baseUrl,
+      outDir: resolve(outDir),
+      targets: targets.length ? targets : ["/"],
+      viewports: DEFAULT_VIEWPORTS,
+    });
+    console.log(
+      `baseline-capture: ${result.entries.length} shots → ${result.outDir}`,
+    );
+    console.log(`manifest: ${result.manifestPath}`);
+    process.exitCode = 0;
+  } catch (error) {
+    console.error(`Visual QA BLOCKED: ${error.message}`);
+    process.exitCode = 2;
+  }
+} else if (command === "agent-run") {
+  let url = null;
+  let baselineUrl = null;
+  let outDir = ".qa-agent";
+  let gitRef = "HEAD";
+  let designContractPath = null;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--url") url = args[++i];
+    else if (arg === "--baseline-url") baselineUrl = args[++i];
+    else if (arg === "--out") outDir = args[++i];
+    else if (arg === "--git-ref") gitRef = args[++i];
+    else if (arg === "--design-contract") designContractPath = args[++i];
+    else {
+      usage({ error: true, message: `Unknown agent-run flag: ${arg}` });
+      process.exit(2);
+    }
+  }
+  if (!url) {
+    usage({ error: true, message: "agent-run requires --url" });
+    process.exit(2);
+  }
+  try {
+    const result = await agentRun({
+      url,
+      baselineUrl,
+      outDir: resolve(outDir),
+      projectRoot: process.cwd(),
+      gitRef,
+      designContractPath,
+    });
+    if (result.noop) {
+      console.log("agent-run: no UI diff → PASS (noop)");
+      process.exitCode = 0;
+    } else {
+      console.log(
+        `agent-run ${result.report.verdict} | mode=${result.agent.mode} routes=${(result.agent.routes || []).join(",") || "-"} | out=${result.outDir}`,
+      );
+      process.exitCode = result.ok ? 0 : 1;
+    }
+  } catch (error) {
+    console.error(`Visual QA BLOCKED: ${error.message}`);
     process.exitCode = 2;
   }
 } else if (command === "report") {
@@ -281,8 +373,19 @@ if (command === "agent-gate") {
         resolve(findingsFile),
       );
       console.log(
-        `harness review applied: +${result.accepted} findings (rejected ${result.rejected}) | verdict ${result.verdict} | issues=${result.issues}`,
+        `harness review applied: +${result.accepted} findings (rejected ${result.rejected}) | verdict ${result.verdict} | vision_complete=${result.vision_complete} | issues=${result.issues}`,
       );
+      if (!result.vision_complete) {
+        console.log(
+          `COVERAGE_INCOMPLETE vision: missing=${(result.missing || []).length} invalid=${(result.invalid || []).length}`,
+        );
+        if (result.missing?.length)
+          console.log(`missing ids: ${result.missing.join(", ")}`);
+        if (result.invalid?.length)
+          console.log(
+            `invalid: ${result.invalid.map((e) => `${e.id || "(empty)"}:${e.reason}`).join("; ")}`,
+          );
+      }
       console.log(`open report: ${join(resolve(dir), "report.html")}`);
       process.exitCode = result.ok ? 0 : 1;
     }
@@ -333,6 +436,7 @@ if (command === "agent-gate") {
     fixDir = null,
     intent = null,
     baselineDir = null,
+    designContractPath = null,
     format = "human",
     outFile = null,
     prepareReview = true,
@@ -347,6 +451,7 @@ if (command === "agent-gate") {
     else if (arg === "--isolated") isolatedEnvironment = true;
     else if (arg === "--allow-destructive") allowDestructive = true;
     else if (arg === "--baseline-dir") baselineDir = resolve(args[++i]);
+    else if (arg === "--design-contract") designContractPath = args[++i];
     else if (arg === "--changed-target") changedTargets.push(args[++i]);
     else if (arg === "--autofix") autofix = args[++i];
     else if (arg === "--fix-dir") fixDir = resolve(args[++i]);
@@ -403,6 +508,13 @@ if (command === "agent-gate") {
     process.exit(2);
   }
   try {
+    if (designContractPath) {
+      // Fail early on explicit unreadable contract before browser work.
+      await resolveDesignContract({
+        explicitPath: designContractPath,
+        projectRoot: process.cwd(),
+      });
+    }
     const input = {
       baseUrl,
       outDir: resolve(outDir),
@@ -410,6 +522,8 @@ if (command === "agent-gate") {
       isolatedEnvironment,
       allowDestructive,
       baselineDir,
+      designContractPath,
+      projectRoot: process.cwd(),
       changedTargets,
       autofix,
       fixDir,
