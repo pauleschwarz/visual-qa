@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.2.7 — 2026-09-14
+
+### Fail-closed harness vision coverage
+- `review-apply` loads `vision/requests.json` and requires every planned request
+  ID exactly once among valid accepted answers.
+- Unknown, duplicate, malformed findings, skill mismatches, or missing IDs keep
+  `coverage.vision_complete=false`, verdict `COVERAGE_INCOMPLETE`, and issue
+  `vqa-vision-review-incomplete` with machine-readable required/answered/missing/invalid.
+- Partial batches may add findings but stay incomplete until the full plan is answered.
+
+### DESIGN.md contract + preservation critic
+- `--design-contract FILE` (explicit missing/unreadable fails early).
+- Auto-discovers `DESIGN.md` in the invoking project root when present; generic
+  projects without one are unchanged.
+- Report records `design_contract.path` + `sha256`; every harness/endpoint vision
+  prompt includes the authoritative contract and preservation instructions.
+- New vision skill `preservation`: defect only on contract/baseline/a11y/intent
+  violations; uncertainty preserves existing UI.
+
+### Hierarchical baselines + capture
+- `--baseline-dir` resolves `<baseline>/<route-key>/<viewport>.png`, with legacy
+  flat `<viewport>.png` fallback. Evidence names old/new files and route.
+- `baseline-capture --url URL --out DIR [--changed-target …]` captures hierarchical
+  shots from a separately running pre-change URL.
+
+### agent-run observe wrapper
+- `agent-run --url URL [--baseline-url URL] [--out DIR] [--git-ref REF] [--design-contract FILE]`
+- Reads `.visual-qa.yml` (`trigger` / `ignore` / `route_map`) without extra deps.
+- No UI diff → explicit noop PASS. UI diff without route map → fail-closed.
+- `FULL` mapping → full mode. Captures baseline from `--baseline-url` before candidate run.
+- Records Git HEAD/ref/diff SHA and DESIGN SHA. Never runs/applies fixers.
+
+### agent-gate bindings
+- When `agent_run` evidence is present, requires non-empty Git state; design
+  metadata when a contract was recorded. Stale/missing/review-incomplete cannot PASS.
+- Direct non-agent runs remain compatible.
+
 ## 0.2.6 — 2026-09-12
 
 ### Autonomous-agent evidence gate

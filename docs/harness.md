@@ -71,13 +71,44 @@ visual-qa agent-gate .qa .qa/verity.json --json
 Only `agent-gate` exit `0` permits a completion claim. It requires:
 
 - Visual QA `verdict=PASS`, `complete=true`, no critical/high issues, and no
-  unfinished vision review.
+  unfinished vision review (`coverage.vision_complete=true`; every planned
+  request ID answered exactly once).
 - Pi Verity `PASS` (warnings require human review), with no stale receipt.
 - Verity receipt timestamp not older than completed Visual QA evidence.
+- When the report was produced by `agent-run`: non-empty Git HEAD/ref/diff SHA;
+  design-contract path+sha256 when a DESIGN.md was bound.
 
 Anything else exits `1` with named blockers and writes `.qa/agent-gate.json`.
 Unreadable/malformed evidence exits `2`. The gate never edits app source, starts
 processes, calls models, or publishes. It cannot make a non-PASS report pass.
+
+## agent-run (observe-only wrapper)
+
+```sh
+# Optional project config at .visual-qa.yml
+# trigger: ["src/components/**"]
+# ignore: ["**/*.test.tsx"]
+# route_map:
+#   "src/components/**": ["/"]
+#   "app/pages/**": FULL
+
+visual-qa agent-run --url http://127.0.0.1:3000 \
+  --baseline-url http://127.0.0.1:3001 \
+  --out .qa-agent \
+  --git-ref HEAD
+```
+
+- No UI-path git diff → exit 0 noop PASS (no browser).
+- UI diff without matching `route_map` → fail-closed.
+- Never applies fixers; evidence + compare only.
+- `baseline-capture` writes hierarchical `<route-key>/<viewport>.png` from a live URL.
+
+## DESIGN.md
+
+- `--design-contract FILE` fails early if missing/unreadable.
+- If `DESIGN.md` exists in the invoking project root, it is auto-discovered.
+- SHA-256 + path land in `report.json`; every vision request prompt includes the
+  contract and preservation rules. visual-qa does not redesign the product.
 
 **Important:** run Pi Verity last. Any repository change after its receipt makes
 that receipt stale; re-run the verifier and then `agent-gate`. For a regression,

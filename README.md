@@ -10,7 +10,7 @@ Runs unattended. You still own the verdict and product judgment.
 [![CI](https://github.com/pauleschwarz/visual-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/pauleschwarz/visual-qa/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-0f766e.svg)](LICENSE)
 
-Status: **v0.2.6**. Not on npm yet — install from Git. **Chromium
+Status: **v0.2.7**. Not on npm yet — install from Git. **Chromium
 only.** Node >= 20. macOS/Linux tested; Windows untested. CLI flags may change
 before 1.0. Always run `npx playwright install chromium` once per machine.
 
@@ -119,24 +119,28 @@ visual-qa report .qa --json
 visual-qa demo [--out DIR] [bounds]
 visual-qa run --url URL [--out DIR] [--isolated] [--autofix verified] [--fix-dir DIR]
               [--intent "…"] [--max-agent-calls N] [--mode off|changed|full] [bounds]
-              [--no-prepare-review] [--no-edge-input-probes]
+              [--no-prepare-review] [--no-edge-input-probes] [--design-contract FILE]
 visual-qa explore --url URL [--out DIR] [bounds]     # deterministic core only
 visual-qa report <DIR> [--json]                      # agent-friendly summary
 visual-qa intent --intent "…" --fix-dir DIR [--json]  # catalog dry-run, no browser
 visual-qa review-prepare <DIR> [--max-pairs N]       # export vision tasks for your model
-visual-qa review-apply <DIR> <findings.json>         # apply harness findings (additive)
+visual-qa review-apply <DIR> <findings.json>         # apply findings (fail-closed full-ID coverage)
+visual-qa baseline-capture --url URL --out DIR [--changed-target …]
+visual-qa agent-run --url URL [--baseline-url URL] [--out DIR] [--git-ref REF]
 visual-qa agent-gate <QA-DIR> <verity.json> [--json] # fail-closed Visual QA + Verity receipt
 ```
 
 **Output (run/explore):** `--format human|json|junit`, `--out-file FILE` (junit).
 
 **Mode:** `--mode off|changed|full` · `--changed-target URL` (repeatable;
-required for `changed`) · `--baseline-dir DIR` · `--allow-destructive` (only
-with `--isolated`).
+required for `changed`) · `--baseline-dir DIR` (`<route>/<viewport>.png` or
+legacy flat) · `--design-contract FILE` (or auto `DESIGN.md`) ·
+`--allow-destructive` (only with `--isolated`).
 
 **Review defaults (`run`):** auto-exports harness vision tasks after the walk
 (`--no-prepare-review` to skip) · edge input probes on text fields
-(`--no-edge-input-probes` to skip).
+(`--no-edge-input-probes` to skip). `review-apply` stays incomplete until every
+planned request ID has one valid answer.
 
 **Bounds:** `--max-states N` · `--max-depth N` · `--max-actions N` ·
 `--max-actions-per-state N` · `--max-runtime-ms N`.
