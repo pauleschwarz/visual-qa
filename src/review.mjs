@@ -15,6 +15,8 @@ import { redact } from "./config.mjs";
 import { writeReportArtifacts } from "./report.mjs";
 import { skillPrompt, SKILLS } from "./vision.mjs";
 
+const SKILL_KEYS = new Set(Object.keys(SKILLS));
+
 async function readJson(path, label) {
   let source;
   try {
@@ -74,8 +76,17 @@ export function reviewRequestsDir(outDir) {
 export async function prepareHarnessReview(
   report,
   outDir,
-  { maxPairs = 6, batchSize: batchSizeOpt } = {},
+  { maxPairs = 6, batchSize: batchSizeOpt, designContract = null } = {},
 ) {
+  const contract =
+    designContract ??
+    report?.design_contract_content ??
+    (report?.design_contract?.content ? report.design_contract : null);
+  // Prefer full content object {path,sha256,content}; meta-only is not enough for prompts.
+  const designForPrompt =
+    contract && typeof contract === "object" && contract.content
+      ? contract
+      : null;
   const evidence = Array.isArray(report?.evidence) ? report.evidence : [];
   const actionPairs = evidence
     .map(screenshotPair)
@@ -112,7 +123,7 @@ export async function prepareHarnessReview(
         skill,
         action_id: entry.action_id ?? null,
         state_id: entry.state_id ?? null,
-        system: skillPrompt(skill),
+        system: skillPrompt(skill, { designContract: designForPrompt }),
         before: portableEvidencePath(beforePath),
         after: portableEvidencePath(afterPath),
         // The answering model may see the observation that triggered the pick.
@@ -121,6 +132,8 @@ export async function prepareHarnessReview(
           viewport: entry.viewport ?? null,
           status: entry.observation?.status ?? null,
           pixel_ratio: entry.observation?.pixel_ratio ?? null,
+          design_contract_sha256:
+            designForPrompt?.sha256 ?? report?.design_contract?.sha256 ?? null,
         },
       });
     }
@@ -299,41 +312,86 @@ function toVisionIssue(answer, finding, index) {
 }
 
 /**
- * Apply harness answers to a report: validate shape, match request ids,
- * cap severity, append to issues, recompute the verdict, and rewrite
- * report.json/report.md. Applying the same answers twice is a no-op (the
- * applied request ids are recorded), so a retry cannot duplicate findings.
+ * Load planned request IDs from vision/requests.json (authoritative plan).
  */
-export async function applyHarnessReview(outDir, findingsFile) {
-  const reportPath = join(outDir, "report.json");
-  const report = await readJson(reportPath, "visual-qa report");
-  const answers = await readJson(findingsFile, "vision findings");
-  const results = Array.isArray(answers?.results) ? answers.results : [];
-  if (!Array.isArray(answers?.results))
-    throw new Error(
-      'findings file must be {"results": [{"id", "findings": [...]}]}',
-    );
+export async function loadPlannedRequestIds(outDir) {
+  const path = join(reviewRequestsDir(outDir), "requests.json");
+  const planned = await readJson(path, "vision requests plan");
+  const requests = Array.isArray(planned?.requests) ? planned.requests : [];
+  const byId = new Map();
+  for (const request of requests) {
+    const id = String(request?.id ?? "").trim();
+    if (!id) continue;
+    byId.set(id, {
+      id,
+      skill: request.skill != null ? String(request.skill) : null,
+    });
+  }
+  return { path, byId, ids: [...byId.keys()] };
+}
 
-  const appliedIds = new Set(report.phases?.harness_vision?.applied ?? []);
-  const accepted = [];
-  const rejected = [];
+/**
+ * Fail-closed coverage: every planned request ID must appear exactly once
+ * among valid accepted answers. Unknown/duplicate/malformed/skill-mismatch
+ * or missing IDs keep vision incomplete.
+ */
+export function evaluateVisionCoverage({
+  requiredIds = [],
+  plannedById = new Map(),
+  results = [],
+  previouslyApplied = [],
+} = {}) {
+  const required = [...new Set(requiredIds.map(String))];
+  const requiredSet = new Set(required);
+  const answered = new Set(
+    (previouslyApplied || []).map(String).filter((id) => requiredSet.has(id)),
+  );
+  const invalid = [];
+  const seenInBatch = new Set();
+  const validNew = [];
+
   for (const result of results) {
-    const answer = {
-      id: String(result?.id ?? ""),
-      skill: String(result?.skill ?? "unknown"),
-      action_id: result?.action_id ?? null,
-      findings: Array.isArray(result?.findings) ? result.findings : [],
-    };
-    if (!answer.id) {
-      rejected.push({ id: "", reason: "missing_id" });
+    const id = String(result?.id ?? "").trim();
+    if (!id) {
+      invalid.push({ id: "", reason: "missing_id" });
       continue;
     }
-    if (appliedIds.has(answer.id)) {
-      rejected.push({ id: answer.id, reason: "already_applied" });
+    if (!requiredSet.has(id)) {
+      invalid.push({ id, reason: "unknown_id" });
       continue;
     }
-    let acceptedHere = 0;
-    for (const finding of answer.findings) {
+    if (seenInBatch.has(id) || answered.has(id)) {
+      invalid.push({ id, reason: "duplicate_id" });
+      continue;
+    }
+    seenInBatch.add(id);
+
+    if (!Array.isArray(result?.findings)) {
+      invalid.push({ id, reason: "malformed_findings" });
+      continue;
+    }
+
+    const planned = plannedById.get(id);
+    const skill =
+      result?.skill != null && String(result.skill).trim()
+        ? String(result.skill).trim()
+        : planned?.skill ?? null;
+    if (skill && !SKILL_KEYS.has(skill)) {
+      invalid.push({ id, reason: "unknown_skill", skill });
+      continue;
+    }
+    if (planned?.skill && skill && skill !== planned.skill) {
+      invalid.push({
+        id,
+        reason: "skill_mismatch",
+        expected: planned.skill,
+        skill,
+      });
+      continue;
+    }
+
+    let findingsOk = true;
+    for (const finding of result.findings) {
       if (
         !finding ||
         typeof finding !== "object" ||
@@ -341,40 +399,137 @@ export async function applyHarnessReview(outDir, findingsFile) {
         typeof finding.detail !== "string" ||
         !["high", "medium", "low"].includes(finding.severity)
       ) {
-        rejected.push({ id: answer.id, reason: "invalid_finding" });
-        continue;
+        findingsOk = false;
+        break;
       }
-      accepted.push(
-        toVisionIssue(
-          { ...answer, skill: result.skill ?? answer.skill },
-          finding,
-          accepted.length,
-        ),
-      );
-      acceptedHere += 1;
     }
-    appliedIds.add(answer.id);
-    if (acceptedHere === 0 && answer.findings.length === 0) {
-      // Empty findings is a valid "looks clean" answer for this request id.
-      // Do not reject — otherwise harness subagents cannot close vision.
+    if (!findingsOk) {
+      invalid.push({ id, reason: "invalid_finding" });
+      continue;
+    }
+
+    // Empty findings = valid clean answer.
+    validNew.push({
+      id,
+      skill: skill || planned?.skill || "unknown",
+      action_id: result?.action_id ?? null,
+      findings: result.findings,
+    });
+    answered.add(id);
+  }
+
+  const missing = required.filter((id) => !answered.has(id));
+  const complete =
+    required.length > 0 &&
+    missing.length === 0 &&
+    invalid.filter((e) => e.reason !== "duplicate_id" || !answered.has(e.id))
+      .length === 0 &&
+    // Any invalid answer that is not a pure duplicate of an already-valid id blocks completeness.
+    invalid.every(
+      (e) => e.reason === "duplicate_id" && answered.has(e.id),
+    );
+
+  // Stricter: any unknown/malformed/skill issue keeps incomplete.
+  const blockingInvalid = invalid.filter((e) => e.reason !== "duplicate_id");
+  const visionComplete =
+    required.length > 0 &&
+    missing.length === 0 &&
+    blockingInvalid.length === 0;
+
+  return {
+    required,
+    answered: [...answered],
+    missing,
+    invalid,
+    validNew,
+    vision_complete: visionComplete,
+  };
+}
+
+/**
+ * Apply harness answers to a report: validate shape, match request ids,
+ * require full plan coverage, cap severity, append issues, rewrite artifacts.
+ * Partial batches stay incomplete until every planned ID has a valid answer.
+ * Idempotent for already-applied IDs.
+ */
+export async function applyHarnessReview(outDir, findingsFile) {
+  const reportPath = join(outDir, "report.json");
+  const report = await readJson(reportPath, "visual-qa report");
+  const answers = await readJson(findingsFile, "vision findings");
+  if (!Array.isArray(answers?.results))
+    throw new Error(
+      'findings file must be {"results": [{"id", "findings": [...]}]}',
+    );
+  const results = answers.results;
+
+  const { byId: plannedById, ids: requiredIds } =
+    await loadPlannedRequestIds(outDir);
+  if (!requiredIds.length) {
+    throw new Error(
+      `No planned vision requests at ${join(reviewRequestsDir(outDir), "requests.json")}; run review-prepare first`,
+    );
+  }
+
+  const previouslyApplied = report.phases?.harness_vision?.applied ?? [];
+  const coverage = evaluateVisionCoverage({
+    requiredIds,
+    plannedById,
+    results,
+    previouslyApplied,
+  });
+
+  const accepted = [];
+  const rejected = [...coverage.invalid];
+  for (const answer of coverage.validNew) {
+    if (previouslyApplied.includes(answer.id)) {
+      rejected.push({ id: answer.id, reason: "already_applied" });
+      continue;
+    }
+    for (const finding of answer.findings) {
+      accepted.push(toVisionIssue(answer, finding, accepted.length));
     }
   }
 
-  // Drop the fail-closed gap finding once harness vision answers land.
-  const priorIssues = (report.issues || []).filter(
-    (issue) => issue?.issue_id !== "vqa-vision-required-unavailable",
-  );
+  const appliedIds = new Set([
+    ...previouslyApplied.map(String),
+    ...coverage.validNew.map((a) => a.id),
+  ]);
+
+  // Drop gap finding only when coverage is fully complete.
+  let priorIssues = report.issues || [];
+  if (coverage.vision_complete) {
+    priorIssues = priorIssues.filter(
+      (issue) =>
+        issue?.issue_id !== "vqa-vision-required-unavailable" &&
+        issue?.issue_id !== "vqa-vision-review-incomplete",
+    );
+  } else {
+    priorIssues = priorIssues.filter(
+      (issue) => issue?.issue_id !== "vqa-vision-review-incomplete",
+    );
+    priorIssues.push({
+      issue_id: "vqa-vision-review-incomplete",
+      type: "vqa-vision",
+      title: "Harness vision review incomplete",
+      severity: "high",
+      detail:
+        "Not every planned vision request has a valid accepted answer; coverage stays incomplete.",
+      evidence: redact({
+        required: coverage.required,
+        answered: coverage.answered,
+        missing: coverage.missing,
+        invalid: coverage.invalid,
+      }),
+    });
+  }
+
   report.issues = dedupeIssues([...priorIssues, ...accepted]);
 
-  // vision_complete when at least one request id was answered (findings may be empty).
-  const visionComplete =
-    appliedIds.size > 0 &&
-    !report.issues.some((i) => i.issue_id === "vqa-vision-required-unavailable");
-
+  const visionComplete = coverage.vision_complete;
   const limited = report.coverage?.limit_reason != null;
   const explorerComplete =
-    !limited && Number(report.coverage?.states || report.states?.length || 0) > 0;
-  // Walk may still be incomplete due to bounds; vision can complete independently.
+    !limited &&
+    Number(report.coverage?.states || report.states?.length || 0) > 0;
   const complete = explorerComplete && visionComplete;
 
   report.coverage = {
@@ -383,18 +538,31 @@ export async function applyHarnessReview(outDir, findingsFile) {
     vision_complete: visionComplete,
     vision_status: visionComplete
       ? "harness_applied"
-      : report.coverage?.vision_status || "harness_pending",
+      : "harness_incomplete",
+    vision_requests: {
+      required: coverage.required,
+      answered: coverage.answered,
+      missing: coverage.missing,
+      invalid: coverage.invalid,
+    },
   };
   report.complete = complete;
-  report.verdict = verdictFor({ issues: report.issues, complete });
+  // Incomplete vision is always COVERAGE_INCOMPLETE (fail-closed).
+  report.verdict = visionComplete
+    ? verdictFor({ issues: report.issues, complete })
+    : "COVERAGE_INCOMPLETE";
 
   report.phases = report.phases || {};
   report.phases.harness_vision = {
-    status: "applied",
+    status: visionComplete ? "applied" : "incomplete",
     applied: [...appliedIds],
     accepted: accepted.length,
     rejected: rejected.length,
     vision_complete: visionComplete,
+    required: coverage.required,
+    answered: coverage.answered,
+    missing: coverage.missing,
+    invalid: coverage.invalid,
   };
   if (visionComplete && report.phases.vision) {
     report.phases.vision = {
@@ -417,6 +585,10 @@ export async function applyHarnessReview(outDir, findingsFile) {
     issues: report.issues.length,
     vision_complete: visionComplete,
     complete,
-    ok: blocking.length === 0,
+    ok: visionComplete && blocking.length === 0,
+    required: coverage.required,
+    answered: coverage.answered,
+    missing: coverage.missing,
+    invalid: coverage.invalid,
   };
 }

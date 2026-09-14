@@ -9,6 +9,10 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { resolveConfig, redact } from "./config.mjs";
 import { dedupeIssues, verdictFor } from "./checks.mjs";
+import {
+  designContractMeta,
+  resolveDesignContract,
+} from "./design-contract.mjs";
 import { explore } from "./explore.mjs";
 import { applyFixes, collectFixes, diffIssues } from "./fix.mjs";
 import { applyIntent, parseIntent } from "./intent.mjs";
@@ -25,7 +29,18 @@ function reviewDirFallback(outDir) {
 }
 
 export async function run(input = {}) {
-  const config = resolveConfig(input);
+  const designContract =
+    input.designContract && input.designContract.content
+      ? input.designContract
+      : await resolveDesignContract({
+          explicitPath: input.designContractPath ?? null,
+          projectRoot: input.projectRoot ?? process.cwd(),
+        });
+  const config = resolveConfig({
+    ...input,
+    designContract,
+    designContractPath: designContract?.path ?? input.designContractPath,
+  });
   if (!config.baseUrl && config.mode !== "off")
     throw new Error("Visual QA requires baseUrl");
   const outDir = config.outDir;
@@ -41,6 +56,7 @@ export async function run(input = {}) {
   // security, intent baseline).
   const report = await explore({
     ...input,
+    designContract,
     visionEvidence: true,
     intentChecks,
   });
@@ -225,6 +241,17 @@ export async function run(input = {}) {
     states: authoritative.states ?? report.states,
     edges: authoritative.edges ?? report.edges,
     phases,
+    design_contract: designContractMeta(designContract),
+    // Full content kept for harness prepare (not always dumped in summaries).
+    design_contract_content: designContract
+      ? {
+          path: designContract.path,
+          sha256: designContract.sha256,
+          content: designContract.content,
+          source: designContract.source,
+        }
+      : null,
+    agent_run: config.agentRun || report.agent_run || null,
   };
 
   await writeReportArtifacts(outDir, result);
@@ -240,6 +267,7 @@ export async function run(input = {}) {
         batchSize: Number.isInteger(input.reviewBatchSize)
           ? input.reviewBatchSize
           : undefined,
+        designContract,
       });
       phases.harness_review = {
         status: "prepared",

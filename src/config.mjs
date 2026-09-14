@@ -221,6 +221,13 @@ export function resolveConfig(input = {}) {
       input.isolatedEnvironment === true && input.allowDestructive === true,
     intent: input.intent || null,
     baselineDir: input.baselineDir || null,
+    // Optional DESIGN.md contract (full object or path resolved by CLI/run).
+    designContract:
+      input.designContract && typeof input.designContract === "object"
+        ? input.designContract
+        : null,
+    designContractPath: input.designContractPath || null,
+    agentRun: input.agentRun && typeof input.agentRun === "object" ? input.agentRun : null,
     changedTargets,
     autofix: input.autofix === "verified" ? "verified" : false,
     // Where fixable document-level defects (title, lang) are applied.

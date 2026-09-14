@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { redact } from "./config.mjs";
+import { appendDesignContractToPrompt } from "./design-contract.mjs";
 
 function authHeader(key) {
   const scheme = ["Be", "arer"].join("");
@@ -39,14 +40,19 @@ export const SKILLS = {
     focus:
       "System consistency: mixed font families or ad-hoc type sizes, button styles that do not share one system, random radii/shadows, conflicting accent colors, mismatched icon sets, duplicated or dead controls, spacing that jumps off any scale, light/dark or density breaks inside one surface.",
   },
+  preservation: {
+    focus:
+      "Preservation critic: judge a difference as a defect ONLY if it (1) violates the supplied DESIGN.md contract, (2) visibly regresses the baseline/before screenshot, (3) creates a usability or accessibility defect, or (4) clearly violates stated product intent in context. If uncertain, preserve the existing UI — empty findings. Do not invent taste preferences, redesign suggestions, or speculative polish. Intentional design variation that stays within contract is not a defect.",
+  },
 };
 
 const SHARED_CONTRACT =
   'You are a harsh direct-observer visual QA reviewer for a product UI (app or website). You see screenshot evidence of one situation (before/after of an action, a full state, or a scrolled viewport). Report ONLY defects you can see. Prefer specificity over politeness: if it looks AI-slop, template-cheap, misaligned, color-broken, or aesthetically broken, say so with concrete visual evidence. Do not invent bugs. Ignore pure animation/caret flicker. Severity: high = clearly broken or embarrassing in production; medium = sloppy/incoherent; low = polish. Reply with JSON ONLY: {"findings":[{"title":string,"severity":"high"|"medium"|"low","detail":string}]}. Empty findings array only if the situation truly looks intentional and clean.';
 
-export function skillPrompt(skill) {
+export function skillPrompt(skill, { designContract = null } = {}) {
   if (!SKILLS[skill]) throw new Error(`Unknown vision skill "${skill}"`);
-  return `${SHARED_CONTRACT} Focus: ${SKILLS[skill].focus}`;
+  const base = `${SHARED_CONTRACT} Focus: ${SKILLS[skill].focus}`;
+  return appendDesignContractToPrompt(base, designContract);
 }
 
 const SKILL_KEYS = Object.keys(SKILLS);
@@ -365,7 +371,12 @@ export async function runVisionReview({
             max_tokens: 900,
             temperature: 0,
             messages: [
-              { role: "system", content: skillPrompt(skill) },
+              {
+                role: "system",
+                content: skillPrompt(skill, {
+                  designContract: config?.designContract ?? null,
+                }),
+              },
               {
                 role: "user",
                 content: [

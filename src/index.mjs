@@ -33,10 +33,27 @@ export {
 } from "./report.mjs";
 export { run } from "./run.mjs";
 export { evaluateAgentGate, writeAgentGate } from "./agent-gate.mjs";
-export { applyHarnessReview, prepareHarnessReview } from "./review.mjs";
+export { agentRun } from "./agent-run.mjs";
+export {
+  captureBaselines,
+  resolveBaselinePath,
+  routeKeyFromTarget,
+} from "./baseline.mjs";
+export {
+  appendDesignContractToPrompt,
+  designContractMeta,
+  resolveDesignContract,
+  sha256Hex,
+} from "./design-contract.mjs";
+export {
+  applyHarnessReview,
+  evaluateVisionCoverage,
+  loadPlannedRequestIds,
+  prepareHarnessReview,
+} from "./review.mjs";
 export { runSlopChecks } from "./slop.mjs";
 export { runSecurityChecks } from "./security.mjs";
-export { runVisionReview } from "./vision.mjs";
+export { runVisionReview, skillPrompt, SKILLS } from "./vision.mjs";
 export {
   buildState,
   diffSignals,

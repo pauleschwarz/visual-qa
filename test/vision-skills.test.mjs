@@ -64,9 +64,11 @@ test("vision skill prompts demand harsh direct-observer slop critique", () => {
     "color",
     "consistency",
     "layout",
+    "preservation",
     "readability",
     "slop",
   ]);
+  assert.match(skillPrompt("preservation"), /Preservation critic|preserve/i);
   const slop = skillPrompt("slop");
   assert.match(slop, /harsh direct-observer/i);
   assert.match(slop, /purple|mesh|glassmorphism|supercharge|feature cards/i);

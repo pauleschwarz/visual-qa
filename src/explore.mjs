@@ -9,6 +9,10 @@ import {
 } from "./browser.mjs";
 import { classifyRisk, RISK, redact, resolveConfig } from "./config.mjs";
 import {
+  resolveBaselinePath,
+  routeKeyFromTarget,
+} from "./baseline.mjs";
+import {
   compareScreenshots,
   dedupeIssues,
   runA11y,
@@ -543,10 +547,25 @@ function alreadySatisfied(control) {
   return false;
 }
 
-function baselineMissing(baselineDir, viewportName) {
-  return readFile(join(baselineDir, `${viewportName}.png`))
-    .then(() => false)
-    .catch(() => true);
+async function baselineMissing(baselineDir, viewportName, routeKey = null) {
+  const resolved = await resolveBaselinePath(baselineDir, viewportName, {
+    routeKey,
+  });
+  return resolved.missing;
+}
+
+function primaryRouteKey(config) {
+  if (config.mode === "changed" && config.changedTargets?.length) {
+    return routeKeyFromTarget(config.changedTargets[0], config.baseUrl);
+  }
+  if (config.baseUrl) {
+    try {
+      return routeKeyFromTarget(new URL(config.baseUrl).pathname, config.baseUrl);
+    } catch {
+      return "root";
+    }
+  }
+  return "root";
 }
 
 /**
@@ -649,19 +668,27 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
       limitReason = "no_entry_state";
     }
     // Baseline gate: a missing baseline is missing coverage, never a pass.
-    if (
-      config.baselineDir &&
-      (await baselineMissing(config.baselineDir, viewport.name))
-    ) {
+    // Prefer <baseline>/<route-key>/<viewport>.png; fall back to flat legacy.
+    const routeKey = primaryRouteKey(config);
+    const baselineInfo = config.baselineDir
+      ? await resolveBaselinePath(config.baselineDir, viewport.name, {
+          routeKey,
+        })
+      : null;
+    if (config.baselineDir && baselineInfo.missing) {
       issues.push(
         explorerIssue(
           "baseline",
           "Baseline missing",
           "high",
-          `No baseline screenshot for viewport '${viewport.name}'; render-regression coverage is incomplete.`,
+          `No baseline screenshot for viewport '${viewport.name}'` +
+            (routeKey ? ` route '${routeKey}'` : "") +
+            `; render-regression coverage is incomplete.`,
           {
             viewport: viewport.name,
-            baseline_path: join(config.baselineDir, `${viewport.name}.png`),
+            route_key: routeKey,
+            baseline_path: baselineInfo.path,
+            baseline_shape: baselineInfo.shape,
             reason: "baseline_missing",
           },
         ),
@@ -677,7 +704,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
       if (await screenshotOrIssue(runtime, initialShot, issues, "initial")) {
         try {
           const comparison = await compareScreenshots(
-            join(config.baselineDir, `${viewport.name}.png`),
+            baselineInfo.path,
             initialShot,
           );
           if (comparison.changed)
@@ -686,14 +713,17 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
                 "baseline",
                 "Initial render differs from baseline",
                 "medium",
-                `The initial '${viewport.name}' render differs from the stored baseline screenshot.`,
+                `The initial '${viewport.name}' render differs from the stored baseline screenshot` +
+                  (routeKey ? ` (route '${routeKey}')` : "") +
+                  `.`,
                 {
                   viewport: viewport.name,
+                  route_key: routeKey,
                   pixel_ratio: comparison.ratio,
-                  baseline_path: join(
-                    config.baselineDir,
-                    `${viewport.name}.png`,
-                  ),
+                  baseline_path: baselineInfo.path,
+                  baseline_shape: baselineInfo.shape,
+                  old_file: baselineInfo.path,
+                  new_file: initialShot,
                 },
               ),
             );
