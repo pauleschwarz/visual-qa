@@ -154,6 +154,58 @@ route_map:
   const none = resolveRoutesFromMap(["src/components/Nav.tsx"], {});
   assert.equal(none.mode, null);
   assert.equal(none.reason, "no_route_map");
+
+  const policy = parseVisualQaYaml(`max_review_fix_loops: 2
+trigger:
+  - "src/**/*.tsx"
+`);
+  assert.equal(policy.max_review_fix_loops, 2);
+});
+
+test("agent-gate records max 2 review/fix loops and refuses a fixer-applied agent-run", () => {
+  const visual = {
+    schema_version: "vqa-0.1",
+    run_id: "r1",
+    started_at: "2026-09-12T12:00:00.000Z",
+    duration_ms: 100,
+    verdict: "PASS",
+    complete: true,
+    coverage: { vision_complete: true },
+    agent_run: {
+      git: {
+        head: "abc",
+        ref: "HEAD",
+        diff_sha256: createHash("sha256").update("d").digest("hex"),
+      },
+      policy: { max_review_fix_loops: 2, applies_fixers: false },
+      review_fix_loops: 0,
+      fixer_applied: false,
+    },
+  };
+  const verity = {
+    schema_version: 3,
+    created_at: "2026-09-12T12:01:00.000Z",
+    verdict: "PASS",
+    repository_changed_since_baseline: false,
+    final_diff_hash: "sha256:x",
+  };
+  assert.equal(evaluateAgentGate({ visual, verity }).ok, true);
+
+  const fixer = {
+    ...visual,
+    agent_run: { ...visual.agent_run, fixer_applied: true },
+  };
+  const fixerGate = evaluateAgentGate({ visual: fixer, verity });
+  assert.equal(fixerGate.ok, false);
+  assert.ok(fixerGate.blockers.includes("visual_qa_agent_ran_fixer"));
+
+  const over = {
+    ...visual,
+    agent_run: { ...visual.agent_run, review_fix_loops: 3 },
+  };
+  const overGate = evaluateAgentGate({ visual: over, verity });
+  assert.equal(overGate.ok, false);
+  assert.ok(overGate.blockers.includes("visual_qa_review_fix_loops_exceeded"));
 });
 
 test("agent-gate requires git+design when agent_run present; direct runs OK", () => {

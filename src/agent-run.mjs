@@ -25,7 +25,12 @@ async function exists(path) {
 /** Minimal YAML subset for .visual-qa.yml (no dependency). */
 export function parseVisualQaYaml(source) {
   const text = String(source ?? "");
-  const result = { trigger: [], ignore: [], route_map: {} };
+  const result = {
+    trigger: [],
+    ignore: [],
+    route_map: {},
+    max_review_fix_loops: 2,
+  };
   let section = null;
   let currentGlob = null;
 
@@ -35,13 +40,27 @@ export function parseVisualQaYaml(source) {
     const indent = rawLine.match(/^(\s*)/)[1].length;
     const trimmed = line.trim();
 
-    if (indent === 0 && trimmed.endsWith(":")) {
-      const key = trimmed.slice(0, -1).trim();
-      section = key;
-      currentGlob = null;
-      if (key === "trigger" || key === "ignore") result[key] = result[key] || [];
-      if (key === "route_map") result.route_map = result.route_map || {};
-      continue;
+    if (indent === 0) {
+      const mapMatch = trimmed.match(/^([^:]+):\s*(.*)$/);
+      if (mapMatch) {
+        const key = mapMatch[1].trim();
+        const rest = mapMatch[2].trim().replace(/^["']|["']$/g, "");
+        if (key === "max_review_fix_loops") {
+          const n = Number(rest);
+          result.max_review_fix_loops =
+            Number.isInteger(n) && n > 0 ? n : 2;
+          section = null;
+          currentGlob = null;
+          continue;
+        }
+        if (!rest) {
+          section = key;
+          currentGlob = null;
+          if (key === "trigger" || key === "ignore") result[key] = result[key] || [];
+          if (key === "route_map") result.route_map = result.route_map || {};
+        }
+        continue;
+      }
     }
 
     if (section === "trigger" || section === "ignore") {
@@ -179,7 +198,10 @@ export function collectGitState(cwd, gitRef = "HEAD") {
 export async function loadVisualQaConfig(projectRoot) {
   const path = join(resolve(projectRoot), ".visual-qa.yml");
   if (!(await exists(path))) {
-    return { path: null, config: { trigger: [], ignore: [], route_map: {} } };
+    return {
+      path: null,
+      config: { trigger: [], ignore: [], route_map: {}, max_review_fix_loops: 2 },
+    };
   }
   const source = await readFile(path, "utf8");
   return { path, config: parseVisualQaYaml(source) };
@@ -228,6 +250,14 @@ export async function agentRun({
     noop: false,
     mode: null,
     routes: [],
+    policy: {
+      max_review_fix_loops: Number.isInteger(config.max_review_fix_loops)
+        ? config.max_review_fix_loops
+        : 2,
+      applies_fixers: false,
+    },
+    review_fix_loops: 0,
+    fixer_applied: false,
   };
 
   if (uiFiles.length === 0) {

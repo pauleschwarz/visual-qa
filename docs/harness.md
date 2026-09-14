@@ -76,7 +76,8 @@ Only `agent-gate` exit `0` permits a completion claim. It requires:
 - Pi Verity `PASS` (warnings require human review), with no stale receipt.
 - Verity receipt timestamp not older than completed Visual QA evidence.
 - When the report was produced by `agent-run`: non-empty Git HEAD/ref/diff SHA;
-  design-contract path+sha256 when a DESIGN.md was bound.
+  design-contract path+sha256 when a DESIGN.md was bound; `fixer_applied` must
+  stay false; `review_fix_loops` must not exceed `policy.max_review_fix_loops` (2).
 
 Anything else exits `1` with named blockers and writes `.qa/agent-gate.json`.
 Unreadable/malformed evidence exits `2`. The gate never edits app source, starts
@@ -100,7 +101,8 @@ visual-qa agent-run --url http://127.0.0.1:3000 \
 
 - No UI-path git diff → exit 0 noop PASS (no browser).
 - UI diff without matching `route_map` → fail-closed.
-- Never applies fixers; evidence + compare only.
+- Never applies fixers; evidence + compare only. Coding agents may loop
+  review→fix at most twice (`max_review_fix_loops` in `.visual-qa.yml`).
 - `baseline-capture` writes hierarchical `<route-key>/<viewport>.png` from a live URL.
 
 ## DESIGN.md

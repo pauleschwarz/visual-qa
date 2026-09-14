@@ -57,6 +57,15 @@ export function evaluateAgentRunBindings(visual) {
       blockers.push("visual_qa_agent_git_diff_missing");
   }
 
+  // Observe-only: agent-run never applies fixers. Coding agents own the
+  // (max 2) review/fix loops; the gate only records the bound and refuses
+  // a receipt that claims a fixer ran or exceeded the loop cap.
+  if (agent.fixer_applied === true) blockers.push("visual_qa_agent_ran_fixer");
+  const maxLoops = Number(agent.policy?.max_review_fix_loops ?? 2);
+  const loops = Number(agent.review_fix_loops ?? 0);
+  if (Number.isFinite(loops) && Number.isFinite(maxLoops) && loops > maxLoops)
+    blockers.push("visual_qa_review_fix_loops_exceeded");
+
   // Design binding only when agent-run (or report) actually recorded a contract.
   // Generic projects without DESIGN.md stay compatible (null is OK).
   const design = visual.design_contract ?? agent.design_contract ?? null;

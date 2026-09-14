@@ -34,10 +34,13 @@
 - No UI diff → explicit noop PASS. UI diff without route map → fail-closed.
 - `FULL` mapping → full mode. Captures baseline from `--baseline-url` before candidate run.
 - Records Git HEAD/ref/diff SHA and DESIGN SHA. Never runs/applies fixers.
+- Receipt stamps `policy.max_review_fix_loops` (default 2 from `.visual-qa.yml`)
+  and `fixer_applied: false`. Coding agents own the loops; visual-qa does not.
 
 ### agent-gate bindings
 - When `agent_run` evidence is present, requires non-empty Git state; design
   metadata when a contract was recorded. Stale/missing/review-incomplete cannot PASS.
+- Refuses `fixer_applied: true` and `review_fix_loops` above the stamped cap.
 - Direct non-agent runs remain compatible.
 
 ## 0.2.6 — 2026-09-12
