@@ -24,6 +24,9 @@
   flat `<viewport>.png` fallback. Evidence names old/new files and route.
 - `baseline-capture --url URL --out DIR [--changed-target …]` captures hierarchical
   shots from a separately running pre-change URL.
+- Explore compares **every** changed-target/entry URL against its own
+  hierarchical baseline (not only the first route). Missing any route keeps
+  `COVERAGE_INCOMPLETE`.
 
 ### agent-run observe wrapper
 - `agent-run --url URL [--baseline-url URL] [--out DIR] [--git-ref REF] [--design-contract FILE]`

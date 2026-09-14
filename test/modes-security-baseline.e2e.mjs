@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -203,6 +203,69 @@ test("a differing baseline is recorded as a render difference", async () => {
           issue.title === "Initial render differs from baseline",
       ),
       "the render difference must be recorded",
+    );
+  } finally {
+    server.close();
+    await rm(outDir, { recursive: true, force: true });
+    await rm(baselineDir, { recursive: true, force: true });
+  }
+});
+
+test("changed-mode compares a hierarchical baseline for every declared route", async () => {
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Routes</title></head>
+<body>
+  <h1 id="title">home</h1>
+  <a href="/settings">Settings</a>
+  <script>
+    if (location.pathname === "/settings") title.textContent = "settings";
+  </script>
+</body></html>`;
+  const server = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(html);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const outDir = await mkdtemp(`${tmpdir()}/vqa-baseline-routes-`);
+  const baselineDir = await mkdtemp(`${tmpdir()}/vqa-baseline-routes-dir-`);
+  try {
+    const { PNG } = await import("pngjs");
+    const png = new PNG({ width: 1280, height: 800 });
+    for (let i = 0; i < png.data.length; i += 4) {
+      png.data[i] = 255;
+      png.data[i + 3] = 255;
+    }
+    await mkdir(join(baselineDir, "root"), { recursive: true });
+    await writeFile(join(baselineDir, "root", "desktop.png"), PNG.sync.write(png));
+    const report = await explore({
+      baseUrl: `http://127.0.0.1:${port}/`,
+      outDir,
+      baselineDir,
+      mode: "changed",
+      changedTargets: ["/", "/settings"],
+      viewports: [{ name: "desktop", width: 1280, height: 800 }],
+      bounds: SMALL_BOUNDS,
+    });
+    assert.equal(report.verdict, "COVERAGE_INCOMPLETE");
+    assert.equal(report.coverage.limit_reason, "baseline_missing");
+    const missing = report.issues.filter(
+      (issue) =>
+        issue.type === "vqa-baseline" &&
+        issue.evidence?.reason === "baseline_missing",
+    );
+    assert.ok(
+      missing.some((issue) => issue.evidence?.route_key === "settings"),
+      "missing settings baseline must be recorded, not only the first route",
+    );
+    assert.ok(
+      report.issues.some(
+        (issue) =>
+          issue.type === "vqa-baseline" &&
+          issue.title === "Initial render differs from baseline" &&
+          issue.evidence?.route_key === "root",
+      ),
+      "root route must still be compared against its own hierarchical baseline",
     );
   } finally {
     server.close();

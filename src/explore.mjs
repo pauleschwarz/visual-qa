@@ -547,25 +547,91 @@ function alreadySatisfied(control) {
   return false;
 }
 
-async function baselineMissing(baselineDir, viewportName, routeKey = null) {
-  const resolved = await resolveBaselinePath(baselineDir, viewportName, {
-    routeKey,
-  });
-  return resolved.missing;
-}
-
-function primaryRouteKey(config) {
-  if (config.mode === "changed" && config.changedTargets?.length) {
-    return routeKeyFromTarget(config.changedTargets[0], config.baseUrl);
+/**
+ * Pre-change vs candidate: one hierarchical (or legacy-flat) baseline per
+ * entry URL. Missing coverage is never a pass.
+ */
+async function compareEntryBaseline(
+  runtime,
+  config,
+  viewport,
+  outDir,
+  issues,
+  entryUrl,
+) {
+  if (!config.baselineDir) return { complete: true };
+  const routeKey = routeKeyFromTarget(entryUrl, config.baseUrl);
+  const baselineInfo = await resolveBaselinePath(
+    config.baselineDir,
+    viewport.name,
+    { routeKey },
+  );
+  if (baselineInfo.missing) {
+    issues.push(
+      explorerIssue(
+        "baseline",
+        "Baseline missing",
+        "high",
+        `No baseline screenshot for viewport '${viewport.name}'` +
+          (routeKey ? ` route '${routeKey}'` : "") +
+          `; render-regression coverage is incomplete.`,
+        {
+          viewport: viewport.name,
+          route_key: routeKey,
+          baseline_path: baselineInfo.path,
+          baseline_shape: baselineInfo.shape,
+          reason: "baseline_missing",
+        },
+      ),
+    );
+    return { complete: false };
   }
-  if (config.baseUrl) {
-    try {
-      return routeKeyFromTarget(new URL(config.baseUrl).pathname, config.baseUrl);
-    } catch {
-      return "root";
-    }
+  const initialShot = join(
+    outDir,
+    "screenshots",
+    `initial-${safe(viewport.name)}-${safe(routeKey)}.png`,
+  );
+  if (!(await screenshotOrIssue(runtime, initialShot, issues, "initial"))) {
+    return { complete: true };
   }
-  return "root";
+  try {
+    const comparison = await compareScreenshots(baselineInfo.path, initialShot);
+    if (comparison.changed)
+      issues.push(
+        explorerIssue(
+          "baseline",
+          "Initial render differs from baseline",
+          "medium",
+          `The initial '${viewport.name}' render differs from the stored baseline screenshot` +
+            (routeKey ? ` (route '${routeKey}')` : "") +
+            `.`,
+          {
+            viewport: viewport.name,
+            route_key: routeKey,
+            pixel_ratio: comparison.ratio,
+            baseline_path: baselineInfo.path,
+            baseline_shape: baselineInfo.shape,
+            old_file: baselineInfo.path,
+            new_file: initialShot,
+          },
+        ),
+      );
+  } catch (error) {
+    issues.push(
+      explorerIssue(
+        "baseline",
+        "Baseline comparison failed",
+        "medium",
+        "The stored baseline could not be compared against the initial render.",
+        {
+          viewport: viewport.name,
+          route_key: routeKey,
+          error: redact({ message: String(error) }),
+        },
+      ),
+    );
+  }
+  return { complete: true };
 }
 
 /**
@@ -660,88 +726,24 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
             viewport,
           })),
         );
+      const baselineResult = await compareEntryBaseline(
+        runtime,
+        config,
+        viewport,
+        outDir,
+        issues,
+        entryUrl,
+      );
+      if (!baselineResult.complete) {
+        complete = false;
+        limitReason ||= "baseline_missing";
+      }
     }
     if (queue.length === 0) {
       // Every declared entry collapsed into an unreachable or duplicate
       // state; a walk with no observable start cannot claim coverage.
       complete = false;
       limitReason = "no_entry_state";
-    }
-    // Baseline gate: a missing baseline is missing coverage, never a pass.
-    // Prefer <baseline>/<route-key>/<viewport>.png; fall back to flat legacy.
-    const routeKey = primaryRouteKey(config);
-    const baselineInfo = config.baselineDir
-      ? await resolveBaselinePath(config.baselineDir, viewport.name, {
-          routeKey,
-        })
-      : null;
-    if (config.baselineDir && baselineInfo.missing) {
-      issues.push(
-        explorerIssue(
-          "baseline",
-          "Baseline missing",
-          "high",
-          `No baseline screenshot for viewport '${viewport.name}'` +
-            (routeKey ? ` route '${routeKey}'` : "") +
-            `; render-regression coverage is incomplete.`,
-          {
-            viewport: viewport.name,
-            route_key: routeKey,
-            baseline_path: baselineInfo.path,
-            baseline_shape: baselineInfo.shape,
-            reason: "baseline_missing",
-          },
-        ),
-      );
-      complete = false;
-      limitReason ||= "baseline_missing";
-    } else if (config.baselineDir) {
-      const initialShot = join(
-        outDir,
-        "screenshots",
-        `initial-${safe(viewport.name)}.png`,
-      );
-      if (await screenshotOrIssue(runtime, initialShot, issues, "initial")) {
-        try {
-          const comparison = await compareScreenshots(
-            baselineInfo.path,
-            initialShot,
-          );
-          if (comparison.changed)
-            issues.push(
-              explorerIssue(
-                "baseline",
-                "Initial render differs from baseline",
-                "medium",
-                `The initial '${viewport.name}' render differs from the stored baseline screenshot` +
-                  (routeKey ? ` (route '${routeKey}')` : "") +
-                  `.`,
-                {
-                  viewport: viewport.name,
-                  route_key: routeKey,
-                  pixel_ratio: comparison.ratio,
-                  baseline_path: baselineInfo.path,
-                  baseline_shape: baselineInfo.shape,
-                  old_file: baselineInfo.path,
-                  new_file: initialShot,
-                },
-              ),
-            );
-        } catch (error) {
-          issues.push(
-            explorerIssue(
-              "baseline",
-              "Baseline comparison failed",
-              "medium",
-              "The stored baseline could not be compared against the initial render.",
-              {
-                viewport: viewport.name,
-                error: redact({ message: String(error) }),
-              },
-            ),
-          );
-        }
-      }
     }
     // Load-time console/page/network failures must be able to fail a run; if
     // they are only collected inside the action loop they are dropped entirely.
