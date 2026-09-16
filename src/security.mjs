@@ -177,7 +177,6 @@ async function runCanaryProbe(page, viewport) {
             viewport,
           ),
         );
-        return findings;
       }
       if (rendered === CANARY_TIMEOUT) return findings;
     } finally {

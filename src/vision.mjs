@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { redact } from "./config.mjs";
 import { appendDesignContractToPrompt } from "./design-contract.mjs";
 
@@ -337,6 +337,10 @@ export async function runVisionReview({
 
     let spent = 0;
     let modelCursor = 0;
+    // Pixel-identical evidence reviewed by the same skill yields the same
+    // verdict: a bounded walk repeats one unchanged viewport across many
+    // states, so paying for each repeat burns the budget on known answers.
+    const reviewed = new Set();
     for (const job of jobs) {
       if (spent >= calls) break;
       const { pair, skill } = job;
@@ -354,10 +358,32 @@ export async function runVisionReview({
         continue;
       }
 
+      const evidenceKey = `${skill}:${createHash("sha1")
+        .update(beforeDataUrl)
+        .update("|")
+        .update(afterDataUrl)
+        .digest("hex")}`;
+      if (reviewed.has(evidenceKey)) continue;
+      reviewed.add(evidenceKey);
+
       const model = models[modelCursor % models.length];
       modelCursor += 1;
       attempted += 1;
       spent += 1;
+
+      // State scans and no-op actions carry one image, not two: sending the
+      // identical PNG in both slots doubled image tokens per call without
+      // adding a single pixel of new evidence.
+      const singleImage = beforeDataUrl === afterDataUrl;
+      const imageParts = singleImage
+        ? [{ type: "image_url", image_url: { url: beforeDataUrl } }]
+        : [
+            { type: "image_url", image_url: { url: beforeDataUrl } },
+            { type: "image_url", image_url: { url: afterDataUrl } },
+          ];
+      const promptText = singleImage
+        ? `Review this screenshot critically and deeply. Situation: ${situationLabel(pair)} (the view did not change, judge the single rendered state). Skill: ${skill}. Name concrete color/layout/type defects you see.`
+        : `Review these screenshots critically and deeply. Situation: ${situationLabel(pair)}. Skill: ${skill}. Name concrete color/layout/type defects you see.`;
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 60_000);
@@ -382,18 +408,9 @@ export async function runVisionReview({
                 content: [
                   {
                     type: "text",
-                    text: `Review these screenshots critically and deeply. Situation: ${situationLabel(pair)}. Skill: ${skill}. Name concrete color/layout/type defects you see.`,
+                    text: promptText,
                   },
-                  {
-                    type: "image_url",
-                    image_url: { url: beforeDataUrl },
-                  },
-                  // Same-image state reviews still send two slots so the
-                  // harness contract stays uniform; models see one viewport twice.
-                  {
-                    type: "image_url",
-                    image_url: { url: afterDataUrl },
-                  },
+                  ...imageParts,
                 ],
               },
             ],
@@ -434,12 +451,7 @@ export async function runVisionReview({
           if (!title) continue;
           const severityRaw = String(finding?.severity || "medium").toLowerCase();
           // Vision stays additive-capped at medium so it flags, never alone FAIL-gates.
-          const severity =
-            severityRaw === "low"
-              ? "low"
-              : severityRaw === "high" || severityRaw === "critical"
-                ? "medium"
-                : "medium";
+          const severity = severityRaw === "low" ? "low" : "medium";
           issues.push({
             issue_id: `vqa-vision-${skill}-${slug(title)}`,
             type: "vqa-vision",

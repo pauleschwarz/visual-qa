@@ -37,7 +37,8 @@ Returns the compact summary: `verdict`, `run_id`, `complete`,
 Human-readable without `--json`. Each run also writes a portable
 `report.html` inspection docket and `report.md`.
 
-**CI output.** `run` and `explore` accept `--format junit|json`:
+**CI output.** `run` and `explore` accept `--format human|junit|json` (human is
+the default):
 
 ```sh
 visual-qa run --url http://127.0.0.1:3000 --format junit --out-file qa.junit.xml

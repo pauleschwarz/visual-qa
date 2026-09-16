@@ -264,10 +264,11 @@ export async function applyIntent(intent, fixDir, traceDir = null) {
         () => {},
       );
     }
-    await writeFile(file, next, "utf8").catch(() => ({
-      applied: false,
-      reason: "write_failed",
-    }));
+    try {
+      await writeFile(file, next, "utf8");
+    } catch {
+      return { applied: false, reason: "write_failed", file };
+    }
     return {
       applied: true,
       file,

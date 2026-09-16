@@ -1130,7 +1130,10 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
               aria: before.aria,
               dom: before.dom,
               focus: before.focus,
-              screenshot: beforeShot,
+              // Evidence paths must resolve: a failed capture, or an after-state
+              // proven identical to before, must not advertise a PNG that was
+              // never written (22 dangling paths per fixture demo run).
+              screenshot: beforeCaptured ? beforeShot : null,
             },
             mid: midCaptured
               ? { screenshot: midShot }
@@ -1141,7 +1144,11 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
               aria: after.aria,
               dom: after.dom,
               focus: after.focus,
-              screenshot: afterShot,
+              screenshot: afterCaptured
+                ? afterShot
+                : afterIsBefore && beforeCaptured
+                  ? beforeShot
+                  : null,
             },
             trace,
           }),
@@ -1177,7 +1184,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
                 "screenshots",
                 `${edgeId}-after.png`,
               );
-              await screenshotOrIssue(
+              const edgeBeforeCaptured = await screenshotOrIssue(
                 runtime,
                 edgeBefore,
                 issues,
@@ -1201,7 +1208,12 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
                   message: edgeErr?.message,
                 });
               }
-              await screenshotOrIssue(runtime, edgeAfter, issues, "edge-after");
+              const edgeAfterCaptured = await screenshotOrIssue(
+                runtime,
+                edgeAfter,
+                issues,
+                "edge-after",
+              );
               evidence.push(
                 redact({
                   kind: "edge_input",
@@ -1211,9 +1223,12 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
                   state_id: before.state.state_id,
                   control: liveControl,
                   observation: { status: edgeStatus, error: edgeError },
-                  before: { screenshot: edgeBefore, url: before.url },
+                  before: {
+                    screenshot: edgeBeforeCaptured ? edgeBefore : null,
+                    url: before.url,
+                  },
                   after: {
-                    screenshot: edgeAfter,
+                    screenshot: edgeAfterCaptured ? edgeAfter : null,
                     url: runtime.page.url(),
                   },
                 }),

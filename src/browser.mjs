@@ -4,6 +4,8 @@
 // explorer chooses, this module executes and observes.
 
 import { chromium } from "playwright";
+import { createHash } from "node:crypto";
+import { link, rm, writeFile } from "node:fs/promises";
 import { redact } from "./config.mjs";
 
 const SEMANTIC_ROLES = [
@@ -128,6 +130,7 @@ export class BrowserRuntime {
     stableFrames = 2,
     stableGap = 30,
     navigationTimeout = 15_000,
+    hoverTimeout = 400,
   }) {
     this.baseUrl = baseUrl;
     this.viewport = viewport;
@@ -136,11 +139,13 @@ export class BrowserRuntime {
     this.stableFrames = stableFrames;
     this.stableGap = stableGap;
     this.navigationTimeout = navigationTimeout;
+    this.hoverTimeout = hoverTimeout;
     this.console = [];
     this.pageErrors = [];
     this.network = [];
     this.dialogs = [];
     this.popups = [];
+    this._shotByDigest = new Map();
   }
 
   async start() {
@@ -331,10 +336,30 @@ export class BrowserRuntime {
 
   async ariaSnapshot() {
     try {
-      return await this.page.locator("body").ariaSnapshot({ timeout: 4000 });
+      const snapshot = await this.page
+        .locator("body")
+        .ariaSnapshot({ timeout: 4_000 });
+      if (snapshot) return snapshot;
     } catch {
-      return "";
+      // Fall through to the DOM-derived semantic snapshot below. An empty
+      // ARIA tree is not a valid stand-in for a failed probe: it would merge
+      // unrelated UI states and silently reduce the bounded walk's coverage.
     }
+    return this.page
+      .evaluate(() =>
+        [...document.querySelectorAll("body *")]
+          .map((el) => {
+            const role = el.getAttribute("role") || el.tagName.toLowerCase();
+            const name =
+              el.getAttribute("aria-label") ||
+              el.getAttribute("aria-labelledby") ||
+              el.textContent ||
+              "";
+            return `${role}:${name.replace(/\s+/g, " ").trim().slice(0, 160)}`;
+          })
+          .join("\n"),
+      )
+      .catch(() => "[aria-snapshot-unavailable]");
   }
 
   async domSnapshot() {
@@ -735,9 +760,14 @@ export class BrowserRuntime {
     await this.waitForStableState({ frames: 2, gap: 20 });
   }
 
-  /** Hover affordance probe — records CSS :hover without committing a click. */
+  /**
+   * Hover affordance probe — records CSS :hover without committing a click.
+   * Best-effort by contract (driveControl swallows failures), so it gets a
+   * short leash: a full action timeout here spent 1.5s per unhoverable
+   * control and burned 33s of a 128s fixture walk on discarded results.
+   */
   async hover(control) {
-    await (await this.locate(control)).hover({ timeout: 1_500 });
+    await (await this.locate(control)).hover({ timeout: this.hoverTimeout });
     await this.waitForStableState({ frames: 1, gap: 15 });
   }
 
@@ -794,6 +824,35 @@ export class BrowserRuntime {
     await this.waitForStableState();
   }
 
+  /**
+   * Evidence is content, not bytes on disk: a bounded walk re-photographs the
+   * same unchanged viewport dozens of times (a 13-state fixture run wrote 207
+   * files holding 30 distinct images). Write each distinct image once and hard
+   * link every later capture of the same pixels onto it, so every evidence
+   * path still resolves while the out-dir stops carrying ~85% duplicates.
+   */
+  async #writeShot(buffer, path) {
+    const digest = createHash("sha1").update(buffer).digest("hex");
+    const first = this._shotByDigest.get(digest);
+    // Always unlink first: writeFile into an existing hard link would rewrite
+    // the shared inode and silently corrupt every earlier capture pointing at it.
+    await rm(path, { force: true });
+    for (const [key, value] of this._shotByDigest) {
+      if (value === path && key !== digest) this._shotByDigest.delete(key);
+    }
+    if (first && first !== path) {
+      try {
+        await link(first, path);
+        return buffer;
+      } catch {
+        // Cross-device or unsupported link: fall through to a plain write.
+      }
+    }
+    await writeFile(path, buffer);
+    if (!first) this._shotByDigest.set(digest, path);
+    return buffer;
+  }
+
   async screenshot(
     path,
     { fullPage = false, stable = true, maxFullPageHeight = 12_000 } = {},
@@ -810,19 +869,19 @@ export class BrowserRuntime {
           ),
         ),
       }), maxFullPageHeight);
-      return this.page.screenshot({
-        path,
+      const buffer = await this.page.screenshot({
         clip: { x: 0, y: 0, ...dimensions },
         animations: "disabled",
         caret: "hide",
       });
+      return this.#writeShot(buffer, path);
     }
-    return this.page.screenshot({
-      path,
+    const buffer = await this.page.screenshot({
       fullPage: false,
       animations: "disabled",
       caret: "hide",
     });
+    return this.#writeShot(buffer, path);
   }
 
   async visibleText(limit = 1200) {

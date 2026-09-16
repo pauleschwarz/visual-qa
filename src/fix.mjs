@@ -164,12 +164,23 @@ function titleForDir(dir) {
 
 function insertTitle(html, title) {
   const tag = `<title>${title}</title>`;
-  const metaCharset = /<meta[^>]+charset[^>]*>/i.exec(html);
+  const head = /<head[^>]*>/i.exec(html);
+  const metaCharset = head
+    ? new RegExp(`<meta[^>]+charset[^>]*>`, "ig")
+    : null;
+  let charset = null;
   if (metaCharset) {
-    const at = metaCharset.index + metaCharset[0].length;
+    for (const match of html.matchAll(metaCharset)) {
+      if (match.index > head.index) {
+        charset = match;
+        break;
+      }
+    }
+  }
+  if (charset) {
+    const at = charset.index + charset[0].length;
     return `${html.slice(0, at)}\n${tag}${html.slice(at)}`;
   }
-  const head = /<head[^>]*>/i.exec(html);
   if (head) {
     const at = head.index + head[0].length;
     return `${html.slice(0, at)}\n  ${tag}${html.slice(at)}`;
@@ -234,16 +245,10 @@ export async function applyFixes(fixes = [], fixDir, traceDir = null) {
     let next = html;
     if (remaining.has("title") && !/<title[\s>]/i.test(next)) {
       next = insertTitle(next, title);
-      remaining.delete("title");
-      applied.push({ kind: "title", file });
     }
     if (remaining.has("lang")) {
       const withLang = insertLang(next);
-      if (withLang) {
-        next = withLang;
-        remaining.delete("lang");
-        applied.push({ kind: "lang", file });
-      }
+      if (withLang) next = withLang;
     }
     if (next !== html) {
       if (traceDir) {
@@ -256,10 +261,19 @@ export async function applyFixes(fixes = [], fixDir, traceDir = null) {
           () => {},
         );
       }
-      await writeFile(file, next, "utf8").catch(() => {
-        // Unwritable target: the fix stage reports it as unapplied via the
-        // remaining set instead of failing the whole run.
-      });
+      try {
+        await writeFile(file, next, "utf8");
+      } catch {
+        continue;
+      }
+      if (remaining.has("title") && !/<title[\s>]/i.test(html)) {
+        remaining.delete("title");
+        applied.push({ kind: "title", file });
+      }
+      if (remaining.has("lang") && insertLang(html)) {
+        remaining.delete("lang");
+        applied.push({ kind: "lang", file });
+      }
     }
   }
 

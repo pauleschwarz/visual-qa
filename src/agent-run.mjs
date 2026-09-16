@@ -381,10 +381,10 @@ export async function agentRun({
   }
 
   const report = await run(runInput);
-  report.agent_run = agentMeta;
+  // run() owns phase-level agent metadata; preserve it while binding the
+  // durable git/design receipt captured before the walk.
+  report.agent_run = { ...(report.agent_run || {}), ...agentMeta };
   report.design_contract = designContractMeta(design) ?? report.design_contract;
-  // Ensure git + design always present on agent-run evidence
-  if (!report.agent_run?.git?.head) report.agent_run = agentMeta;
 
   await writeFile(join(out, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
   await writeFile(

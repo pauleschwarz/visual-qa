@@ -95,8 +95,10 @@ actions, 15 minutes. Learn with
 | --- | --- |
 | `PASS` | Explored completely, zero blocking findings, **and** vision review completed |
 | `FAIL` | Findings exist |
-| `UNPROVEN` | Clean surface, but only low-severity notes — not a ship gate pass |
 | `COVERAGE_INCOMPLETE` | Bounded budget stopped the walk **or** vision review missing — **never** a pass |
+
+`UNPROVEN` is emitted only by `visual-qa agent-gate` when joined Visual QA and
+Verity evidence cannot prove a ship gate pass.
 
 ## Exit codes
 

@@ -96,7 +96,9 @@ export function evaluateAgentGate({ visual, verity }) {
   if (visual.verdict !== "PASS") blockers.push(`visual_qa_verdict_${visual.verdict ?? "missing"}`);
   if (
     Array.isArray(visual.issues) &&
-    visual.issues.some((issue) => ["critical", "high"].includes(issue?.severity))
+    visual.issues.some((issue) =>
+      ["critical", "high"].includes(String(issue?.severity || "").toLowerCase()),
+    )
   )
     blockers.push("visual_qa_unresolved_issues");
   if (visual.complete !== true) blockers.push("visual_qa_incomplete");

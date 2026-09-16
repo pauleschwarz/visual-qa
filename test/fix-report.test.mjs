@@ -44,6 +44,22 @@ test("applyFixes inserts title and lang into static html", async () => {
   assert.ok(html.includes("<title>") === true);
 });
 
+test("applyFixes inserts title inside an existing head", async () => {
+  const dir = await mkdtemp(`${tmpdir()}/vqa-fix-`);
+  const file = join(dir, "index.html");
+  await writeFile(
+    file,
+    "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width\"></head><body>hi</body></html>",
+  );
+
+  const { applied, skipped } = await applyFixes([{ kind: "title" }], dir);
+  const html = await readFile(file, "utf8");
+
+  assert.deepEqual(applied, [{ kind: "title", file }]);
+  assert.deepEqual(skipped, []);
+  assert.equal((html.match(/<head\b/gi) || []).length, 1);
+  assert.match(html, /<head>\s*<title>[^<]+<\/title>/);
+});
 test("applyFixes skips already-correct documents and unwritable dirs", async () => {
   const dir = await mkdtemp(`${tmpdir()}/vqa-fix-`);
   const file = join(dir, "index.html");

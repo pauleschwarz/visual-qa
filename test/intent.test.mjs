@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -87,6 +87,17 @@ test("applyIntent writes resolved rgb, not locale color words", async () => {
   assert.doesNotMatch(html, /color:grün/);
 });
 
+test("applyIntent reports a vanished target file instead of claiming success", async () => {
+  const dir = await mkdtemp(`${tmpdir()}/vqa-intent-`);
+  const file = join(dir, "index.html");
+  await writeFile(file, '<button style="color:#000">Add item</button>');
+  const intent = parseIntent('change the color of "Add item" to #10b981');
+  await rm(file);
+
+  const result = await applyIntent(intent, dir);
+
+  assert.deepEqual(result, { applied: false, reason: "no_matching_file" });
+});
 test("applyIntent reports a missing target instead of guessing", async () => {
   const dir = await mkdtemp(`${tmpdir()}/vqa-intent-`);
   await writeFile(join(dir, "index.html"), "<html><body><p>hi</p></body></html>");

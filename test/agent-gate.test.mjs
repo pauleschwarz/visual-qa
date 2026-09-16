@@ -74,6 +74,13 @@ test("agent gate rejects contradictory PASS reports with unresolved issues", () 
   assert.ok(result.blockers.includes("visual_qa_unresolved_issues"));
 });
 
+test("agent gate blocks case-variant high severities", () => {
+  const report = visual();
+  report.issues = [{ severity: "Critical", title: "Still broken" }];
+  const result = evaluateAgentGate({ visual: report, verity: verity() });
+  assert.equal(result.ok, false);
+  assert.ok(result.blockers.includes("visual_qa_unresolved_issues"));
+});
 test("agent gate sends Verity warnings to human review instead of auto-passing", () => {
   const result = evaluateAgentGate({
     visual: visual(),
