@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.10 — 2026-09-19
+
+### Path-prefix bounce
+- After an action lands outside `--path-prefix`, the hop is recorded as `OUTSIDE_PATH_PREFIX` and the walk restores the origin state instead of BFS-queuing shell routes.
+
 ## 0.2.9 — 2026-09-19
 
 ### Feature-scoped walks
