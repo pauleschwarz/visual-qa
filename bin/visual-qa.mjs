@@ -20,7 +20,7 @@ function usage({ error = false, message = null } = {}) {
     "  visual-qa demo [--out DIR] [bounds flags]              zero-setup first run\n" +
     "  visual-qa run --url URL [--out DIR] [--isolated] [--autofix verified] [--fix-dir DIR]\n" +
     '                 [--intent "instruction"] [--max-agent-calls N] [--mode off|changed|full] [bounds flags]\n' +
-    "                 [--no-prepare-review] [--no-edge-input-probes] [--design-contract FILE]\n" +
+    "                 [--path-prefix PATH] [--no-prepare-review] [--no-edge-input-probes] [--design-contract FILE]\n" +
     "  visual-qa explore --url URL [--out DIR] [bounds flags]  deterministic core only\n" +
     "  visual-qa report <DIR> [--json]                         summarize an out-dir for agents\n" +
     '  visual-qa intent --intent "..." --fix-dir DIR [--json]   catalog dry-run, no browser\n' +
@@ -34,6 +34,7 @@ function usage({ error = false, message = null } = {}) {
     "  visual-qa agent-gate <QA-DIR> <verity.json> [--json]     join independent Visual QA + Verity evidence\n" +
     "Output flags (run/explore): --format human|json|junit, --out-file FILE (junit)\n" +
     "Mode flags:   --changed-target URL (repeatable, required for --mode changed)\n" +
+    "              --path-prefix PATH (skip same-origin links outside pathname prefix)\n" +
     "              --baseline-dir DIR (<route-key>/<viewport>.png or legacy <viewport>.png)\n" +
     "              --design-contract FILE (DESIGN.md; auto-discover DESIGN.md in cwd when present)\n" +
     "              --allow-destructive (only with --isolated)\n" +
@@ -54,6 +55,7 @@ const VALUE_OPTIONS = new Set([
   "--baseline-dir",
   "--baseline-url",
   "--changed-target",
+  "--path-prefix",
   "--design-contract",
   "--git-ref",
   "--autofix",
@@ -437,6 +439,7 @@ if (command === "agent-gate") {
     intent = null,
     baselineDir = null,
     designContractPath = null,
+    pathPrefix = null,
     format = "human",
     outFile = null,
     prepareReview = true,
@@ -453,6 +456,7 @@ if (command === "agent-gate") {
     else if (arg === "--baseline-dir") baselineDir = resolve(args[++i]);
     else if (arg === "--design-contract") designContractPath = args[++i];
     else if (arg === "--changed-target") changedTargets.push(args[++i]);
+    else if (arg === "--path-prefix") pathPrefix = args[++i];
     else if (arg === "--autofix") autofix = args[++i];
     else if (arg === "--fix-dir") fixDir = resolve(args[++i]);
     else if (arg === "--intent") intent = args[++i];
@@ -525,6 +529,7 @@ if (command === "agent-gate") {
       designContractPath,
       projectRoot: process.cwd(),
       changedTargets,
+      pathPrefix,
       autofix,
       fixDir,
       intent,

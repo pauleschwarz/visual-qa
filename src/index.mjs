@@ -59,5 +59,7 @@ export {
   diffSignals,
   foldAria,
   normalizeUrl,
+  pathAllowed,
+  sameOrigin,
   scrubVolatile,
 } from "./state.mjs";

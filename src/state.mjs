@@ -45,6 +45,24 @@ export function sameOrigin(raw, baseUrl) {
   }
 }
 
+/**
+ * True when raw stays under an optional path prefix on the same origin.
+ * Used by feature-scoped runs (`--path-prefix /app/step/photography`) so shell
+ * chrome links do not burn the walk budget off-feature. Empty prefix = allow.
+ */
+export function pathAllowed(raw, baseUrl, pathPrefix) {
+  if (!pathPrefix) return true;
+  try {
+    const target = new URL(raw, baseUrl);
+    if (target.origin !== new URL(baseUrl).origin) return false;
+    const prefix = String(pathPrefix).replace(/\/+$/, "") || "/";
+    const path = target.pathname || "/";
+    return path === prefix || path.startsWith(`${prefix}/`);
+  } catch {
+    return false;
+  }
+}
+
 /** Normalize a URL: drop origin noise, volatile query values, hash-only jumps. */
 export function normalizeUrl(raw, baseUrl) {
   let u;

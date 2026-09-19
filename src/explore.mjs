@@ -25,6 +25,7 @@ import {
   buildState,
   diffSignals,
   normalizeUrl,
+  pathAllowed,
   sameOrigin,
   scrubVolatile,
 } from "./state.mjs";
@@ -333,10 +334,19 @@ function styleFingerprint(runtime) {
   }).catch(() => null);
 }
 
+/**
+ * Flag only when the interaction looks like a real design-system leak.
+ * radii+colors alone fire on dialogs, disabled Finish buttons, and sticky
+ * chrome reflows — noise that drowned feature runs. fontFamilies alone, or
+ * three fingerprint keys together, still counts.
+ */
 export function styleShift(before, after) {
   if (!before || !after) return null;
   const changed = Object.keys(before).filter((key) => before[key] !== after[key]);
-  return changed.length ? { before, after, changed } : null;
+  if (!changed.length) return null;
+  if (changed.includes("fontFamilies") || changed.length >= 3)
+    return { before, after, changed };
+  return null;
 }
 
 /** Resolve a recorded control against the live inventory before replay. */
@@ -908,6 +918,21 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
             action_id: id,
             status: "skipped",
             skip_reason: "EXTERNAL_NAVIGATION",
+            control,
+          });
+          continue;
+        }
+        // Feature-scoped runs stay under --path-prefix. Shell chrome (home,
+        // steps list, start over) otherwise burns the budget off-feature.
+        if (
+          control.role === "link" &&
+          control.href &&
+          !pathAllowed(control.href, config.baseUrl, config.pathPrefix)
+        ) {
+          evidence.push({
+            action_id: id,
+            status: "skipped",
+            skip_reason: "OUTSIDE_PATH_PREFIX",
             control,
           });
           continue;

@@ -118,6 +118,16 @@ function validatedBaseUrl(value) {
   return String(value);
 }
 
+/** Empty/null → null. Leading slash enforced; trailing slash stripped. */
+function normalizePathPrefix(value) {
+  if (value === undefined || value === null || value === "") return null;
+  let prefix = String(value).trim();
+  if (!prefix) return null;
+  if (!prefix.startsWith("/")) prefix = `/${prefix}`;
+  prefix = prefix.replace(/\/+$/, "") || "/";
+  return prefix;
+}
+
 function resolvedBounds(input = {}) {
   const unknown = Object.keys(input).filter((key) => !(key in DEFAULT_BOUNDS));
   if (unknown.length) throw new Error(`Unknown bound "${unknown[0]}"`);
@@ -229,6 +239,9 @@ export function resolveConfig(input = {}) {
     designContractPath: input.designContractPath || null,
     agentRun: input.agentRun && typeof input.agentRun === "object" ? input.agentRun : null,
     changedTargets,
+    // Optional pathname gate for feature-scoped walks. Same origin only;
+    // links outside the prefix are skipped (see explore pathAllowed).
+    pathPrefix: normalizePathPrefix(input.pathPrefix),
     autofix: input.autofix === "verified" ? "verified" : false,
     // Where fixable document-level defects (title, lang) are applied.
     // Without a fixDir the fix stage only plans, never edits.
