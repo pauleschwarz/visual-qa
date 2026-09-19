@@ -8,6 +8,7 @@ import {
   buildState,
   diffSignals,
   normalizeUrl,
+  pathAllowed,
   sameOrigin,
   scrubVolatile,
 } from "../src/state.mjs";
@@ -323,14 +324,44 @@ test("rankControlsForWalk prefers toggles over later buttons", async () => {
   );
 });
 
-test("styleShift reports a single fingerprint key", async () => {
+test("styleShift ignores single-key chrome noise", async () => {
   const { styleShift } = await import("../src/explore.mjs");
   assert.equal(
-    styleShift({ colors: "a", radii: "b" }, { colors: "a", radii: "b" }),
+    styleShift({ colors: "a", radii: "b", fontFamilies: "f" }, { colors: "a", radii: "b", fontFamilies: "f" }),
+    null,
+  );
+  // radii+colors alone is dialog/chrome reflow — not a design leak
+  assert.equal(
+    styleShift({ colors: "a", radii: "b", fontFamilies: "f" }, { colors: "c", radii: "d", fontFamilies: "f" }),
     null,
   );
   assert.deepEqual(
-    styleShift({ colors: "a", radii: "b" }, { colors: "c", radii: "b" }).changed,
-    ["colors"],
+    styleShift({ colors: "a", radii: "b", fontFamilies: "f" }, { colors: "a", radii: "b", fontFamilies: "g" }).changed,
+    ["fontFamilies"],
   );
+  assert.deepEqual(
+    styleShift(
+      { colors: "a", radii: "b", fontFamilies: "f" },
+      { colors: "c", radii: "d", fontFamilies: "g" },
+    ).changed.sort(),
+    ["colors", "fontFamilies", "radii"],
+  );
+});
+
+test("pathAllowed gates same-origin pathnames", () => {
+  const base = "http://127.0.0.1:5175/app/step/photography";
+  assert.equal(pathAllowed("/app/step/photography", base, null), true);
+  assert.equal(pathAllowed("/app/step/photography", base, "/app/step/photography"), true);
+  assert.equal(pathAllowed("/app/step/photography/extra", base, "/app/step/photography"), true);
+  assert.equal(pathAllowed("/app", base, "/app/step/photography"), false);
+  assert.equal(pathAllowed("https://evil.test/app/step/photography", base, "/app/step/photography"), false);
+});
+
+test("resolveConfig normalizes pathPrefix", () => {
+  const cfg = resolveConfig({
+    baseUrl: "http://127.0.0.1:1/",
+    pathPrefix: "app/step/photography/",
+  });
+  assert.equal(cfg.pathPrefix, "/app/step/photography");
+  assert.equal(resolveConfig({ baseUrl: "http://127.0.0.1:1/" }).pathPrefix, null);
 });
