@@ -15,7 +15,7 @@ export {
   runScrollChecks,
   verdictFor,
 } from "./checks.mjs";
-export { explore } from "./explore.mjs";
+export { explore, rankControlsForWalk, styleShift } from "./explore.mjs";
 export {
   applyIntent,
   dryRunIntent,

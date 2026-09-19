@@ -6,6 +6,8 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { probeEdgeValuesFor, probeValueFor } from "../src/browser.mjs";
 import { explore } from "../src/explore.mjs";
+import { runLayoutChecks, runScrollChecks } from "../src/checks.mjs";
+import { runSecurityChecks } from "../src/security.mjs";
 import { runSlopChecks } from "../src/slop.mjs";
 
 const exists = (path) => access(path).then(() => true, () => false);
@@ -141,6 +143,69 @@ test("form-heavy exploration types values and writes action plus state images", 
   }
 });
 
+test("interactive mandatory paths expose toggle, text, scroll, and chrome defects", async () => {
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Mandatory paths</title><meta name="description" content="QA"></head><body>
+  <style>
+    body { margin: 0; height: 2200px; }
+    #sticky { position: sticky; top: 0; height: 72px; background: #fff; z-index: 2; }
+    #covered { position: fixed; top: 0; left: 0; right: 0; height: 72px; background: #111; z-index: 3; }
+    #covered-2 { position: fixed; top: 36px; left: 0; right: 0; height: 72px; background: #222; z-index: 4; }
+    #long { width: 80px; white-space: nowrap; overflow: hidden; text-overflow: clip; }
+    #style-shift { border-radius: 4px; }
+    #deep { margin-top: 1200px; }
+  </style>
+  <div id="sticky">Sticky navigation</div><div id="covered">Pinned status</div>
+  <div id="covered-2">Pinned notice</div>
+  <label><input id="terms" type="checkbox"> Terms</label>
+  <label><input id="radio-a" type="radio" name="plan" checked> Basic</label>
+  <label><input id="radio-b" type="radio" name="plan"> Pro</label>
+  <button id="darkmode" role="switch" aria-pressed="false">Dark mode</button>
+  <button id="style-shift">Change brand</button>
+  <label>Notes <input id="long" type="text"></label>
+  <button id="deep">Deep action</button>
+  <p id="state"></p>
+  <script>
+    for (const id of ['terms', 'radio-a', 'radio-b', 'long']) {
+      document.getElementById(id).addEventListener('change', () => state.textContent = terms.checked + ':' + radio-b.checked + ':' + long.value.length);
+    }
+    darkmode.addEventListener('click', () => darkmode.setAttribute('aria-pressed', String(darkmode.getAttribute('aria-pressed') !== 'true')));
+    document.getElementById('style-shift').addEventListener('click', () => {
+      document.body.style.fontFamily = 'serif';
+      document.body.style.background = '#3b0764';
+      document.querySelectorAll('button').forEach((button) => { button.style.borderRadius = '37px'; button.style.color = '#fde047'; });
+    });
+    long.addEventListener('input', () => state.textContent = terms.checked + ':' + radio-b.checked + ':' + long.value.length);
+  </script></body></html>`;
+  const server = await serve(html);
+  const outDir = await mkdtemp(`${tmpdir()}/vqa-mandatory-paths-`);
+  try {
+    const report = await explore({
+      baseUrl: `http://127.0.0.1:${server.address().port}/`,
+      outDir,
+      viewports: [{ name: "desktop", width: 800, height: 600 }],
+      bounds: { max_states: 16, max_depth: 3, max_actions_per_state: 12, max_total_actions: 24, max_runtime_ms: 90_000 },
+    });
+    const observed = report.evidence.filter((entry) => entry.observation?.status === "observed");
+    assert.equal(observed.find((entry) => entry.control?.id === "terms")?.observation.control_changed, true);
+    assert.equal(observed.find((entry) => entry.control?.id === "radio-b")?.observation.control_changed, true);
+    assert.equal(observed.find((entry) => entry.control?.id === "darkmode")?.observation.control_changed, true);
+    assert.equal(observed.find((entry) => entry.control?.id === "long")?.observation.control_changed, true);
+    assert.ok(report.issues.some((issue) => issue.title === "Fixed chrome overlaps"));
+    assert.ok(report.issues.some((issue) => issue.title === "Fixed chrome blocks interactive content while scrolling"));
+    assert.ok(report.issues.some((issue) => issue.title === "Interactive content clipped after input"));
+    const styleShift = report.issues.find(
+      (issue) => issue.title === "Interaction destabilizes visual style identity",
+    );
+    assert.deepEqual(styleShift?.evidence?.style_identity?.changed.sort(), [
+      "colors",
+      "fontFamilies",
+      "radii",
+    ]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
 test("edge input probes can be disabled", async () => {
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>T</title><meta name="description" content="t"></head><body>
   <label>Name <input id="name" type="text"></label>
@@ -298,5 +363,69 @@ test("deterministic slop checks catch marketing fluff type chaos and template ca
     );
   } finally {
     await browser.close();
+  }
+});
+
+test("layout clip, sticky occlusion, labeled hit area, and sequential XSS canaries", async () => {
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Probes</title></head><body>
+  <style>
+    body { margin: 0; height: 1800px; }
+    #sticky { position: sticky; top: 0; height: 120px; background: #111; color: #fff; z-index: 9; }
+    #long { width: 80px; overflow: hidden; white-space: nowrap; }
+    #secret { width: 72px; overflow: hidden; }
+    #notes { width: 120px; height: 28px; overflow: hidden; }
+    #tiny { width: 12px; height: 12px; padding: 0; }
+    label[for=ok] { display: inline-block; min-width: 120px; min-height: 32px; }
+    #ok { width: 12px; height: 12px; }
+    #deep { margin-top: 900px; }
+  </style>
+  <div id="sticky">Sticky bar</div>
+  <input id="a"><input id="b">
+  <div id="sink-a"></div><div id="sink-b"></div>
+  <input id="long" type="text" value="${"X".repeat(200)}">
+  <input id="secret" type="password" value="${"X".repeat(40)}">
+  <textarea id="notes">${"line\n".repeat(40)}</textarea>
+  <button id="tiny">.</button>
+  <label for="ok">Accept terms of service</label>
+  <input id="ok" type="checkbox">
+  <div style="height:400px"><p>${"Readable filler. ".repeat(40)}</p></div>
+  <button id="deep" style="margin-top:900px">Deep</button>
+  <script>
+    a.addEventListener('blur', () => document.getElementById('sink-a').innerHTML = a.value);
+    b.addEventListener('blur', () => document.getElementById('sink-b').innerHTML = b.value);
+  </script>
+  </body></html>`;
+  const server = await serve(html);
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+    await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    const layout = await runLayoutChecks(page, "desktop");
+    const clipped = layout.find((issue) => issue.title === "Interactive content clipped after input");
+    const ids = (clipped?.evidence.items || []).map((item) => item.id);
+    assert.ok(ids.includes("long"), ids.join(","));
+    assert.ok(ids.includes("secret"), ids.join(","));
+    assert.ok(ids.includes("notes"), ids.join(","));
+    const small = layout.find((issue) => issue.title === "Touch targets below 24px");
+    const smallIds = (small?.evidence.items || []).map((item) => item.id || item.text || "").join(" ");
+    assert.match(smallIds, /tiny/i);
+    assert.doesNotMatch(smallIds, /\bok\b/);
+    const scroll = await runScrollChecks(page, "desktop", { samples: 12 });
+    assert.ok(
+      scroll.some((issue) => issue.title === "Fixed chrome blocks interactive content while scrolling"),
+      scroll.map((issue) => issue.title).join(" | "),
+    );
+    const security = await runSecurityChecks({
+      page,
+      baseUrl: `http://127.0.0.1:${server.address().port}/`,
+      viewport: "desktop",
+    });
+    const xss = security.filter(
+      (issue) => issue.title === "Unescaped HTML reflection in input handling",
+    );
+    assert.equal(xss.length, 2, xss.map((issue) => issue.evidence.input).join(","));
+  } finally {
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
   }
 });

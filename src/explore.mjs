@@ -143,6 +143,35 @@ function expectedFor(control) {
 
 const FILL_ROLES = new Set(["textbox", "searchbox", "spinbutton"]);
 
+const DRIVE_RANK = {
+  checkbox: 0,
+  radio: 0,
+  switch: 0,
+  textbox: 1,
+  searchbox: 1,
+  spinbutton: 1,
+  slider: 2,
+  combobox: 2,
+  tab: 3,
+  button: 4,
+  menuitem: 4,
+  option: 4,
+  link: 5,
+};
+
+/** Prefer state-changing controls before decorative buttons when the walk is capped. */
+export function rankControlsForWalk(controls = []) {
+  return controls
+    .map((control, index) => ({ control, index }))
+    .sort((left, right) => {
+      const rankA = DRIVE_RANK[left.control.role] ?? 6;
+      const rankB = DRIVE_RANK[right.control.role] ?? 6;
+      if (rankA !== rankB) return rankA - rankB;
+      return left.index - right.index;
+    })
+    .map(({ control }) => control);
+}
+
 /**
  * Drive one control the same way in live explore and SPA replay.
  * Never auto-submits forms — fill/Tab or click is enough.
@@ -270,6 +299,44 @@ async function snapshot(runtime, config) {
     locale,
   });
   return { state, url, theme, locale, controls, aria, dom, text, focus };
+}
+
+function styleFingerprint(runtime) {
+  return runtime.page.evaluate(() => {
+    const visible = (el) => {
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2 || r.bottom <= 0 || r.top >= innerHeight)
+        return false;
+      const style = getComputedStyle(el);
+      return style.display !== "none" && style.visibility !== "hidden";
+    };
+    const tokens = (values) =>
+      [...new Set(values.filter(Boolean))].sort().slice(0, 24).join("|");
+    const nodes = [...document.querySelectorAll("body *")]
+      .filter(visible)
+      .slice(0, 250);
+    const chrome = nodes.filter((el) =>
+      el.matches("header,nav,main > section:first-of-type,[role=banner],[role=navigation],button,[role=button]"),
+    );
+    return {
+      fontFamilies: tokens(
+        nodes.map((el) => getComputedStyle(el).fontFamily.split(",")[0].trim()),
+      ),
+      radii: tokens(nodes.map((el) => getComputedStyle(el).borderRadius)),
+      colors: tokens(
+        chrome.flatMap((el) => {
+          const style = getComputedStyle(el);
+          return [style.color, style.backgroundColor, style.borderColor];
+        }),
+      ),
+    };
+  }).catch(() => null);
+}
+
+export function styleShift(before, after) {
+  if (!before || !after) return null;
+  const changed = Object.keys(before).filter((key) => before[key] !== after[key]);
+  return changed.length ? { before, after, changed } : null;
 }
 
 /** Resolve a recorded control against the live inventory before replay. */
@@ -791,7 +858,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
         live,
         intended: queued.snapshot,
       };
-      const controls = live.controls.slice(
+      const controls = rankControlsForWalk(live.controls).slice(
         0,
         config.bounds.max_actions_per_state,
       );
@@ -917,6 +984,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           });
           continue;
         }
+        const beforeStyle = await styleFingerprint(runtime);
         const stepStarted = now();
         const endEvents = runtime.markStep(id);
         const beforeShot = join(
@@ -1045,6 +1113,22 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           control,
         );
         const themeChanged = before.theme !== after.theme;
+        const afterStyle = afterIsBefore ? beforeStyle : await styleFingerprint(runtime);
+        const styleIdentityShift = styleShift(beforeStyle, afterStyle);
+        if (styleIdentityShift)
+          issues.push(
+            explorerIssue(
+              "visual",
+              "Interaction destabilizes visual style identity",
+              "medium",
+              "A required interaction changed multiple global style-system signals; verify this is intentional rather than accidental style leakage.",
+              {
+                action_id: id,
+                control: liveControl,
+                style_identity: styleIdentityShift,
+              },
+            ),
+          );
         // Pixel oracle only decides the dead-control case: when semantics
         // already prove a change, the PNG decode x2 is wasted work in the
         // common success path.
@@ -1214,6 +1298,12 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
                 issues,
                 "edge-after",
               );
+              // A primary fill may fit while the required long-input path
+              // exposes clipped characters. Check it on the overlong probe
+              // before restoring, so a field cannot look clean only because
+              // its overflow occurs outside the normal state graph.
+              if (edge.kind === "overlong")
+                issues.push(...(await runLayoutChecks(runtime.page, viewport)));
               evidence.push(
                 redact({
                   kind: "edge_input",

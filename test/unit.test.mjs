@@ -307,3 +307,30 @@ test("identical screenshots compare clean, differing ones do not", async () => {
   assert.equal(diff.changed, true);
   assert.ok(diff.ratio > 0);
 });
+
+test("rankControlsForWalk prefers toggles over later buttons", async () => {
+  const { rankControlsForWalk } = await import("../src/explore.mjs");
+  const ranked = rankControlsForWalk([
+    { role: "button", id: "extra" },
+    { role: "link", id: "nav" },
+    { role: "checkbox", id: "terms" },
+    { role: "textbox", id: "notes" },
+    { role: "switch", id: "dark" },
+  ]);
+  assert.deepEqual(
+    ranked.map((control) => control.id),
+    ["terms", "dark", "notes", "extra", "nav"],
+  );
+});
+
+test("styleShift reports a single fingerprint key", async () => {
+  const { styleShift } = await import("../src/explore.mjs");
+  assert.equal(
+    styleShift({ colors: "a", radii: "b" }, { colors: "a", radii: "b" }),
+    null,
+  );
+  assert.deepEqual(
+    styleShift({ colors: "a", radii: "b" }, { colors: "c", radii: "b" }).changed,
+    ["colors"],
+  );
+});

@@ -155,19 +155,80 @@ export async function runLayoutChecks(page, viewport) {
           tag: el.tagName,
           text: labelOf(el),
         }));
+      const inputClipped = [];
+      for (const el of document.querySelectorAll(
+        "input,textarea,[contenteditable='true']",
+      )) {
+        if (inputClipped.length >= 10) break;
+        const r = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        // Clip is a box/value defect, not a viewport one: fields below the
+        // fold still hide overflow after input.
+        if (style.display === "none" || style.visibility === "hidden") continue;
+        const tag = el.tagName.toLowerCase();
+        const type = (el.getAttribute("type") || "").toLowerCase();
+        const isTextarea = tag === "textarea";
+        const isPassword = type === "password";
+        if (r.width < 2 || r.height < 2) continue;
+        if (isTextarea ? style.overflowY === "visible" : style.overflowX === "visible")
+          continue;
+        const text =
+          "value" in el
+            ? String(el.value || "")
+            : String(el.textContent || "");
+        if (!text) continue;
+        let textOverflow = false;
+        if (isTextarea) {
+          textOverflow = el.scrollHeight > el.clientHeight + 2;
+        } else if (isPassword) {
+          // Password fields paint bullets, not the value; measure the painted box.
+          textOverflow = el.scrollWidth > el.clientWidth + 2;
+        } else {
+          const probe = document.createElement("span");
+          probe.style.cssText = `position:fixed;left:-10000px;top:-10000px;visibility:hidden;white-space:pre;font:${style.font};letter-spacing:${style.letterSpacing};`;
+          probe.textContent = text;
+          document.body.append(probe);
+          const textWidth = probe.getBoundingClientRect().width;
+          probe.remove();
+          textOverflow = textWidth > r.width + 2;
+        }
+        if (textOverflow)
+          inputClipped.push({
+            tag: el.tagName,
+            id: el.id || null,
+            type: type || null,
+            text: labelOf(el),
+            value_length: text.length,
+          });
+      }
+      const hitBox = (el) => {
+        const rects = [...el.getClientRects()];
+        const labelled = el.labels ? [...el.labels] : [];
+        const parentLabel = el.closest("label");
+        if (parentLabel && !labelled.includes(parentLabel)) labelled.push(parentLabel);
+        for (const label of labelled) rects.push(...label.getClientRects());
+        let width = 0;
+        let height = 0;
+        for (const box of rects) {
+          width = Math.max(width, box.width);
+          height = Math.max(height, box.height);
+        }
+        return { width, height };
+      };
       const smallTargets = [
         ...document.querySelectorAll(
-          "button,a,input,select,textarea,[role=button],[role=link]",
+          "button,a,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[role=switch]",
         ),
       ]
         .filter((el) => {
           if (!isActuallyVisible(el)) return false;
-          const r = el.getBoundingClientRect();
-          return r.width > 0 && r.height > 0 && (r.width < 24 || r.height < 24);
+          const r = hitBox(el);
+          return r.width > 0 && r.height > 0 && r.width < 24 && r.height < 24;
         })
         .slice(0, 10)
         .map((el) => ({
           tag: el.tagName,
+          id: el.id || null,
           text: labelOf(el),
         }));
       const missingNames = [
@@ -185,7 +246,7 @@ export async function runLayoutChecks(page, viewport) {
         )
         .slice(0, 10)
         .map((el) => el.outerHTML.slice(0, 160));
-      return { overflow, clipped, smallTargets, missingNames };
+      return { overflow, clipped, inputClipped, smallTargets, missingNames };
     });
   } catch (error) {
     return [
@@ -217,6 +278,16 @@ export async function runLayoutChecks(page, viewport) {
         "high",
         "Interactive content is outside the viewport",
         { viewport, items: findings.clipped },
+      ),
+    );
+  if (findings.inputClipped.length)
+    out.push(
+      issue(
+        "visual",
+        "Interactive content clipped after input",
+        "high",
+        "A typed value is wider than its visible editable surface and is clipped.",
+        { viewport, items: findings.inputClipped },
       ),
     );
   if (findings.smallTargets.length)
@@ -256,7 +327,15 @@ export async function runScrollChecks(page, viewport, { samples = 12 } = {}) {
       const max = Math.max(0, root.scrollHeight - window.innerHeight);
       const start = window.scrollY;
       const fixed = [...document.querySelectorAll("body *")]
-        .filter((el) => getComputedStyle(el).position === "fixed")
+        .filter((el) => {
+          const style = getComputedStyle(el);
+          return (
+            (style.position === "fixed" || style.position === "sticky") &&
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            !(el instanceof HTMLDialogElement)
+          );
+        })
         .filter((el) => el.getAttribute("aria-hidden") !== "true")
         .filter((el) => getComputedStyle(el).pointerEvents !== "none")
         .filter((el) => {
@@ -391,10 +470,56 @@ export async function runScrollChecks(page, viewport, { samples = 12 } = {}) {
           : max >= vh * 0.9 && blank.length
             ? blank.slice(0, 1)
             : [];
+      const scrollOccluded = [];
+      const scrollStep = max / Math.max(1, steps);
+      const fixedOccluders = fixed.filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 1 && r.height > 1;
+      });
+      for (let n = 0; n <= steps; n++) {
+        const y = Math.round(n * scrollStep);
+        window.scrollTo(0, y);
+        await new Promise((r) =>
+          requestAnimationFrame(() => requestAnimationFrame(r)),
+        );
+        for (const el of document.querySelectorAll(
+          "button,a,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[role=switch]",
+        )) {
+          const r = el.getBoundingClientRect();
+          if (r.width < 2 || r.height < 2 || r.bottom <= 0 || r.top >= vh)
+            continue;
+          const style = getComputedStyle(el);
+          if (style.display === "none" || style.visibility === "hidden")
+            continue;
+          const point = [
+            Math.max(1, Math.min(vw - 1, r.left + r.width / 2)),
+            Math.max(1, Math.min(vh - 1, r.top + r.height / 2)),
+          ];
+          const top = document.elementFromPoint(...point);
+          const blocker = fixedOccluders.find(
+            (fixedEl) => fixedEl === top || fixedEl.contains(top),
+          );
+          const sameFixedLayer = fixedOccluders.some(
+            (fixedEl) => fixedEl === el || fixedEl.contains(el),
+          );
+          if (blocker && !sameFixedLayer && top !== el && !el.contains(top)) {
+            scrollOccluded.push({
+              scrollY: y,
+              control:
+                el.id ||
+                el.getAttribute("aria-label") ||
+                el.textContent?.trim() ||
+                el.tagName,
+              blocker: blocker.id || blocker.className || blocker.tagName,
+            });
+          }
+        }
+      }
       window.scrollTo(0, start);
       return {
         blank: reported.slice(0, 10),
         overlaps: overlaps.slice(0, 10),
+        occluded: scrollOccluded.slice(0, 10),
         max,
       };
     }, samples);
@@ -428,6 +553,16 @@ export async function runScrollChecks(page, viewport, { samples = 12 } = {}) {
         "medium",
         "Two fixed elements occupy the same screen area",
         { viewport, items: findings.overlaps },
+      ),
+    );
+  if (findings.occluded.length)
+    out.push(
+      issue(
+        "visual",
+        "Fixed chrome blocks interactive content while scrolling",
+        "high",
+        "A fixed bar covers the hit target of an interactive control at a sampled scroll position.",
+        { viewport, items: findings.occluded },
       ),
     );
   return out;

@@ -3,7 +3,6 @@
 import { redact } from "./config.mjs";
 
 const EVIL_ORIGIN = "https://vqa-evil.example";
-const CANARY = '"><b id="vqa-xss-canary">vqa</b>';
 const CANARY_TIMEOUT = Symbol("canary-timeout");
 const SECURITY_HEADERS = [
   "content-security-policy",
@@ -137,8 +136,10 @@ async function runCanaryProbe(page, viewport) {
   if (candidates === CANARY_TIMEOUT) return [];
   const findings = [];
 
-  for (const candidate of candidates) {
+  for (const [index, candidate] of candidates.entries()) {
     const locator = page.locator(candidate.selector).nth(candidate.nth);
+    const canaryId = `vqa-xss-canary-${index}`;
+    const payload = `"><b id="${canaryId}">vqa</b>`;
     let original;
 
     try {
@@ -149,7 +150,7 @@ async function runCanaryProbe(page, viewport) {
       if (original === CANARY_TIMEOUT) return findings;
 
       const filled = await beforeDeadline(
-        () => locator.fill(CANARY, { timeout: remainingMs(deadline) }),
+        () => locator.fill(payload, { timeout: remainingMs(deadline) }),
         deadline,
       );
       if (filled === CANARY_TIMEOUT) return findings;
@@ -163,7 +164,8 @@ async function runCanaryProbe(page, viewport) {
       const rendered = await beforeDeadline(
         () =>
           page.evaluate(
-            () => Boolean(document.querySelector("#vqa-xss-canary")),
+            (id) => Boolean(document.getElementById(id)),
+            canaryId,
           ),
         deadline,
       );
@@ -173,13 +175,20 @@ async function runCanaryProbe(page, viewport) {
             "Unescaped HTML reflection in input handling",
             "high",
             "Input text was reflected as parsed HTML after the field lost focus.",
-            { input: candidate.label, canary_rendered: true },
+            { input: candidate.label, canary_id: canaryId, canary_rendered: true },
             viewport,
           ),
         );
       }
       if (rendered === CANARY_TIMEOUT) return findings;
     } finally {
+      if (remainingMs(deadline) > 0) {
+        await beforeDeadline(
+          () =>
+            page.evaluate((id) => document.getElementById(id)?.remove(), canaryId),
+          deadline,
+        );
+      }
       if (original !== undefined && original !== CANARY_TIMEOUT && remainingMs(deadline) > 0) {
         await beforeDeadline(
           () => locator.fill(original, { timeout: remainingMs(deadline) }),

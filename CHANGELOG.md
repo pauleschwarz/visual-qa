@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.8 — 2026-09-16
+
+### Mandatory interaction coverage
+- Walk ranking prefers checkbox/radio/switch and text fields before decorative buttons so capped budgets still drive state-changing controls.
+- Layout clip probe measures password fields by painted `scrollWidth` and textareas by `scrollHeight`; text inputs still use an offscreen width probe.
+- Scroll occlusion treats `position: sticky` the same as `fixed`.
+- Style-identity shift reports on any changed fingerprint key, not only two.
+- Touch-target size uses the largest client rect among the control and its labels.
+- XSS canary uses a unique id per field and removes the previous node so later probes are not silent.
+
 ## 0.2.7 — 2026-09-14
 
 ### Fail-closed harness vision coverage

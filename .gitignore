@@ -1,5 +1,7 @@
 node_modules/
 .qa/
+.free/
+.verity/
 *.log
 .DS_Store
 debug-*.tmp.mjs
