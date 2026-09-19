@@ -337,12 +337,20 @@ export async function runVisionReview({
 
     let spent = 0;
     let modelCursor = 0;
+    // Endpoint that rejects every call (wrong model, 401, dead proxy) used to
+    // burn the full budget on identical failures. Bail after a short streak.
+    let consecutiveFailures = 0;
+    const failFastAfter = Math.max(
+      2,
+      Number(process.env.VQA_VISION_FAIL_FAST || 3) || 3,
+    );
     // Pixel-identical evidence reviewed by the same skill yields the same
     // verdict: a bounded walk repeats one unchanged viewport across many
     // states, so paying for each repeat burns the budget on known answers.
     const reviewed = new Set();
     for (const job of jobs) {
       if (spent >= calls) break;
+      if (completed < 1 && consecutiveFailures >= failFastAfter) break;
       const { pair, skill } = job;
       const { entry, beforePath, afterPath } = pair;
       let beforeDataUrl;
@@ -423,15 +431,18 @@ export async function runVisionReview({
           response?.ok === true ||
           (Number.isFinite(status) && status >= 200 && status < 300);
         if (!successful) {
+          consecutiveFailures += 1;
           dispatchLog.push({
             skill,
             model,
             ok: false,
             status,
             situation: situationLabel(pair),
+            consecutive_failures: consecutiveFailures,
           });
           continue;
         }
+        consecutiveFailures = 0;
 
         const payload = await response.json();
         raw = payload;
@@ -470,12 +481,14 @@ export async function runVisionReview({
           });
         }
       } catch (error) {
+        consecutiveFailures += 1;
         dispatchLog.push({
           skill,
           model,
           ok: false,
           error: String(error?.message || error),
           situation: situationLabel(pair),
+          consecutive_failures: consecutiveFailures,
         });
       } finally {
         clearTimeout(timeout);
@@ -517,6 +530,10 @@ export async function runVisionReview({
         attempted,
         completed,
         models: modelsUsed,
+        fail_fast:
+          consecutiveFailures >= failFastAfter && attempted > 0
+            ? { after: failFastAfter, consecutive_failures: consecutiveFailures }
+            : null,
       };
 
     return {
