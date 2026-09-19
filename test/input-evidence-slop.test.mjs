@@ -429,3 +429,31 @@ test("layout clip, sticky occlusion, labeled hit area, and sequential XSS canari
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("layout clip ignores below-fold controls inside overflow auto", async () => {
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Scroll</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    #thread { height: 400px; overflow: auto; }
+    #pad { height: 900px; }
+    #crop { height: 36px; overflow: hidden; border: 1px solid #000; }
+    #crop button { margin-top: 48px; }
+  </style></head><body>
+  <div id="thread"><div id="pad"></div><button id="deep">Deep action</button></div>
+  <div id="crop"><button id="hidden-btn">Cropped</button></div>
+  </body></html>`;
+  const server = await serve(html);
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+    await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    const layout = await runLayoutChecks(page, { name: "desktop", width: 800, height: 600 });
+    const clipped = layout.find((issue) => issue.title === "Interactive content clipped");
+    const texts = (clipped?.evidence?.items || []).map((item) => item.text);
+    assert.ok(!texts.includes("Deep action"), `below-fold in overflow:auto must not clip: ${texts}`);
+    assert.ok(texts.some((t) => /Cropped/i.test(t)), `overflow:hidden crop must clip: ${JSON.stringify(texts)}`);
+  } finally {
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

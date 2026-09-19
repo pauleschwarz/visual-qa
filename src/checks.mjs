@@ -138,17 +138,48 @@ export async function runLayoutChecks(page, viewport) {
           .slice(0, 80);
       const root = document.documentElement;
       const overflow = root.scrollWidth > root.clientWidth + 1;
+      // "Clipped" means cut by layout, not merely below the visual fold.
+      // Apps with an inner overflow-y scroller (chat threads, sheets) set
+      // document.scrollHeight === viewport; the old bottom>scrollHeight test
+      // then flagged every below-fold control as clipped. Scrollable ancestors
+      // are allowed; overflow:hidden/clip that actually crops a control is not.
+      const isCroppedByAncestor = (el) => {
+        const r = el.getBoundingClientRect();
+        for (
+          let n = el.parentElement;
+          n && n !== document.documentElement;
+          n = n.parentElement
+        ) {
+          const cs = getComputedStyle(n);
+          const ox = cs.overflowX;
+          const oy = cs.overflowY;
+          const hardX = ox === "hidden" || ox === "clip";
+          const hardY = oy === "hidden" || oy === "clip";
+          const scrollX = ox === "auto" || ox === "scroll";
+          const scrollY = oy === "auto" || oy === "scroll";
+          if (!hardX && !hardY && !scrollX && !scrollY) continue;
+          const pr = n.getBoundingClientRect();
+          const pad = 1;
+          if (hardY && (r.top < pr.top - pad || r.bottom > pr.bottom + pad))
+            return true;
+          if (hardX && (r.left < pr.left - pad || r.right > pr.right + pad))
+            return true;
+          // Scrollable: only crop when the control is larger than the scroller
+          // itself (cannot be revealed by scrolling).
+          if (scrollY && r.height > pr.height + pad) return true;
+          if (scrollX && r.width > pr.width + pad) return true;
+        }
+        return false;
+      };
       const clipped = [
         ...document.querySelectorAll("button,a,input,select,textarea,[role]"),
       ]
         .filter((el) => {
           if (!isActuallyVisible(el)) return false;
           const r = el.getBoundingClientRect();
-          return (
-            r.right > window.innerWidth + 1 ||
-            r.left < -1 ||
-            r.bottom > document.documentElement.scrollHeight + 1
-          );
+          const horiz =
+            r.right > window.innerWidth + 1 || r.left < -1;
+          return horiz || isCroppedByAncestor(el);
         })
         .slice(0, 10)
         .map((el) => ({
