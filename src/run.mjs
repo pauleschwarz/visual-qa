@@ -107,7 +107,8 @@ export async function run(input = {}) {
             completed: vision.completed ?? 0,
             max_agent_calls: config?.bounds?.max_agent_calls ?? 0,
             models: vision.models || [],
-            hint: "read vision/plan.md → spawn one subagent per batch-XX.json → review-apply",
+            recovery: "harness-subagent",
+            hint: "DEFAULT path needs no API key: read vision/plan.md → spawn one subagent per batch-XX.json → merge findings.json → review-apply. Endpoint keys are optional CI only.",
           }),
         },
       ]);
