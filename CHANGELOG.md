@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.9 — 2026-09-19
+
+### Feature-scoped walks
+- `--path-prefix PATH` skips same-origin links outside a pathname prefix so shell chrome (home, steps list, start over) does not burn the budget off-feature.
+
+### Less style-identity noise
+- `styleShift` only flags when `fontFamilies` changes or ≥3 fingerprint keys move. radii+colors alone (dialogs, disabled Finish, sticky reflow) no longer open a medium finding.
+
+### Clearer vision recovery
+- `vqa-vision-required-unavailable` evidence now stamps `recovery: harness-subagent` and states the default no-key path explicitly (plan → batch subagents → review-apply). Endpoint keys remain optional CI only.
+
 ## 0.2.8 — 2026-09-16
 
 ### Mandatory interaction coverage
