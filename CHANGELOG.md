@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.11 — 2026-09-19
+
+### Honest clip detection
+- Interactive clip no longer treats below-fold content inside `overflow: auto` as clipped when `document.scrollHeight === viewport` (chat threads, sheets).
+- Still flags `overflow: hidden/clip` crops and controls larger than their scroll parent.
+
+### Vision fail-fast
+- Endpoint mode stops after `VQA_VISION_FAIL_FAST` (default 3) consecutive failures with zero completions, instead of burning the full agent-call budget.
+- `error_no_completions` may include `fail_fast` evidence.
+
 ## 0.2.10 — 2026-09-19
 
 ### Path-prefix bounce
