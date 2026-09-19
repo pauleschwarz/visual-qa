@@ -1401,6 +1401,29 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           )),
         );
 
+        // Feature scope: a button/control that navigated off-prefix must not
+        // seed the BFS. Record the hop, then bounce back to the origin state.
+        const afterOffPrefix =
+          config.pathPrefix &&
+          !pathAllowed(after.url, config.baseUrl, config.pathPrefix);
+        if (afterOffPrefix) {
+          evidence.push(
+            redact({
+              action_id: id,
+              status: "skipped",
+              skip_reason: "OUTSIDE_PATH_PREFIX",
+              control: liveControl,
+              observation: { url: after.url, url_changed: urlChanged },
+            }),
+          );
+          await restoreOrIssue(
+            runtime,
+            { url: before.url, theme: before.theme },
+            issues,
+          );
+          continue;
+        }
+
         if (!states.has(after.state.state_id)) {
           states.set(after.state.state_id, {
             ...after.state,
