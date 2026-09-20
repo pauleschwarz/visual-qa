@@ -580,7 +580,43 @@ export async function runScrollChecks(page, viewport, { samples = 12 } = {}) {
           const sameFixedLayer = fixedOccluders.some(
             (fixedEl) => fixedEl === el || fixedEl.contains(el),
           );
-          if (blocker && !sameFixedLayer && top !== el && !el.contains(top)) {
+          // A control merely passing behind sticky chrome while the user
+          // scrolls is expected document behavior. Report only when the whole
+          // control is trapped under the occluder's painted band (no reachable
+          // pixels), not when one sampled centre point intersects it transiently.
+          const blockerRect = blocker?.getBoundingClientRect();
+          const fullyCovered =
+            blockerRect &&
+            r.left >= blockerRect.left - 1 &&
+            r.right <= blockerRect.right + 1 &&
+            r.top >= blockerRect.top - 1 &&
+            r.bottom <= blockerRect.bottom + 1;
+          const docTop = r.top + window.scrollY;
+          const docBottom = r.bottom + window.scrollY;
+          const topChrome = blockerRect && blockerRect.top <= 1;
+          const bottomChrome = blockerRect && blockerRect.bottom >= vh - 1;
+          // Reachability, not one scroll sample, decides the defect. A document
+          // control passing behind a sticky header is fine when it is exposed at
+          // scrollY=0. Likewise footer chrome is fine when max scroll can lift
+          // the whole control above it.
+          const permanentlyTrapped =
+            blockerRect &&
+            // A fixed control underneath fixed/sticky chrome is unreachable at
+            // every scroll position by definition.
+            (getComputedStyle(el).position === "fixed" ||
+              (topChrome
+                ? docTop < blockerRect.bottom - 1
+                : bottomChrome
+                  ? docBottom - blockerRect.top > max + 1
+                  : true));
+          if (
+            blocker &&
+            fullyCovered &&
+            permanentlyTrapped &&
+            !sameFixedLayer &&
+            top !== el &&
+            !el.contains(top)
+          ) {
             scrollOccluded.push({
               scrollY: y,
               control:

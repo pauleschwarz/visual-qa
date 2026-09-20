@@ -398,7 +398,7 @@ test("large inner content scroller is reported but menus and side rails are exem
   }
 });
 
-test("layout clip, sticky occlusion, labeled hit area, and sequential XSS canaries", async () => {
+test("layout clip, sticky flow, labeled hit area, and sequential XSS canaries", async () => {
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Probes</title></head><body>
   <style>
     body { margin: 0; height: 1800px; }
@@ -444,8 +444,10 @@ test("layout clip, sticky occlusion, labeled hit area, and sequential XSS canari
     assert.doesNotMatch(smallIds, /\bok\b/);
     const scroll = await runScrollChecks(page, "desktop", { samples: 12 });
     assert.ok(
-      scroll.some((issue) => issue.title === "Fixed chrome blocks interactive content while scrolling"),
-      scroll.map((issue) => issue.title).join(" | "),
+      !scroll.some(
+        (issue) => issue.title === "Fixed chrome blocks interactive content while scrolling",
+      ),
+      "controls that merely pass behind sticky chrome must not be treated as permanently blocked",
     );
     const security = await runSecurityChecks({
       page,
