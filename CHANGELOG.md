@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.12 — 2026-09-20
+
+### Bounded agent vision loop
+- Harness export now caps both action pairs and state pairs, preventing state × critic explosions that previously generated 50+ batches.
+- Harness request IDs include deterministic pair identity, preventing collisions when long state IDs share the same readable slug prefix.
+- Default agent loop reviews up to 3 state and 3 action pairs across all six critics: layout, readability, color, slop, consistency, and DESIGN.md preservation.
+- `run` and `review-prepare` accept `--max-pairs`, `--max-state-pairs`, `--batch-size`, and `--skills loop|all|list`.
+- Review plans require every batch to be merged and `review-apply` completed before vision may be claimed done.
+
 ## 0.2.11 — 2026-09-19
 
 ### Honest clip detection

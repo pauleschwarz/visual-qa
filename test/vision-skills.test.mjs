@@ -72,7 +72,9 @@ test("vision skill prompts demand harsh direct-observer slop critique", () => {
   const slop = skillPrompt("slop");
   assert.match(slop, /harsh direct-observer/i);
   assert.match(slop, /purple|mesh|glassmorphism|supercharge|feature cards/i);
+  assert.match(slop, /pill badges|rounded buttons|hierarchy/i);
   assert.match(skillPrompt("layout"), /dead empty bands|sticky/i);
+  assert.match(skillPrompt("layout"), /nested\/internal scroll|scrollbar cutting/i);
   assert.match(skillPrompt("consistency"), /spacing that jumps|font families/i);
   assert.match(skillPrompt("color"), /multi-accent|contrast|neon/i);
 });

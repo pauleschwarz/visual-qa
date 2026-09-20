@@ -159,15 +159,24 @@ do not alone flip FAIL). Missing vision is different: it blocks completeness.
 
 **Option B — DEFAULT: calling agent / subagents (no key).** After `run`,
 `.qa/vision/` already has `plan.md`, `plan.json`, and `batches/batch-XX.json`.
+Agent-loop defaults are deliberately bounded: at most 3 unique state pairs plus
+3 action pairs, reviewed by all six critics (`layout`, `readability`, `color`,
+`slop`, `consistency`, `preservation`), with 6 requests per batch. This avoids
+an unbounded state × skill explosion while still checking composition,
+legibility, palette, system consistency, generic AI slop, and `DESIGN.md`
+preservation. Override with `--max-pairs`, `--max-state-pairs`, `--batch-size`,
+and `--skills loop|all|layout,readability,...` when a deeper audit is intended.
+
 The parent agent spawns one short-lived reviewer per batch (same model family,
-e.g. `smart`): open batch → vision-read `before_abs`/`after_abs` → JSON findings
-→ exit. Parent merges into `vision/findings.json` and runs `review-apply`.
-Open → review → close. No OmniRoute key required.
+e.g. `smart`): open batch → vision-read every `before_abs`/`after_abs` → return
+one JSON finding set for every request id → exit. Parent merges into
+`vision/findings.json`, runs `review-apply`, and must verify
+`coverage.vision_complete=true`. Open → review → close. No OmniRoute key required.
 
 ```sh
 visual-qa run --url http://127.0.0.1:3000 --out .qa
 # or re-export:
-visual-qa review-prepare .qa --max-pairs 6 --batch-size 4
+visual-qa review-prepare .qa --max-pairs 3 --max-state-pairs 3 --batch-size 6 --skills loop
 # -> .qa/vision/plan.md + batches/batch-01.json …
 # spawn N subagents (smart), merge results, then:
 visual-qa review-apply .qa .qa/vision/findings.json
@@ -177,7 +186,7 @@ visual-qa review-apply .qa .qa/vision/findings.json
 CI only. Auth via `VQA_VISION_API_KEY` or `OPENAI_API_KEY` or `OMNIROUTE_API_KEY`.
 Endpoint via `VQA_VISION_ENDPOINT` or `OPENAI_BASE_URL`. Auto-arms budget when a
 key is present (`VQA_VISION_DISABLE=1` to opt out). Models via `VQA_VISION_MODELS`
-or `GET /models`. Same five skills, round-robin across models.
+or `GET /models`. Same six critics, round-robin across models.
 
 Apply validates the answers, caps `high` at `medium`, records request ids
 (re-applying is a no-op, retries cannot duplicate), recomputes the verdict,

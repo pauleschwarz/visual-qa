@@ -46,6 +46,16 @@ test("invalid bounds and unsafe destructive mode are actionable", () => {
   assert.equal(invalidBound.status, 2);
   assert.match(invalidBound.stderr, /max_states must be an integer/);
 
+  const invalidReviewBound = cli(
+    "run",
+    "--url",
+    "http://127.0.0.1:1",
+    "--max-state-pairs",
+    "many",
+  );
+  assert.equal(invalidReviewBound.status, 2);
+  assert.match(invalidReviewBound.stderr, /--max-state-pairs must be an integer/);
+
   const unsafe = cli(
     "run",
     "--url",

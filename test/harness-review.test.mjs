@@ -72,6 +72,7 @@ test("prepare exports pairs x skill requests with prompts and ids", async () => 
   const prepared = await prepareHarnessReview(report, dir, {
     maxPairs: 2,
     batchSize: 4,
+    skills: "all",
   });
   assert.equal(prepared.dir, join(dir, "vision"));
   assert.equal(prepared.requests, 2 * SKILL_COUNT);
@@ -117,6 +118,8 @@ test("prepare includes every state scan plus bounded action pairs", async () => 
   ]);
   const { file, requests } = await prepareHarnessReview(report, dir, {
     maxPairs: 1,
+    skills: "all",
+    maxStatePairs: 50,
   });
   assert.equal(
     requests,
@@ -147,6 +150,8 @@ test("prepare injects DESIGN.md contract into every request system prompt", asyn
   const { file } = await prepareHarnessReview(report, dir, {
     maxPairs: 1,
     designContract: contract,
+    skills: "all",
+    maxStatePairs: 50,
   });
   const written = JSON.parse(await readFile(file, "utf8"));
   for (const request of written.requests) {
@@ -161,7 +166,10 @@ test("apply is fail-closed until every planned id has a valid answer", async () 
   const dir = await mkdtemp(`${tmpdir()}/vqa-happly-partial-`);
   const report = fakeReport([PAIR("state1:button:Save::0")]);
   await persistReport(dir, report);
-  await prepareHarnessReview(report, dir, { maxPairs: 1 });
+  await prepareHarnessReview(report, dir, { maxPairs: 1 ,
+    skills: "all",
+    maxStatePairs: 50,
+  });
   const planned = JSON.parse(
     await readFile(join(dir, "vision", "requests.json"), "utf8"),
   );
@@ -190,7 +198,10 @@ test("apply completes only when all planned ids answered exactly once", async ()
   const dir = await mkdtemp(`${tmpdir()}/vqa-happly-full-`);
   const report = fakeReport([PAIR("state1:button:Save::0")]);
   await persistReport(dir, report);
-  await prepareHarnessReview(report, dir, { maxPairs: 1 });
+  await prepareHarnessReview(report, dir, { maxPairs: 1 ,
+    skills: "all",
+    maxStatePairs: 50,
+  });
   const findingsFile = join(dir, "findings-full.json");
   await writeFile(findingsFile, JSON.stringify(await allCleanAnswers(dir)));
   const full = await applyHarnessReview(dir, findingsFile);
@@ -211,7 +222,10 @@ test("apply rejects unknown, duplicate, malformed, and skill-mismatch ids", asyn
   const dir = await mkdtemp(`${tmpdir()}/vqa-happly-bad-`);
   const report = fakeReport([PAIR("state1:button:Save::0")]);
   await persistReport(dir, report);
-  await prepareHarnessReview(report, dir, { maxPairs: 1 });
+  await prepareHarnessReview(report, dir, { maxPairs: 1 ,
+    skills: "all",
+    maxStatePairs: 50,
+  });
   const planned = JSON.parse(
     await readFile(join(dir, "vision", "requests.json"), "utf8"),
   );
@@ -276,7 +290,10 @@ test("apply caps severity and is idempotent once complete", async () => {
   const dir = await mkdtemp(`${tmpdir()}/vqa-happly-idem-`);
   const report = fakeReport([PAIR("state1:button:Save::0")]);
   await persistReport(dir, report);
-  await prepareHarnessReview(report, dir, { maxPairs: 1 });
+  await prepareHarnessReview(report, dir, { maxPairs: 1 ,
+    skills: "all",
+    maxStatePairs: 50,
+  });
   const planned = JSON.parse(
     await readFile(join(dir, "vision", "requests.json"), "utf8"),
   );
@@ -307,4 +324,43 @@ test("apply caps severity and is idempotent once complete", async () => {
     again.issues.filter((i) => i.title === "Clipped button").length,
     1,
   );
+});
+
+test("prepare loop pack caps state pairs and uses all six critics", async () => {
+  const dir = await mkdtemp(`${tmpdir()}/vqa-hprep-loop-`);
+  const evidence = [];
+  for (let i = 0; i < 8; i++) {
+    evidence.push({
+      kind: "state_scan",
+      state_id: `s${i}`,
+      viewport: "mobile",
+      screenshot: `screenshots/state-${i}.png`,
+    });
+  }
+  evidence.push(PAIR("action-a"), PAIR("action-b"), PAIR("action-c"));
+  const report = fakeReport(evidence);
+  const prepared = await prepareHarnessReview(report, dir, {
+    maxPairs: 2,
+    maxStatePairs: 3,
+    batchSize: 6,
+    skills: "loop",
+  });
+  // 3 states + 2 actions = 5 pairs × 6 loop skills
+  assert.equal(prepared.requests, 5 * 6);
+  assert.ok(prepared.batches <= 5, `batches ${prepared.batches} should stay small`);
+  const written = JSON.parse(await readFile(prepared.file, "utf8"));
+  assert.equal(
+    new Set(written.requests.map((request) => request.id)).size,
+    written.requests.length,
+    "every request id must remain unique when state ids share a truncated slug",
+  );
+  const skills = new Set(written.requests.map((r) => r.skill));
+  assert.deepEqual([...skills].sort(), [
+    "color",
+    "consistency",
+    "layout",
+    "preservation",
+    "readability",
+    "slop",
+  ]);
 });

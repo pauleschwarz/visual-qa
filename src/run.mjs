@@ -261,13 +261,19 @@ export async function run(input = {}) {
   // `review-prepare`. Opt out with prepareReview: false / --no-prepare-review.
   if (config.prepareReview !== false) {
     try {
+      // Agent-loop defaults stay small enough that a parent can finish
+      // review-apply in one turn (was: unbounded states × all skills → 50+ batches).
       const prepared = await prepareHarnessReview(result, outDir, {
         maxPairs: Number.isInteger(input.reviewMaxPairs)
           ? input.reviewMaxPairs
-          : 6,
+          : 3,
+        maxStatePairs: Number.isInteger(input.reviewMaxStatePairs)
+          ? input.reviewMaxStatePairs
+          : 3,
         batchSize: Number.isInteger(input.reviewBatchSize)
           ? input.reviewBatchSize
-          : undefined,
+          : 6,
+        skills: input.reviewSkills ?? "loop",
         designContract,
       });
       phases.harness_review = {

@@ -21,10 +21,11 @@ function usage({ error = false, message = null } = {}) {
     "  visual-qa run --url URL [--out DIR] [--isolated] [--autofix verified] [--fix-dir DIR]\n" +
     '                 [--intent "instruction"] [--max-agent-calls N] [--mode off|changed|full] [bounds flags]\n' +
     "                 [--path-prefix PATH] [--no-prepare-review] [--no-edge-input-probes] [--design-contract FILE]\n" +
+    "                 [--max-pairs N] [--max-state-pairs N] [--batch-size N] [--skills loop|all|list]\n" +
     "  visual-qa explore --url URL [--out DIR] [bounds flags]  deterministic core only\n" +
     "  visual-qa report <DIR> [--json]                         summarize an out-dir for agents\n" +
     '  visual-qa intent --intent "..." --fix-dir DIR [--json]   catalog dry-run, no browser\n' +
-    "  visual-qa review-prepare <DIR> [--max-pairs N] [--batch-size N]\n" +
+    "  visual-qa review-prepare <DIR> [--max-pairs N] [--max-state-pairs N] [--batch-size N] [--skills loop|all|list]\n" +
     "                                                         export subagent vision batches (default path)\n" +
     "  visual-qa review-apply <DIR> <findings.json>            apply harness findings (fail-closed coverage)\n" +
     "  visual-qa baseline-capture --url URL --out DIR [--changed-target URL ...]\n" +
@@ -70,6 +71,8 @@ const VALUE_OPTIONS = new Set([
   "--max-runtime-ms",
   "--max-agent-calls",
   "--max-pairs",
+  "--max-state-pairs",
+  "--skills",
   "--batch-size",
 ]);
 
@@ -326,12 +329,16 @@ if (command === "agent-gate") {
   process.exitCode = allGood ? 0 : 1;
 } else if (command === "review-prepare" || command === "review-apply") {
   const positional = [];
-  let maxPairs = 6;
-  let batchSize = 4;
+  let maxPairs = 3;
+  let maxStatePairs = 3;
+  let batchSize = 6;
+  let skills = "loop";
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--max-pairs") maxPairs = Number(args[++i]);
+    else if (arg === "--max-state-pairs") maxStatePairs = Number(args[++i]);
     else if (arg === "--batch-size") batchSize = Number(args[++i]);
+    else if (arg === "--skills") skills = args[++i];
     else if (!arg.startsWith("--")) positional.push(arg);
     else {
       usage();
@@ -341,6 +348,8 @@ if (command === "agent-gate") {
   try {
     if (!Number.isInteger(maxPairs) || maxPairs < 1)
       throw new Error("--max-pairs must be an integer >= 1");
+    if (!Number.isInteger(maxStatePairs) || maxStatePairs < 0)
+      throw new Error("--max-state-pairs must be an integer >= 0");
     if (!Number.isInteger(batchSize) || batchSize < 1)
       throw new Error("--batch-size must be an integer >= 1");
     if (command === "review-prepare") {
@@ -354,7 +363,9 @@ if (command === "agent-gate") {
       );
       const prepared = await prepareHarnessReview(report, resolve(dir), {
         maxPairs,
+        maxStatePairs,
         batchSize,
+        skills,
       });
       console.log(
         `vision review tasks: ${prepared.requests} requests in ${prepared.batches} batches -> ${prepared.file}`,
@@ -443,7 +454,11 @@ if (command === "agent-gate") {
     format = "human",
     outFile = null,
     prepareReview = true,
-    edgeInputProbes = true;
+    edgeInputProbes = true,
+    reviewMaxPairs = null,
+    reviewMaxStatePairs = null,
+    reviewBatchSize = null,
+    reviewSkills = null;
   const bounds = {};
   const changedTargets = [];
   for (let i = 0; i < args.length; i++) {
@@ -474,6 +489,10 @@ if (command === "agent-gate") {
       bounds.max_runtime_ms = Number(args[++i]);
     else if (arg === "--max-agent-calls")
       bounds.max_agent_calls = Number(args[++i]);
+    else if (arg === "--max-pairs") reviewMaxPairs = Number(args[++i]);
+    else if (arg === "--max-state-pairs") reviewMaxStatePairs = Number(args[++i]);
+    else if (arg === "--batch-size") reviewBatchSize = Number(args[++i]);
+    else if (arg === "--skills") reviewSkills = args[++i];
     else {
       usage();
       process.exit(2);
@@ -507,6 +526,24 @@ if (command === "agent-gate") {
     console.error("visual-qa: --out-file requires --format junit");
     process.exit(2);
   }
+  if (reviewMaxPairs !== null && (!Number.isInteger(reviewMaxPairs) || reviewMaxPairs < 1)) {
+    console.error("visual-qa: --max-pairs must be an integer >= 1");
+    process.exit(2);
+  }
+  if (
+    reviewMaxStatePairs !== null &&
+    (!Number.isInteger(reviewMaxStatePairs) || reviewMaxStatePairs < 0)
+  ) {
+    console.error("visual-qa: --max-state-pairs must be an integer >= 0");
+    process.exit(2);
+  }
+  if (
+    reviewBatchSize !== null &&
+    (!Number.isInteger(reviewBatchSize) || reviewBatchSize < 1)
+  ) {
+    console.error("visual-qa: --batch-size must be an integer >= 1");
+    process.exit(2);
+  }
   if (allowDestructive && !isolatedEnvironment) {
     console.error("visual-qa: --allow-destructive requires --isolated");
     process.exit(2);
@@ -536,6 +573,10 @@ if (command === "agent-gate") {
       bounds,
       prepareReview,
       edgeInputProbes,
+      reviewMaxPairs,
+      reviewMaxStatePairs,
+      reviewBatchSize,
+      reviewSkills,
     };
     if (format === "human") {
       const seconds = Math.ceil((bounds.max_runtime_ms ?? 900_000) / 1000);

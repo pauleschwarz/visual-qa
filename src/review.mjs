@@ -17,6 +17,42 @@ import { skillPrompt, SKILLS } from "./vision.mjs";
 
 const SKILL_KEYS = new Set(Object.keys(SKILLS));
 
+/** Default agent-loop pack: full visual taste + DESIGN.md preservation. */
+export const HARNESS_LOOP_SKILLS = [
+  "layout",
+  "readability",
+  "color",
+  "slop",
+  "consistency",
+  "preservation",
+];
+
+function resolveReviewSkills(skillsOpt) {
+  if (skillsOpt == null) return Object.keys(SKILLS);
+  const raw = Array.isArray(skillsOpt)
+    ? skillsOpt
+    : String(skillsOpt)
+        .split(/[,\s]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+  if (raw.length === 1 && raw[0] === "loop") return [...HARNESS_LOOP_SKILLS];
+  if (raw.length === 1 && raw[0] === "all") return Object.keys(SKILLS);
+  const out = [];
+  const seen = new Set();
+  for (const key of raw) {
+    if (!SKILL_KEYS.has(key))
+      throw new Error(
+        `Unknown review skill "${key}"; expected one of ${[...SKILL_KEYS].join(", ")}, loop, or all`,
+      );
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  if (!out.length) throw new Error("review skills list is empty");
+  return out;
+}
+
+
 async function readJson(path, label) {
   let source;
   try {
@@ -69,14 +105,26 @@ export function reviewRequestsDir(outDir) {
 
 /**
  * Build the review task file for a finished run: one request per
- * screenshot pair x skill, capped at maxPairs pairs (priority-ordered).
+ * screenshot pair × skill.
+ *
+ * Bounds (agent-loop defaults):
+ * - maxPairs: action before/after pairs (priority-ordered)
+ * - maxStatePairs: unique state_scan images (was unbounded → 50+ batches)
+ * - skills: subset of SKILLS keys; default all. Agent loops should pass a
+ *   short pack (layout, readability, slop, preservation).
  * The harness hands each request's images and system prompt to its own
  * vision model and collects { id, findings } answers.
  */
 export async function prepareHarnessReview(
   report,
   outDir,
-  { maxPairs = 6, batchSize: batchSizeOpt, designContract = null } = {},
+  {
+    maxPairs = 6,
+    maxStatePairs = 4,
+    batchSize: batchSizeOpt,
+    skills: skillsOpt = null,
+    designContract = null,
+  } = {},
 ) {
   const contract =
     designContract ??
@@ -93,9 +141,9 @@ export async function prepareHarnessReview(
     .filter(Boolean)
     .sort((left, right) => priority(left.entry) - priority(right.entry))
     .slice(0, Math.max(1, maxPairs));
-  // Every unique state image is a page-level review target. Represent it as a
-  // same-image pair so the existing reviewer/apply contract stays compatible;
-  // maxPairs continues to bound action-transition pairs only.
+  // Unique state images are page-level review targets (same-image pairs so the
+  // reviewer/apply contract stays compatible). Cap them — unbounded state walks
+  // × every skill produced 50+ batches and agents never finished review-apply.
   const seenStates = new Set();
   const statePairs = evidence
     .filter(
@@ -113,13 +161,25 @@ export async function prepareHarnessReview(
       entry,
       beforePath: entry.screenshot,
       afterPath: entry.screenshot,
-    }));
+    }))
+    .slice(0, Math.max(0, Number(maxStatePairs) || 0));
   const pairs = [...statePairs, ...actionPairs];
+  const skillKeys = resolveReviewSkills(skillsOpt);
   const requests = [];
-  for (const { entry, beforePath, afterPath } of pairs) {
-    for (const skill of Object.keys(SKILLS)) {
+  for (const [pairIndex, { entry, beforePath, afterPath }] of pairs.entries()) {
+    const pairIdentity = String(
+      entry.action_id ||
+        entry.state_id ||
+        entry.screenshot ||
+        afterPath ||
+        beforePath ||
+        "unknown",
+    );
+    for (const skill of skillKeys) {
+      // Slugs are intentionally truncated for readable artifacts, so include the
+      // deterministic pair index. State ids may share the same first 40 chars.
       requests.push({
-        id: `${report.run_id || "run"}-${skill}-${slug(String(entry.action_id || entry.state_id || "unknown")).slice(0, 40)}`,
+        id: `${report.run_id || "run"}-${skill}-${slug(pairIdentity).slice(0, 40)}-${pairIndex}`,
         skill,
         action_id: entry.action_id ?? null,
         state_id: entry.state_id ?? null,
@@ -259,6 +319,8 @@ function renderHarnessPlanMarkdown(plan, outDir) {
     `Out dir: \`${outDir}\``,
     `Requests: **${plan.request_count}** in **${plan.batch_count}** batches (size ${plan.batch_size}).`,
     `Skills: ${plan.skills.join(", ")}`,
+    ``,
+    `Hard rule: finish every batch → merge findings.json → review-apply before claiming vision done.`,
     ``,
     `## Parent agent steps`,
     ``,

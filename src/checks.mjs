@@ -277,7 +277,44 @@ export async function runLayoutChecks(page, viewport) {
         )
         .slice(0, 10)
         .map((el) => el.outerHTML.slice(0, 160));
-      return { overflow, clipped, inputClipped, smallTargets, missingNames };
+      // A full app/document scrollbar is expected. A tall internal content
+      // scroller is a separate browsing surface: it traps wheel/touch input,
+      // hides page context, and often cuts through cards. Flag only substantial
+      // containers so menus, comboboxes, textareas, and side rails stay valid.
+      const internalScrollers = [...document.querySelectorAll("body *")]
+        .filter((el) => {
+          const cs = getComputedStyle(el);
+          if (!["auto", "scroll"].includes(cs.overflowY)) return false;
+          if (el.scrollHeight <= el.clientHeight + 24) return false;
+          const r = el.getBoundingClientRect();
+          const substantial = r.width >= window.innerWidth * 0.45;
+          const tall = r.height >= Math.min(320, window.innerHeight * 0.45);
+          const role = el.getAttribute("role");
+          const exempt =
+            ["listbox", "menu", "dialog", "navigation"].includes(role) ||
+            ["TEXTAREA", "SELECT"].includes(el.tagName) ||
+            el.closest("[role=listbox],[role=menu],[role=dialog],nav,aside");
+          return substantial && tall && !exempt;
+        })
+        .slice(0, 5)
+        .map((el) => {
+          const r = el.getBoundingClientRect();
+          return {
+            tag: el.tagName,
+            id: el.id || null,
+            class: String(el.className || "").slice(0, 160),
+            height: Math.round(r.height),
+            scrollHeight: el.scrollHeight,
+          };
+        });
+      return {
+        overflow,
+        clipped,
+        inputClipped,
+        smallTargets,
+        missingNames,
+        internalScrollers,
+      };
     });
   } catch (error) {
     return [
@@ -299,6 +336,16 @@ export async function runLayoutChecks(page, viewport) {
         "high",
         "Document exceeds viewport width",
         { viewport, ...findings },
+      ),
+    );
+  if (findings.internalScrollers?.length)
+    out.push(
+      issue(
+        "visual",
+        "Tall content trapped in an internal scroller",
+        "medium",
+        "A major content surface uses its own vertical scrollbar instead of the page scroll; verify that cards and programme context are not trapped inside an embedded viewport",
+        { viewport, items: findings.internalScrollers },
       ),
     );
   if (findings.clipped.length)

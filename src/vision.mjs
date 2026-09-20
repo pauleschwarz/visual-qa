@@ -22,7 +22,7 @@ function authHeaders(key) {
 export const SKILLS = {
   layout: {
     focus:
-      "Broken layout: overlapping, clipped or off-screen elements, collapsed containers, misaligned grids/columns, uneven gutters, stuck sticky chrome, horizontal overflow, dead empty bands that waste the viewport, content trapped under fixed headers/footers.",
+      "Broken layout: overlapping, clipped or off-screen elements, collapsed containers, misaligned grids/columns, uneven gutters, stuck sticky chrome, horizontal overflow, dead empty bands that waste the viewport, content trapped under fixed headers/footers, and large nested/internal scroll regions where the page should own scrolling. Treat a scrollbar cutting through the middle of cards or programme entries as a defect, not harmless browser chrome.",
   },
   readability: {
     focus:
@@ -34,7 +34,7 @@ export const SKILLS = {
   },
   slop: {
     focus:
-      "AI/template slop a harsh direct-observer would call cheap or fake: purple/pink/blue rainbow or mesh gradients, AI purple glow, glassmorphism/neon overuse, stock-photo chrome, emoji-as-UI, lorem/placeholder/TODO copy, fake-SaaS fluff (supercharge, seamless, AI-powered, unlock the power), generic Inter+gradient CTA+three identical feature cards, center-stacked marketing blocks without product voice, decorative noise that forces attention instead of guiding it.",
+      "AI/template slop a harsh direct-observer would call cheap or fake: purple/pink/blue rainbow or mesh gradients, AI purple glow, glassmorphism/neon overuse, stock-photo chrome, emoji-as-UI, lorem/placeholder/TODO copy, fake-SaaS fluff (supercharge, seamless, AI-powered, unlock the power), generic Inter+gradient CTA+three identical feature cards, center-stacked marketing blocks without product voice, decorative noise that forces attention instead of guiding it, excessive pill badges/status chips, or repeated rows of equally prominent rounded buttons where one clear action plus restrained text actions would create hierarchy.",
   },
   consistency: {
     focus:

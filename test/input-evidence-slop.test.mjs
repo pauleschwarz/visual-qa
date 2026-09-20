@@ -366,6 +366,38 @@ test("deterministic slop checks catch marketing fluff type chaos and template ca
   }
 });
 
+test("large inner content scroller is reported but menus and side rails are exempt", async () => {
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  try {
+    await page.setViewportSize({ width: 1000, height: 700 });
+    await page.setContent(`<!doctype html><html lang="en"><head><title>Scroll regions</title></head><body style="margin:0">
+      <main id="programme" style="width:70vw;height:420px;overflow-y:auto">
+        <div style="height:1200px">Programme cards</div>
+      </main>
+      <aside style="width:220px;height:420px;overflow-y:auto">
+        <div style="height:900px">History rail</div>
+      </aside>
+      <div role="listbox" style="width:700px;height:360px;overflow-y:auto">
+        <div style="height:900px">Options</div>
+      </div>
+    </body></html>`);
+    const issues = await runLayoutChecks(page, {
+      name: "desktop",
+      width: 1000,
+      height: 700,
+    });
+    const nested = issues.find(
+      (entry) => entry.title === "Tall content trapped in an internal scroller",
+    );
+    assert.ok(nested, issues.map((entry) => entry.title).join(" | "));
+    assert.equal(nested.evidence.items.length, 1);
+    assert.equal(nested.evidence.items[0].id, "programme");
+  } finally {
+    await browser.close();
+  }
+});
+
 test("layout clip, sticky occlusion, labeled hit area, and sequential XSS canaries", async () => {
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Probes</title></head><body>
   <style>

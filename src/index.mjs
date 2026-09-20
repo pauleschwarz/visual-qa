@@ -49,6 +49,7 @@ export {
   applyHarnessReview,
   evaluateVisionCoverage,
   loadPlannedRequestIds,
+  HARNESS_LOOP_SKILLS,
   prepareHarnessReview,
 } from "./review.mjs";
 export { runSlopChecks } from "./slop.mjs";
