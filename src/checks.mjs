@@ -415,6 +415,14 @@ export async function runScrollChecks(page, viewport, { samples = 12 } = {}) {
           );
         })
         .filter((el) => el.getAttribute("aria-hidden") !== "true")
+        // Modal backdrops intentionally cover the page while open. They are not
+        // persistent app chrome; judging controls behind an active dialog as
+        // permanently occluded is a category error.
+        .filter(
+          (el) =>
+            el.getAttribute("role") !== "alertdialog" &&
+            !el.querySelector("[role=alertdialog]"),
+        )
         .filter((el) => getComputedStyle(el).pointerEvents !== "none")
         .filter((el) => {
           const r = el.getBoundingClientRect();
