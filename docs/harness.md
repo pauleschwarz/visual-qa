@@ -182,11 +182,13 @@ visual-qa review-prepare .qa --max-pairs 3 --max-state-pairs 3 --batch-size 6 --
 visual-qa review-apply .qa .qa/vision/findings.json
 ```
 
-**Option A — optional endpoint (OmniRoute / OpenAI-compatible).** For unattended
-CI only. Auth via `VQA_VISION_API_KEY` or `OPENAI_API_KEY` or `OMNIROUTE_API_KEY`.
-Endpoint via `VQA_VISION_ENDPOINT` or `OPENAI_BASE_URL`. Auto-arms budget when a
-key is present (`VQA_VISION_DISABLE=1` to opt out). Models via `VQA_VISION_MODELS`
-or `GET /models`. Same six critics, round-robin across models.
+**Option A — endpoint (OmniRoute bus / OpenAI-compatible).** Unattended screenshot
+review. Auth: `VQA_VISION_API_KEY` → `OPENAI_API_KEY` → `OMNIROUTE_API_KEY`.
+Endpoint: `VQA_VISION_ENDPOINT` → `OPENAI_BASE_URL` → if only OmniRoute is keyed,
+`http://127.0.0.1:20128/v1` (never `api.openai.com` with an OmniRoute key).
+Models: `VQA_VISION_MODELS` or, on OmniRoute, pinned combos `vision` then `smart`
+(gateway resolves vision underlyings). Full catalog rank: `VQA_VISION_DISCOVER=1`.
+Budget auto-arms when a key is present (`VQA_VISION_DISABLE=1` to opt out).
 
 Apply validates the answers, caps `high` at `medium`, records request ids
 (re-applying is a no-op, retries cannot duplicate), recomputes the verdict,

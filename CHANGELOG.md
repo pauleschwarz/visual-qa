@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.13 — 2026-09-20
+
+### OmniRoute vision bus default
+- With only `OMNIROUTE_API_KEY` set, vision transport defaults to `http://127.0.0.1:20128/v1` instead of `api.openai.com` (that mismatch produced false `error_no_completions` / "no vision key").
+- Unattended endpoint mode pins OmniRoute combos `vision` then `smart`; the gateway picks vision-capable underlyings. Full `/models` crawl is opt-in via `VQA_VISION_DISCOVER=1`.
+- Explicit `VQA_VISION_*` / `OPENAI_*` endpoint + model overrides still win.
+
 ## 0.2.12 — 2026-09-20
 
 ### Bounded agent vision loop

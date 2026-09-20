@@ -54,7 +54,17 @@ export {
 } from "./review.mjs";
 export { runSlopChecks } from "./slop.mjs";
 export { runSecurityChecks } from "./security.mjs";
-export { runVisionReview, skillPrompt, SKILLS } from "./vision.mjs";
+export {
+  runVisionReview,
+  skillPrompt,
+  SKILLS,
+  resolveVisionTransport,
+  discoverVisionModels,
+  looksMultimodalModel,
+  OMNIROUTE_DEFAULT_ENDPOINT,
+  OMNIROUTE_VISION_MODELS,
+  isOmniRouteEndpoint,
+} from "./vision.mjs";
 export {
   buildState,
   diffSignals,

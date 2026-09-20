@@ -60,6 +60,42 @@ const SKILL_KEYS = Object.keys(SKILLS);
 const MULTIMODAL_HINT =
   /vision|gpt-4o|gpt-5|gpt-4\.1|claude|gemini|llava|qwen.?vl|pixtral|sonar|flash|sonnet|opus|haiku|smart|worker|quality|max|glm.?4v|step.?1v|molmo|phi.?3.?vision|idefics|internvl|minicpm.?v/i;
 
+/** Local OmniRoute OpenAI-compatible bus (Hermes default). */
+export const OMNIROUTE_DEFAULT_ENDPOINT = "http://127.0.0.1:20128/v1";
+
+/** Combo ids OmniRoute resolves to vision-capable underlyings. */
+export const OMNIROUTE_VISION_MODELS = Object.freeze(["vision", "smart"]);
+
+const MODEL_PIN_ORDER = Object.freeze([
+  "vision",
+  "smart",
+  "auto/vision",
+  "auto/smart",
+  "smart-core",
+  "smart-refined",
+  "worker",
+  "quality",
+  "max",
+]);
+
+export function isOmniRouteEndpoint(endpoint = "") {
+  return /127\.0\.0\.1:20128|localhost:20128/i.test(String(endpoint || ""));
+}
+
+function rankVisionModels(ids = []) {
+  const score = (id) => {
+    const exact = MODEL_PIN_ORDER.indexOf(id);
+    if (exact >= 0) return exact;
+    const lower = String(id).toLowerCase();
+    if (lower.includes("vision")) return 20;
+    if (looksMultimodalModel(id)) return 40;
+    return 80;
+  };
+  return [...ids].sort(
+    (left, right) => score(left) - score(right) || String(left).localeCompare(String(right)),
+  );
+}
+
 function slug(value) {
   return String(value)
     .toLowerCase()
@@ -126,10 +162,12 @@ function splitList(value) {
 
 /**
  * Resolve OpenAI-compatible vision transport.
- * Prefers VQA_VISION_*, then OPENAI_* (OmniRoute / local bus), never invents keys.
+ * Prefers VQA_VISION_*, then OPENAI_*, then OMNIROUTE_*.
+ * When only OmniRoute is keyed, default the bus to :20128/v1 — never call
+ * api.openai.com with an OmniRoute key (that is the false "no vision key" path).
  */
 export function resolveVisionTransport(env = process.env) {
-  const endpoint = (
+  const explicitEndpoint = (
     env.VQA_VISION_ENDPOINT ||
     env.OPENAI_BASE_URL ||
     env.OPENAI_API_BASE ||
@@ -143,30 +181,57 @@ export function resolveVisionTransport(env = process.env) {
     env.OMNIROUTE_API_KEY ||
     ""
   ).trim();
+  const keySource = env.VQA_VISION_API_KEY
+    ? "VQA_VISION_API_KEY"
+    : env.OPENAI_API_KEY
+      ? "OPENAI_API_KEY"
+      : env.OMNIROUTE_API_KEY
+        ? "OMNIROUTE_API_KEY"
+        : null;
   const configuredModels = [
     ...splitList(env.VQA_VISION_MODELS),
     ...splitList(env.VQA_VISION_MODEL),
   ];
   const uniqueConfigured = [...new Set(configuredModels)];
+
+  let endpoint = explicitEndpoint;
+  let endpointSource = env.VQA_VISION_ENDPOINT
+    ? "VQA_VISION_ENDPOINT"
+    : env.OPENAI_BASE_URL
+      ? "OPENAI_BASE_URL"
+      : env.OPENAI_API_BASE
+        ? "OPENAI_API_BASE"
+        : null;
+
+  if (!endpoint) {
+    // OmniRoute key (or Hermes bus with no public OpenAI base) → local gateway.
+    const useOmni =
+      keySource === "OMNIROUTE_API_KEY" ||
+      Boolean(String(env.OMNIROUTE_API_KEY || "").trim());
+    if (useOmni) {
+      endpoint = OMNIROUTE_DEFAULT_ENDPOINT;
+      endpointSource = "omniroute_default";
+    } else {
+      endpoint = "https://api.openai.com/v1";
+      endpointSource = "default_openai";
+    }
+  }
+
+  // On the local bus, pin combo models unless the caller named others.
+  const models =
+    uniqueConfigured.length > 0
+      ? uniqueConfigured
+      : isOmniRouteEndpoint(endpoint)
+        ? [...OMNIROUTE_VISION_MODELS]
+        : [];
+
   return {
-    endpoint: endpoint || "https://api.openai.com/v1",
+    endpoint,
     key,
-    models: uniqueConfigured,
+    models,
     source: {
-      endpoint: env.VQA_VISION_ENDPOINT
-        ? "VQA_VISION_ENDPOINT"
-        : env.OPENAI_BASE_URL
-          ? "OPENAI_BASE_URL"
-          : env.OPENAI_API_BASE
-            ? "OPENAI_API_BASE"
-            : "default_openai",
-      key: env.VQA_VISION_API_KEY
-        ? "VQA_VISION_API_KEY"
-        : env.OPENAI_API_KEY
-          ? "OPENAI_API_KEY"
-          : env.OMNIROUTE_API_KEY
-            ? "OMNIROUTE_API_KEY"
-            : null,
+      endpoint: endpointSource,
+      key: keySource,
     },
   };
 }
@@ -175,9 +240,16 @@ export function looksMultimodalModel(id) {
   return MULTIMODAL_HINT.test(String(id || ""));
 }
 
+function defaultVisionModels(endpoint) {
+  return isOmniRouteEndpoint(endpoint)
+    ? [...OMNIROUTE_VISION_MODELS]
+    : ["gpt-4o-mini"];
+}
+
 /**
  * Discover multimodal-capable model ids from an OpenAI-compatible /models list.
- * Falls back to configured models or a single safe default.
+ * OmniRoute: prefer combo pins `vision` then `smart` (gateway picks underlyings).
+ * Optional full catalog rank when VQA_VISION_DISCOVER=1.
  */
 export async function discoverVisionModels({
   endpoint,
@@ -185,17 +257,26 @@ export async function discoverVisionModels({
   configured = [],
   fetchImpl = globalThis.fetch,
   limit = 8,
+  env = process.env,
 } = {}) {
   const configuredUnique = [...new Set(configured.filter(Boolean))];
   if (configuredUnique.length) return configuredUnique.slice(0, limit);
 
-  if (!endpoint || !key) return ["gpt-4o-mini"];
+  const fallback = defaultVisionModels(endpoint);
+  if (!endpoint || !key) return fallback.slice(0, limit);
+
+  // Local OmniRoute already exposes vision-capable combos. Use them unless the
+  // caller asks to rank the full /models catalog (slow; 500+ rows).
+  const forceDiscover = String(env.VQA_VISION_DISCOVER || "") === "1";
+  if (isOmniRouteEndpoint(endpoint) && !forceDiscover) {
+    return fallback.slice(0, limit);
+  }
 
   try {
     const response = await fetchImpl(`${endpoint}/models`, {
       headers: authHeaders(key),
     });
-    if (!response?.ok) return ["gpt-4o-mini"];
+    if (!response?.ok) return fallback.slice(0, limit);
     const payload = await response.json();
     const rows = Array.isArray(payload?.data)
       ? payload.data
@@ -208,11 +289,16 @@ export async function discoverVisionModels({
       .map((row) => (typeof row === "string" ? row : row?.id || row?.name))
       .filter(Boolean)
       .map(String);
+    const idSet = new Set(ids);
+    const pins = OMNIROUTE_VISION_MODELS.filter((id) => idSet.has(id));
     const multimodal = ids.filter(looksMultimodalModel);
-    const picked = (multimodal.length ? multimodal : ids).slice(0, limit);
-    return picked.length ? picked : ["gpt-4o-mini"];
+    const ranked = rankVisionModels(multimodal.length ? multimodal : ids).filter(
+      (id) => !pins.includes(id),
+    );
+    const picked = [...pins, ...ranked].slice(0, limit);
+    return picked.length ? picked : fallback.slice(0, limit);
   } catch {
-    return configuredUnique.length ? configuredUnique : ["gpt-4o-mini"];
+    return fallback.slice(0, limit);
   }
 }
 
@@ -307,6 +393,7 @@ export async function runVisionReview({
       configured: transport.models,
       fetchImpl,
       limit: Number(process.env.VQA_VISION_MODEL_LIMIT || 6) || 6,
+      env: process.env,
     });
     modelsUsed.push(...models);
 

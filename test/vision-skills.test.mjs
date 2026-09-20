@@ -94,6 +94,31 @@ test("resolveVisionTransport prefers VQA then OPENAI/OmniRoute env", () => {
   assert.equal(looksMultimodalModel("text-embedding-3-small"), false);
 });
 
+test("resolveVisionTransport defaults OmniRoute bus when only OMNIROUTE_API_KEY set", () => {
+  const t = resolveVisionTransport({
+    OMNIROUTE_API_KEY: "from-omni",
+  });
+  assert.equal(t.endpoint, "http://127.0.0.1:20128/v1");
+  assert.equal(t.key, "from-omni");
+  assert.deepEqual(t.models, ["vision", "smart"]);
+  assert.equal(t.source.endpoint, "omniroute_default");
+  assert.equal(t.source.key, "OMNIROUTE_API_KEY");
+});
+
+test("discoverVisionModels pins OmniRoute combos without catalog crawl", async () => {
+  let fetched = false;
+  const models = await discoverVisionModels({
+    endpoint: "http://127.0.0.1:20128/v1",
+    key: "k",
+    fetchImpl: async () => {
+      fetched = true;
+      throw new Error("should not fetch /models by default on OmniRoute");
+    },
+  });
+  assert.deepEqual(models, ["vision", "smart"]);
+  assert.equal(fetched, false);
+});
+
 test("discoverVisionModels filters multimodal ids from /models", async () => {
   const models = await discoverVisionModels({
     endpoint: "http://vision.test/v1",
