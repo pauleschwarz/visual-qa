@@ -91,7 +91,7 @@ processes, calls models, or publishes. It cannot make a non-PASS report pass.
 # trigger: ["src/components/**"]
 # ignore: ["**/*.test.tsx"]
 # route_map:
-#   "src/components/**": ["/"]
+#   "src/components/**": ["/", "/orders@orders-error"]   # path@state: a named state
 #   "app/pages/**": FULL
 
 visual-qa agent-run --url http://127.0.0.1:3000 \
@@ -100,11 +100,33 @@ visual-qa agent-run --url http://127.0.0.1:3000 \
   --git-ref HEAD
 ```
 
+- `path@state` routes capture a state defined under `states:` (sign-in, injected
+  API failure; see README "States, sign-in and journeys"); plain routes are walked.
+  Unknown keys in the config are printed as warnings and listed in
+  `agent-run.json` as `config_warnings`.
 - No UI-path git diff → exit 0 noop PASS (no browser).
 - UI diff without matching `route_map` → fail-closed.
 - Never applies fixers; evidence + compare only. Coding agents may loop
   review→fix at most twice (`max_review_fix_loops` in `.visual-qa.yml`).
 - `baseline-capture` writes hierarchical `<route-key>/<viewport>.png` from a live URL.
+
+## States, sign-in and journeys
+
+For apps behind a login, or error paths that need a failing server, name the
+state instead of hoping the walk finds it. Contract for agents:
+
+- Config in `.visual-qa.yml`: `setup`, `storage_state`, `states`, `journeys`
+  (full example and semantics: README "States, sign-in and journeys").
+- `visual-qa run|explore --state NAME … --journey NAME …` and
+  `visual-qa journeys --url URL [--only a,b]` run exactly what is named
+  (no base-URL walk), per viewport.
+- Evidence for the vision review and for you: `screenshots/appstate-*.png` with
+  the visible text in a `.txt` of the same name; `journeys/<name>/<viewport>/NN-*.png`
+  with `.txt`. Both are `state_scan` entries in `report.json`.
+- A red journey check is `FAIL` (exit `1`) with the step named in the issue
+  title and a `…-FAILED.png`. A broken setup/journey file is exit `2`, never a finding.
+- An injected failure (`expect_api`) is expected, so its 4xx/5xx is not a
+  finding; an error state with no visible reason or no way forward is (`medium`).
 
 ## DESIGN.md
 

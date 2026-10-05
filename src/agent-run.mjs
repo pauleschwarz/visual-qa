@@ -3,11 +3,12 @@
 
 import { createHash } from "node:crypto";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { captureBaselines } from "./baseline.mjs";
 import { resolveDesignContract, designContractMeta } from "./design-contract.mjs";
 import { run } from "./run.mjs";
+import { resolveSessionInput, splitStateRoutes } from "./session.mjs";
 
 function sha256Hex(text) {
   return createHash("sha256").update(String(text), "utf8").digest("hex");
@@ -22,15 +23,171 @@ async function exists(path) {
   }
 }
 
-/** Minimal YAML subset for .visual-qa.yml (no dependency). */
-export function parseVisualQaYaml(source) {
-  const text = String(source ?? "");
-  const result = {
+const KNOWN_KEYS = new Set([
+  "trigger",
+  "ignore",
+  "route_map",
+  "max_review_fix_loops",
+  "setup",
+  "storage_state",
+  "states",
+  "journeys",
+]);
+const KNOWN_STATE_KEYS = new Set([
+  "path",
+  "setup",
+  "expect_api",
+  "fail_api",
+  "reason",
+  "fresh",
+]);
+const KNOWN_JOURNEY_KEYS = new Set(["file", "fresh"]);
+
+function emptyConfig() {
+  return {
     trigger: [],
     ignore: [],
     route_map: {},
     max_review_fix_loops: 2,
+    setup: null,
+    storage_state: null,
+    states: {},
+    journeys: {},
+    warnings: [],
   };
+}
+
+// '#' opens a comment only outside quotes and after whitespace, so globs and
+// URL fragments ("**/api#x", "/#/orders") survive in quoted values.
+function stripYamlComment(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote) {
+      if (c === quote) quote = null;
+    } else if ((c === '"' || c === "'") && (i === 0 || /[\s:,-]/.test(line[i - 1]))) {
+      quote = c;
+    } else if (c === "#" && (i === 0 || /\s/.test(line[i - 1]))) {
+      return line.slice(0, i);
+    }
+  }
+  return line;
+}
+
+function yamlScalar(raw, lineNo) {
+  const text = raw.trim();
+  if (/^[[{]/.test(text))
+    throw new Error(
+      `.visual-qa.yml line ${lineNo}: inline {…}/[…] is not supported; use an indented block`,
+    );
+  const quoted = text.match(/^(["'])(.*)\1$/);
+  if (quoted) return quoted[2];
+  if (/^-?\d+(\.\d+)?$/.test(text)) return Number(text);
+  if (text === "true") return true;
+  if (text === "false") return false;
+  if (text === "null" || text === "~") return null;
+  return text;
+}
+
+// "key: rest" with an optionally quoted key (globs contain ':' and '*').
+function yamlKeyValue(text, lineNo) {
+  const quoted = text.match(/^(["'])(.*?)\1\s*:(?:\s+(.*))?$/);
+  if (quoted) return [quoted[2], quoted[3] ?? ""];
+  const plain = text.match(/^([^:]+?)\s*:(?:\s+(.*))?$/);
+  if (!plain)
+    throw new Error(`.visual-qa.yml line ${lineNo}: expected "key: value"`);
+  return [plain[1].trim(), plain[2] ?? ""];
+}
+
+/** Indented block of "key: value" maps / "- item" lists below one top-level key. */
+function parseYamlBlock(lines, index, indent) {
+  const first = lines[index];
+  if (first.text.startsWith("- ") || first.text === "-") {
+    const list = [];
+    while (index < lines.length && lines[index].indent === indent) {
+      list.push(yamlScalar(lines[index].text.replace(/^-\s*/, ""), lines[index].no));
+      index += 1;
+    }
+    return [list, index];
+  }
+  const map = {};
+  while (index < lines.length && lines[index].indent >= indent) {
+    const line = lines[index];
+    if (line.indent !== indent)
+      throw new Error(`.visual-qa.yml line ${line.no}: unexpected indentation`);
+    const [key, rest] = yamlKeyValue(line.text, line.no);
+    index += 1;
+    if (rest.trim()) {
+      map[key] = yamlScalar(rest, line.no);
+    } else if (index < lines.length && lines[index].indent > indent) {
+      [map[key], index] = parseYamlBlock(lines, index, lines[index].indent);
+    } else {
+      map[key] = {};
+    }
+  }
+  return [map, index];
+}
+
+/** Top-level keys of the new session sections, parsed on their own so older files keep their exact behaviour. */
+function parseSessionSections(text, result) {
+  const lines = [];
+  text.split(/\r?\n/).forEach((raw, i) => {
+    const stripped = stripYamlComment(raw);
+    if (!stripped.trim()) return;
+    if (/^\s*\t/.test(stripped))
+      throw new Error(`.visual-qa.yml line ${i + 1}: tabs are not allowed`);
+    lines.push({
+      no: i + 1,
+      indent: stripped.match(/^ */)[0].length,
+      text: stripped.trim(),
+    });
+  });
+  for (let i = 0; i < lines.length; ) {
+    const line = lines[i];
+    // Older files keep list items at column 0 or carry lines this parser does
+    // not own; only a real "key:" line opens a section.
+    if (line.indent !== 0 || line.text.startsWith("-") || !/^["']?[^:]+["']?\s*:/.test(line.text)) {
+      i += 1;
+      continue;
+    }
+    const [key, rest] = yamlKeyValue(line.text, line.no);
+    i += 1;
+    if (!KNOWN_KEYS.has(key)) {
+      result.warnings.push(`unknown key "${key}" in .visual-qa.yml (ignored)`);
+      continue;
+    }
+    if (key === "setup" || key === "storage_state") {
+      result[key] = rest.trim() ? String(yamlScalar(rest, line.no)) : null;
+    } else if (key === "states" || key === "journeys") {
+      if (i < lines.length && lines[i].indent > 0) {
+        let block;
+        [block, i] = parseYamlBlock(lines, i, lines[i].indent);
+        result[key] = block;
+      }
+    }
+  }
+  const knownKeys = { states: KNOWN_STATE_KEYS, journeys: KNOWN_JOURNEY_KEYS };
+  for (const section of ["states", "journeys"]) {
+    for (const [name, def] of Object.entries(result[section])) {
+      if (section === "journeys" && typeof def === "string") continue;
+      if (!def || typeof def !== "object" || Array.isArray(def)) {
+        result.warnings.push(`${section}.${name} is not a mapping (ignored)`);
+        result[section][name] = {};
+        continue;
+      }
+      for (const field of Object.keys(def))
+        if (!knownKeys[section].has(field))
+          result.warnings.push(
+            `unknown key "${field}" in ${section}.${name} (ignored)`,
+          );
+    }
+  }
+}
+
+/** Minimal YAML subset for .visual-qa.yml (no dependency). */
+export function parseVisualQaYaml(source) {
+  const text = String(source ?? "");
+  const result = emptyConfig();
   let section = null;
   let currentGlob = null;
 
@@ -92,6 +249,7 @@ export function parseVisualQaYaml(source) {
       }
     }
   }
+  parseSessionSections(text, result);
   return result;
 }
 
@@ -195,13 +353,13 @@ export function collectGitState(cwd, gitRef = "HEAD") {
   };
 }
 
-export async function loadVisualQaConfig(projectRoot) {
-  const path = join(resolve(projectRoot), ".visual-qa.yml");
+export async function loadVisualQaConfig(projectRoot, explicitFile = null) {
+  const path = explicitFile
+    ? resolve(explicitFile)
+    : join(resolve(projectRoot), ".visual-qa.yml");
   if (!(await exists(path))) {
-    return {
-      path: null,
-      config: { trigger: [], ignore: [], route_map: {}, max_review_fix_loops: 2 },
-    };
+    if (explicitFile) throw new Error(`config file not found: ${path}`);
+    return { path: null, config: emptyConfig() };
   }
   const source = await readFile(path, "utf8");
   return { path, config: parseVisualQaYaml(source) };
@@ -238,6 +396,7 @@ export async function agentRun({
     schema_version: "vqa-agent-run-0.1",
     project_root: root,
     config_path: configPath,
+    config_warnings: config.warnings ?? [],
     git: {
       head: gitState.head,
       ref: gitState.git_ref,
@@ -341,14 +500,24 @@ export async function agentRun({
 
   agentMeta.mode = routeResolution.mode;
   agentMeta.routes = routeResolution.routes;
+  // "path@state" routes capture a named state (sign-in, injected failure);
+  // plain routes keep the declared-target walk.
+  const split = splitStateRoutes(routeResolution.routes, config.states);
+  agentMeta.states = split.states;
+  const sessionInput = split.states.length
+    ? await resolveSessionInput(config, {
+        baseDir: dirname(configPath),
+        states: split.states,
+      })
+    : {};
 
   const baselineDir = join(out, "baselines");
   if (baselineUrl) {
     const targets =
       routeResolution.mode === "full"
         ? ["/"]
-        : routeResolution.routes.length
-          ? routeResolution.routes
+        : split.plain.length
+          ? split.plain
           : ["/"];
     await captureBaselines({
       baseUrl: baselineUrl,
@@ -363,10 +532,14 @@ export async function agentRun({
     };
   }
 
+  const stateOnly =
+    routeResolution.mode === "changed" && split.plain.length === 0;
   const runInput = {
+    ...sessionInput,
     baseUrl: url,
     outDir: out,
-    mode: routeResolution.mode,
+    // Named states alone narrow the run; "changed" needs a plain target.
+    mode: stateOnly ? "full" : routeResolution.mode,
     baselineDir: baselineUrl ? baselineDir : undefined,
     designContract: design,
     designContractPath: design?.path,
@@ -376,8 +549,8 @@ export async function agentRun({
     bounds,
     viewports,
   };
-  if (routeResolution.mode === "changed") {
-    runInput.changedTargets = routeResolution.routes;
+  if (routeResolution.mode === "changed" && !stateOnly) {
+    runInput.changedTargets = split.plain;
   }
 
   const report = await run(runInput);

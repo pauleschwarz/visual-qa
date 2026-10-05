@@ -29,9 +29,10 @@ evidence docket on top:
 
 Chromium-only today — not multi-browser parity with raw Playwright.
 
-**Known limits:** no authenticated areas — the explorer fills placeholder
-test values, never real credentials, so login-gated pages are out of reach
-(on purpose: wrong logins on a real app are mutating actions). Hover and
+**Known limits:** visual-qa never guesses credentials. The explorer fills
+placeholder test values, so login-gated pages are reached only when you
+describe the signed-in state yourself (see
+[States, sign-in and journeys](#states-sign-in-and-journeys)). Hover and
 edge-input probes (empty / hostile / overlong) run by default; no
 drag/multi-tab yet. Nothing here renders a PASS for you — you own the
 verdict.
@@ -82,8 +83,8 @@ actions, 15 minutes. Learn with
 ## When not to use this
 
 - You need multi-browser matrix (Firefox/WebKit) or device lab coverage.
-- The app is behind auth and you have not supplied a session yet (v0.1 walks
-  the public shell only).
+- The app is behind auth and you cannot or will not describe a signed-in
+  state (a setup hook or a storage-state file, see below).
 - You want a replacement for unit/integration tests — this is a ship-gate
   on the running UI, not a test framework.
 - Production traffic or real customer data (use `--isolated` only on safe
@@ -122,6 +123,8 @@ visual-qa demo [--out DIR] [bounds]
 visual-qa run --url URL [--out DIR] [--isolated] [--autofix verified] [--fix-dir DIR]
               [--intent "…"] [--max-agent-calls N] [--mode off|changed|full] [bounds]
               [--no-prepare-review] [--no-edge-input-probes] [--design-contract FILE]
+              [--state NAME …] [--journey NAME …] [--config FILE]   # named states / journeys
+visual-qa journeys --url URL [--only a,b] [--out DIR] [--config FILE]
 visual-qa explore --url URL [--out DIR] [bounds]     # deterministic core only
 visual-qa report <DIR> [--json]                      # agent-friendly summary
 visual-qa intent --intent "…" --fix-dir DIR [--json]  # catalog dry-run, no browser
@@ -151,6 +154,116 @@ Full agent contract, including a fail-closed Visual QA + Pi Verity receipt
 join: [`docs/harness.md`](docs/harness.md). Machine contract
 (verdict policy, intent catalog, autofix whitelist):
 [`schemas/intent-catalog.json`](schemas/intent-catalog.json).
+
+## States, sign-in and journeys
+
+By default visual-qa walks what an anonymous visitor reaches. To look at the
+app the way a signed-in user sees it, or the way a user sees it when the
+server fails, describe that state once in `.visual-qa.yml` (in the directory
+you run from, or `--config FILE`; relative paths resolve from that file).
+
+`.visual-qa.yml`:
+
+```yaml
+# Paths are relative to this file.
+setup: ./vqa.setup.mjs
+
+states:
+  orders:
+    path: /orders
+  orders-error:
+    path: /orders
+    expect_api:
+      "**/api/orders": 500
+  signed-out:
+    path: /login
+    fresh: true
+
+journeys:
+  checkout: ./checkout.journey.mjs
+```
+
+`vqa.setup.mjs` runs before every state and journey, on a fresh page, before
+anything is opened. Set cookies, seed storage, stub routes. Read secrets from
+the environment, never from the repo:
+
+```js
+// Runs before every state and journey. `page` is a fresh Playwright page;
+// ctx is { baseUrl, state, viewport, locale }.
+export async function setup(page, ctx) {
+  await page.context().addCookies([
+    { name: "sid", value: "demo", url: ctx.baseUrl },
+  ]);
+}
+```
+
+`checkout.journey.mjs` is a journey: the path a user must be able to finish.
+
+```js
+// step(name, async (page, ctx) => …) acts; check(name, async (page, ctx) => …)
+// returns true, or false / a string saying why not. The first red one stops
+// the journey with a stop image.
+export default async function ({ step, check }) {
+  await step("open checkout", (page, ctx) =>
+    page.goto(new URL("/checkout", ctx.baseUrl).href),
+  );
+  await step("continue", (page) =>
+    page.getByRole("button", { name: "Continue" }).click(),
+  );
+  await check("second step is shown", (page) =>
+    page.getByRole("heading", { name: /step 2 of 2/ }).isVisible(),
+  );
+  await step("place order", (page) =>
+    page.getByRole("button", { name: "Place order" }).click(),
+  );
+  await check("order is confirmed", (page) =>
+    page.getByRole("heading", { name: "Order placed" }).isVisible(),
+  );
+}
+```
+
+Run them (to try it, use the sample app in a Git checkout:
+`PORT=4174 node fixture/app-server.mjs &`, then `cd fixture/example`):
+
+```sh
+visual-qa explore --url http://127.0.0.1:4174 --state orders --state orders-error --state signed-out --journey checkout
+visual-qa journeys --url http://127.0.0.1:4174          # every journey in the config
+```
+
+- **Sessions.** `setup` exports `setup(page, ctx)` with
+  `ctx = { baseUrl, state, viewport, locale }`. Instead of (or together with)
+  a hook, `storage_state: ./auth.json` loads a Playwright storage-state file
+  (cookies and local storage; it holds live sessions, keep it out of git).
+  `fresh: true` on a state or journey skips the session, so a signed-out page
+  or a real sign-in flow starts cold.
+- **States.** `path` is required. `setup: <name>` also runs that extra export of
+  the setup file. `path@state` (`--state /orders/42@orders-error`, or a
+  `route_map` entry for `agent-run`) captures the same state on another path.
+  Each state gets a full-page image and the visible text next to it
+  (`screenshots/appstate-<state>-<viewport>.png` and `.txt`) and goes through
+  the same checks as any explored page.
+- **Failures on demand.** `expect_api` (alias `fail_api`) maps a URL glob to an
+  HTTP error status or `timeout` (the request is aborted as timed out).
+  The injected failure itself is not a finding. The *error state* must show
+  a reason (an alert or error text; or the text in `reason`, for apps not in
+  English) and a way forward (a focusable control in the content area; header,
+  nav and footer links do not count). Missing either is a medium finding. A
+  failure the page never requests is a low finding: the state was not
+  exercised. Any other failing request in the state is a normal finding.
+- **Journeys.** `step(name, async (page, ctx) => …)` acts, `check(name, async
+  (page, ctx) => …)` returns `true` (holds), or `false` / a string with the
+  reason. Every step leaves an image and a text file
+  (`journeys/<name>/<viewport>/NN-<step>.png`). The first red step or check
+  fails the run (`high`), names the step, writes a `…-FAILED.png` stop image
+  and skips the rest. A step that cannot find its target fails after 15 s, not Playwright's 30 s.
+  Value forms: `name: ./file.mjs`, or `name:` with `file:` and `fresh: true`.
+- **Scope.** Naming a state or journey narrows the run to what you named; the
+  plain walk of the base URL happens when you name nothing. On `run`, vision
+  review still applies to the images.
+- **Your files are not findings.** A missing or throwing setup, a missing
+  `storage_state` file, an unknown state, or a journey file with a syntax error
+  stops the run with exit `2` and the file named. Unknown keys in
+  `.visual-qa.yml` are printed as warnings.
 
 ## Agent loop (short)
 

@@ -33,7 +33,12 @@ export {
 } from "./report.mjs";
 export { run } from "./run.mjs";
 export { evaluateAgentGate, writeAgentGate } from "./agent-gate.mjs";
-export { agentRun } from "./agent-run.mjs";
+export {
+  agentRun,
+  loadVisualQaConfig,
+  parseVisualQaYaml,
+} from "./agent-run.mjs";
+export { resolveSessionInput, SetupError } from "./session.mjs";
 export {
   captureBaselines,
   resolveBaselinePath,

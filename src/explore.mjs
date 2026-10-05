@@ -32,6 +32,8 @@ import {
 import { runSlopChecks } from "./slop.mjs";
 import { runSecurityChecks } from "./security.mjs";
 import { runIntentChecks } from "./intent.mjs";
+import { runJourneys } from "./journeys.mjs";
+import { captureStates } from "./session.mjs";
 import { writeReportArtifacts } from "./report.mjs";
 
 // Budgets that end the whole walk, as opposed to node-local truncations.
@@ -1594,16 +1596,22 @@ export async function explore(input = {}) {
     });
   }
 
+  // Named states and journeys narrow the run to what was named; the plain
+  // base-URL walk only happens when nothing was selected.
+  const selected =
+    Object.keys(config.stateDefs).length > 0 || config.journeys.length > 0;
   const entryUrls =
     config.mode === "changed"
       ? config.changedTargets.map(
           (target) => new URL(target, config.baseUrl).href,
         )
-      : [config.baseUrl];
+      : selected
+        ? []
+        : [config.baseUrl];
 
   const budget = { actions: 0, states: 0 };
   const walks = [];
-  for (const viewport of config.viewports) {
+  for (const viewport of entryUrls.length ? config.viewports : []) {
     // Reserve enough wall-clock budget for each declared viewport. A single
     // slow walk must not starve later viewport coverage.
     const remainingViewports = config.viewports.length - walks.length;
@@ -1656,7 +1664,12 @@ export async function explore(input = {}) {
     if (budget.actions >= config.bounds.max_total_actions) break;
   }
 
-  const covered = walks.map((walk) => walk.viewport);
+  if (Object.keys(config.stateDefs).length)
+    walks.push(...(await captureStates(config, { started, budget })));
+  if (config.journeys.length)
+    walks.push(...(await runJourneys(config, { started, budget })));
+
+  const covered = [...new Set(walks.map((walk) => walk.viewport))];
   const missing = config.viewports
     .map((viewport) => viewport.name)
     .filter((name) => !covered.includes(name));
