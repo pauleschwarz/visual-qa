@@ -246,16 +246,24 @@ visual-qa journeys --url http://127.0.0.1:4174          # every journey in the c
 - **Failures on demand.** `expect_api` (alias `fail_api`) maps a URL glob to an
   HTTP error status or `timeout` (the request is aborted as timed out).
   The injected failure itself is not a finding. The *error state* must show
-  a reason (an alert or status region, or the text in `reason`, for apps not
-  in English) and a way
-  forward (a focusable control in the content area) that the same page does
-  not show without the failure: visual-qa loads the state a second time
-  without the injection and counts only what the failure added, so error
-  words in normal content, header/nav/footer links or an always-present
-  status line cannot pass for an error state. Missing either is a medium
-  finding. `expect_api` needs at least one `glob: status` line. A
-  failure the page never requests is a low finding: the state was not
-  exercised. Any other failing request in the state is a normal finding.
+  a reason and a way forward that the same page does not show without the
+  failure. Reason: new text in an alert, alertdialog, status or live region
+  (`role=alert|alertdialog|status`, `aria-live`) or an open `<dialog>`, or the
+  text you put in `reason: "…"`. If your page shows the error as plain text
+  (a red `<p>`, no role) or in another language than you search for, add
+  `reason:`; without it the finding says so. Way forward: a focusable control
+  in the content area (retry, back, link) that is new. visual-qa loads the
+  state a second time without the injection and counts only what the failure
+  added, so error words in normal content, header/nav/footer links or an
+  always-present status line cannot pass for an error state. Digits are
+  ignored in that comparison (a clock or counter is not new); text that changes
+  in words between two loads can still look new, `reason:` makes the reason
+  check independent of it.
+  Missing either is a medium finding. Cost: every error state is loaded once
+  more per viewport (the `setup` hooks run again). `expect_api` needs at least
+  one `glob: status` line. A failure the page never requests is a low finding:
+  the state was not exercised. Any other failing request in the state is a
+  normal finding.
 - **Journeys.** `step(name, async (page, ctx) => …)` acts, `check(name, async
   (page, ctx) => …)` returns `true` (holds), or `false` / a string with the
   reason. Every step leaves an image and a text file

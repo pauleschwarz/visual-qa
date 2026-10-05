@@ -126,8 +126,10 @@ state instead of hoping the walk finds it. Contract for agents:
 - A red journey check is `FAIL` (exit `1`) with the step named in the issue
   title and a `…-FAILED.png`. A broken setup/journey file is exit `2`, never a finding.
 - An injected failure (`expect_api`) is expected, so its 4xx/5xx is not a
-  finding; an error state with no visible reason or no way forward is (`medium`),
-  judged against the same state loaded without the failure.
+  finding; an error state with no new alert/alertdialog/status/dialog text (or `reason:` text)
+  or no new focusable control is (`medium`), judged against the same state loaded without the
+  failure (costs one more load per error state and viewport; `setup` runs again). Plain red
+  text without a role counts only through `reason:` in the state.
 
 ## DESIGN.md
 

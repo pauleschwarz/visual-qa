@@ -118,6 +118,24 @@ test("yaml: an older config with tab-indented trigger and route_map still parses
   );
 });
 
+test("yaml: tabs are refused in journeys too, and only a real top-level key decides which section a line belongs to", () => {
+  assert.throws(
+    () => parseVisualQaYaml("journeys:\n\ta: ./x.mjs\n"),
+    /line 2: tabs are not allowed/,
+  );
+  // An indented key is no new section: a tab below it is still inside `states`.
+  assert.throws(
+    () => parseVisualQaYaml("states:\n  a:\n    path: /x\n\t\tfoo: 1\n"),
+    /line 4: tabs are not allowed/,
+  );
+  // A column-0 list item belongs to the key above it (older files write lists that way).
+  assert.throws(
+    () => parseVisualQaYaml("states:\n  a:\n    path: /x\n- stray\n\tbad: 1\n"),
+    /line 5: tabs are not allowed/,
+  );
+  assert.deepEqual(parseVisualQaYaml("trigger:\n- src/**\n\t- more\n").warnings, []);
+});
+
 test("yaml: states or journeys written inline at the top level are refused with their line", () => {
   assert.throws(
     () => parseVisualQaYaml("setup: ./s.mjs\nstates: {orders: {path: /orders}}\n"),
@@ -198,7 +216,7 @@ test("states: unknown name, missing path, bad expect_api and unknown state setup
     expectApi: { "**/api": 500 },
   });
   // A bare value or an empty block would inject nothing and let the state pass untested.
-  for (const [shape, received] of [[500, "500"], [{}, "{}"], [["**/api"], '\\["\\*\\*/api"\\]'], [null, "null"]]) {
+  for (const [shape, received] of [[500, "500"], [{}, "{}"], [["**/api"], '\\["\\*\\*/api"\\]'], [null, "null"], ["**/api", '"\\*\\*/api"']]) {
     for (const key of ["expect_api", "fail_api"])
       await rejectsSetup(
         resolveSessionInput({ states: { a: { path: "/a", [key]: shape } } }, { baseDir: dir, states: ["a"] }),
@@ -239,6 +257,9 @@ test("journeys: unknown name, missing file, syntax error and missing default exp
     resolved.journeys.map(({ name, fresh }) => [name, fresh]),
     [["ok", false], ["fresh", true]],
   );
+  // A name given twice (`--journey ok --journey ok`, `--only ok,ok`) runs once.
+  const twice = await resolveSessionInput(config, { baseDir: dir, journeys: ["ok", "ok", "fresh", "ok"] });
+  assert.deepEqual(twice.journeys.map(({ name }) => name), ["ok", "fresh"]);
 });
 
 test("expected failures drop only the injected requests, not other 5xx", () => {
@@ -289,6 +310,10 @@ test("cli: --journey names journeys on the journeys command, like --only", async
   assert.match(run("--only", "b", "--journey", "a").stderr, /journey "b": file not found/);
   assert.match(run("--journey", "nope").stderr, /unknown journey "nope"; known: a, b/);
   assert.match(run().stderr, /journey "a": file not found/);
+  // Empty names (`--only ""`, `--only a,,b`) name nothing: an empty --only runs every journey, not a journey called "".
+  assert.match(run("--only", "").stderr, /journey "a": file not found/);
+  assert.match(run("--only", ",a,").stderr, /journey "a": file not found/);
+  assert.match(run("--journey", "", "--journey", "b").stderr, /journey "b": file not found/);
 });
 
 test("cli: states and journeys need a config, known names and a loadable setup (exit 2, no browser)", async () => {
@@ -375,9 +400,49 @@ test("error state: reason and way forward are judged on what a reader can see an
     ["reason text present, any case", `<main><p>COULD NOT LOAD</p>${BUTTON}</main>`, "could not load", true, true],
     ["reason text absent although an alert shows", `<main>${ALERT}${BUTTON}</main>`, "could not load", false, true],
   ];
+  // Header, nav and footer are left out of the controls wherever they sit: inside main, or on a page with no main.
+  for (const tag of ["header", "nav", "footer"]) {
+    cases.push(
+      [`${tag} inside main`, `<main>${ALERT}<${tag}><a href="/">Home</a></${tag}></main>`, null, true, false],
+      [`${tag} on a page without main`, `<${tag}><a href="/">Home</a></${tag}>${ALERT}`, null, true, false],
+    );
+  }
+  cases.push(
+    ["live region switched off", `<main><p aria-live="off">Sorry about that.</p>${BUTTON}</main>`, null, false, true],
+    ["alert holding only white space", `<main><p role="alert" style="height:20px">&nbsp; </p>${BUTTON}</main>`, null, false, true],
+    ["alertdialog with the message", `<main><div role="alertdialog" aria-label="Error"><p>Could not load.</p><button>OK</button></div></main>`, null, true, true],
+    ["open dialog with the message", `<main><dialog open><p>Could not load.</p><button>OK</button></dialog></main>`, null, true, true],
+    ["closed dialog", `<main><dialog><p>Could not load.</p></dialog><p>Fine.</p></main>`, null, false, false],
+    // Plain red text has no role a reader can rely on: it counts only through the configured `reason`.
+    ["plain error text, no reason configured", `<main><p class="error">Could not load.</p><a href="/">Back</a></main>`, null, false, true],
+    ["plain error text, reason configured", `<main><p class="error">Could not load.</p><a href="/">Back</a></main>`, "could not load", true, true],
+  );
   const healthy = await signals(FINE);
   for (const [name, html, reason, hasReason, hasWayForward] of cases)
     assert.deepEqual(judgeErrorState(await signals(html), healthy, reason), { hasReason, hasWayForward }, name);
+
+  // Two different pages: a control or an alert counts as added when anything a reader can tell apart differs.
+  const ICON = '<svg width="10" height="10"></svg>';
+  const pairs = [
+    ["same text, other link target", "<main><a href='/b'>Back</a></main>", "<main><a href='/a'>Back</a></main>", false, true],
+    ["same text and target, other element", "<main><button>Go</button></main>", "<main><a href=''>Go</a></main>", false, true],
+    ["icon button, other aria-label", `<main><button aria-label="Retry">${ICON}</button></main>`, `<main><button aria-label="Menu">${ICON}</button></main>`, false, true],
+    ["submit input, other value", '<main><input type="submit" value="Retry"></main>', '<main><input type="submit" value="Save"></main>', false, true],
+    ["icon link, other title", `<main><a href="/" title="Retry">${ICON}</a></main>`, `<main><a href="/" title="Menu">${ICON}</a></main>`, false, true],
+    ["a new alert next to an unchanged one", '<main><p role="status">Saved.</p><p role="alert">Could not load.</p></main>', '<main><p role="status">Saved.</p></main>', true, false],
+    // The second load differs only in numbers (clock, counter, timestamp): nothing was added.
+    ["status line with a clock", '<main><p role="status">Updated 12:01:58</p></main>', '<main><p role="status">Updated 12:01:33</p></main>', false, false],
+    ["live region with a random number", '<main><div aria-live="polite">Quote 0.51234</div></main>', '<main><div aria-live="polite">Quote 0.98765</div></main>', false, false],
+    ["link with a timestamp in its target", '<main><a href="/x?ts=1790000001">Refresh</a></main>', '<main><a href="/x?ts=1790000099">Refresh</a></main>', false, false],
+    ["button with a counter in its label", "<main><button>Refresh (3)</button></main>", "<main><button>Refresh (17)</button></main>", false, false],
+    ["a new alert next to a clock", '<main><p role="status">Updated 12:01:58</p><p role="alert">Could not load (500)</p></main>', '<main><p role="status">Updated 12:01:33</p></main>', true, false],
+  ];
+  for (const [name, seenHtml, healthyHtml, hasReason, hasWayForward] of pairs)
+    assert.deepEqual(
+      judgeErrorState(await signals(seenHtml), await signals(healthyHtml), null),
+      { hasReason, hasWayForward },
+      name,
+    );
 
   // A page that swallows the failure and merely looks like an error page: the same
   // words in the content, the same alert region and the same links as when healthy.

@@ -597,7 +597,7 @@ if (command === "agent-gate") {
       const journeysToRun =
         command === "journeys"
           ? named.length
-            ? [...new Set(named)]
+            ? named
             : Object.keys(project.journeys)
           : journeyNames;
       if (command === "journeys" && !journeysToRun.length)

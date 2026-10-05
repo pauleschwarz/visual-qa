@@ -137,7 +137,8 @@ export async function resolveSessionInput(
   }
 
   const journeyList = [];
-  for (const name of journeys) {
+  // `--journey a --journey a` or `--only a,a` runs a once.
+  for (const name of new Set(journeys)) {
     const entry = config.journeys?.[name];
     if (!entry)
       throw new SetupError(unknownName("journey", name, config.journeys));
@@ -299,9 +300,11 @@ export async function writeShot(runtime, base) {
 }
 
 /**
- * What a reader can see and use on the page: the text of visible alert/status
- * regions and the focusable controls of the content area (header, nav, footer
- * and aside controls exist on every page and are left out).
+ * What a reader can see and use on the page: the text of visible alert, status,
+ * live-region and dialog elements and the focusable controls of the content area
+ * (header, nav, footer and aside controls exist on every page and are left out).
+ * Digits are folded to "0" in what gets compared, so a clock, a counter or a
+ * timestamp in a status line or a link does not look new on the second load.
  */
 export async function readErrorSignals(page) {
   return page.evaluate(() => {
@@ -317,14 +320,15 @@ export async function readErrorSignals(page) {
       );
     };
     const squash = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+    const stable = (value) => squash(value).replace(/\d+/g, "0");
     const content = document.querySelector("main,[role=main]") ?? document.body;
     const alerts = [
       ...document.querySelectorAll(
-        "[role=alert],[role=status],[aria-live]:not([aria-live=off])",
+        "[role=alert],[role=alertdialog],[role=status],dialog[open],[aria-live]:not([aria-live=off])",
       ),
     ]
       .filter(shown)
-      .map((el) => squash(el.innerText))
+      .map((el) => stable(el.innerText))
       .filter(Boolean);
     const controls = [
       ...content.querySelectorAll(
@@ -341,8 +345,8 @@ export async function readErrorSignals(page) {
       .map((el) =>
         [
           el.tagName,
-          el.getAttribute("href") ?? "",
-          squash(el.innerText || el.getAttribute("aria-label") || el.value || el.title),
+          stable(el.getAttribute("href")),
+          stable(el.innerText || el.getAttribute("aria-label") || el.value || el.title),
         ].join("|"),
       );
     return { text: squash(document.body?.innerText), alerts, controls };
@@ -474,7 +478,7 @@ async function captureOne({ config, viewport, name, def, walk }) {
               "medium",
               def.reason
                 ? `State "${name}" does not show the expected text "${def.reason}".`
-                : `State "${name}" fails an API call but shows no alert or status text that the healthy page lacks; the user cannot tell what went wrong.`,
+                : `State "${name}" fails an API call but shows no alert, alertdialog, dialog or status text that the healthy page lacks; the user cannot tell what went wrong. If the page shows the error as plain text, set \`reason: <text it shows>\` on the state.`,
               evidence,
             ),
           );

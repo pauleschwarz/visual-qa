@@ -146,6 +146,11 @@ test("an error state without reason or without way forward is a medium finding",
     ["Error state silent offers no way forward", "medium"],
     ["Error state silent shows no reason", "medium"],
   ]);
+  // The message tells how to get out of it when the page shows the error as plain text.
+  assert.match(
+    report.issues.find((item) => item.title === "Error state silent shows no reason").detail,
+    /set `reason: <text it shows>`/,
+  );
   assert.deepEqual(byState("stuck"), [["Error state stuck offers no way forward", "medium"]]);
   assert.deepEqual(byState("wrong-reason"), [["Error state wrong-reason shows no reason", "medium"]]);
   assert.equal(report.verdict, "UNPROVEN");
@@ -171,6 +176,42 @@ test("a page that swallows the failure is not rescued by error words and links i
     "Error state docs shows no reason",
   ]);
   assert.equal(report.verdict, "UNPROVEN");
+});
+
+// The comparison load is the same state minus the failure: same session, same setup export.
+test("the healthy comparison load keeps the state's own setup and its fresh flag", async () => {
+  const dir = await inProject(
+    [
+      "setup: ./hooks.mjs",
+      "states:",
+      "  seeded:",
+      "    path: /docs",
+      "    setup: addButton",
+      "    expect_api:",
+      '      "**/api/orders": 500',
+      "  cold:",
+      "    path: /docs",
+      "    fresh: true",
+      "    expect_api:",
+      '      "**/api/orders": 500',
+      "",
+    ].join("\n"),
+    {
+      "hooks.mjs":
+        // The global setup strips every link from the page; a fresh state never sees that.
+        "export async function setup(page) { await page.addInitScript(() => addEventListener('DOMContentLoaded', () => document.querySelectorAll('main a').forEach((a) => a.remove()))); }\n" +
+        // The state's own setup puts a button on the page, with and without the failure.
+        "export async function addButton(page) { await page.addInitScript(() => addEventListener('DOMContentLoaded', () => { const b = document.createElement('button'); b.textContent = 'Seeded'; document.querySelector('main').append(b); })); }\n",
+    },
+  );
+  const { report } = await check(dir, { states: ["seeded", "cold"] });
+  const found = report.issues.map((item) => `${item.evidence?.state}: ${item.title}`).sort();
+  assert.deepEqual(found, [
+    "cold: Error state cold offers no way forward",
+    "cold: Error state cold shows no reason",
+    "seeded: Error state seeded offers no way forward",
+    "seeded: Error state seeded shows no reason",
+  ]);
 });
 
 test("the setup hook sees the state's name, also when the state is picked as path@name", async () => {
