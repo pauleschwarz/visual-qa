@@ -674,6 +674,7 @@ async function compareEntryBaseline(
   try {
     const comparison = await compareScreenshots(baselineInfo.path, initialShot, {
       thresholdPct: config.baseline.threshold_pct,
+      pixelThreshold: config.baseline.pixel_threshold,
     });
     if (comparison.changed)
       issues.push(

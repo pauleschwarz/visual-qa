@@ -22,14 +22,20 @@ export const DEFAULT_VIEWPORTS = [
 ];
 
 /**
- * Baseline compare: share of one image's pixels (percent) that may differ before it counts
- * as a change. Measured, not guessed: repeated captures of one stable state differ by 0 px
- * (test/baseline.e2e.mjs), and one changed digit is 7–11 px — 0.0005–0.0009 % of a 1440×900
- * first view, 0.002–0.003 % at 390×844. 0.0005 % (≈6 px at 1440×900) keeps a single stray
- * pixel from failing a run and still catches that digit; very tall full-page images tolerate
- * proportionally more pixels, so lower it there (`--threshold-pct`).
+ * Baseline compare, how much may differ before an image counts as changed. Measured, not
+ * guessed (test/baseline.e2e.mjs, 3 captures at once next to CPU burners: 0 px of noise, even
+ * at pixel threshold 0; a one-digit change in a 16 px footer is 21–24 px, a one-step label
+ * colour change 148 px).
+ *  - DEFAULT_THRESHOLD_PCT: share (percent) of the image's pixels that may differ — measured
+ *    against at most one 1440×900 screen (REFERENCE_PIXELS), so a tall page never tolerates
+ *    more than ≈6 px and a footer digit is found on a 5-million-pixel page too.
+ *  - DEFAULT_PIXEL_THRESHOLD: pixelmatch colour distance (0–1) two pixels need to count as
+ *    different. 0.1 hides a one-step Tailwind text colour (#374151 → #4b5563); 0.05 shows it.
+ *    Blind spot: a change smaller than that (#333 → #3a3a3a) stays invisible.
  */
 export const DEFAULT_THRESHOLD_PCT = 0.0005;
+export const REFERENCE_PIXELS = 1440 * 900;
+export const DEFAULT_PIXEL_THRESHOLD = 0.05;
 export const DEFAULT_BASELINE_LOCALE = "en-US";
 export const DEFAULT_BASELINE_TIMEZONE = "UTC";
 
@@ -191,6 +197,7 @@ const BASELINE_KEYS = [
   "routes",
   "viewports",
   "threshold_pct",
+  "pixel_threshold",
   "clock",
   "locale",
   "timezone",
@@ -228,6 +235,14 @@ export function resolveBaselineConfig(input = {}) {
     throw new Error(
       `baseline threshold_pct must be a number >= 0 (percent of an image's pixels); received ${input.threshold_pct}`,
     );
+  const pixelThreshold =
+    input.pixel_threshold === undefined || input.pixel_threshold === null
+      ? DEFAULT_PIXEL_THRESHOLD
+      : Number(input.pixel_threshold);
+  if (!Number.isFinite(pixelThreshold) || pixelThreshold < 0 || pixelThreshold > 1)
+    throw new Error(
+      `baseline pixel_threshold must be a number from 0 to 1 (colour distance); received ${input.pixel_threshold}`,
+    );
   const clock = input.clock == null ? null : String(input.clock);
   if (clock !== null && Number.isNaN(new Date(clock).getTime()))
     throw new Error(`baseline clock "${clock}" is not an ISO date-time`);
@@ -253,6 +268,7 @@ export function resolveBaselineConfig(input = {}) {
       ? resolvedViewports(input.viewports.map((v) => (typeof v === "string" ? parseViewport(v) : v)))
       : null,
     threshold_pct: thresholdPct,
+    pixel_threshold: pixelThreshold,
     clock,
     locale,
     timezone,

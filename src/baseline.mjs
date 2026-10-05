@@ -15,14 +15,15 @@ import { PNG } from "pngjs";
 import {
   DEFAULT_BASELINE_LOCALE as DEFAULT_LOCALE,
   DEFAULT_BASELINE_TIMEZONE as DEFAULT_TIMEZONE,
+  DEFAULT_PIXEL_THRESHOLD,
   DEFAULT_THRESHOLD_PCT,
   DEFAULT_VIEWPORTS,
+  REFERENCE_PIXELS,
 } from "./config.mjs";
 
-/** pixelmatch colour distance (0–1): how different two pixels must look to count. */
-export const PIXEL_THRESHOLD = 0.1;
 export const MANIFEST_NAME = "baseline-manifest.json";
 export const MANIFEST_SCHEMA = "vqa-baseline-capture-0.2";
+const COMPARE_SCHEMA = "vqa-baseline-compare-0.1";
 
 export function routeKeyFromTarget(target, baseUrl) {
   const raw = String(target ?? "").trim() || "/";
@@ -131,7 +132,7 @@ function padded(png, width, height) {
 export function compareImages(
   bufferA,
   bufferB,
-  { diff = true, pixelThreshold = PIXEL_THRESHOLD } = {},
+  { diff = true, pixelThreshold = DEFAULT_PIXEL_THRESHOLD } = {},
 ) {
   const a = PNG.sync.read(bufferA);
   const b = PNG.sync.read(bufferB);
@@ -159,6 +160,16 @@ export function compareImages(
     sizeChanged,
     diffPng: out && (pixels > 0 || sizeChanged) ? PNG.sync.write(out) : null,
   };
+}
+
+/**
+ * The one decision "did this image change?": a size change always does; otherwise more
+ * differing pixels than `thresholdPct` percent of the image — measured against at most one
+ * reference screen, so a tall page does not tolerate more pixels than a short one.
+ */
+export function isChange(result, thresholdPct = DEFAULT_THRESHOLD_PCT) {
+  const tolerated = (thresholdPct / 100) * Math.min(result.total, REFERENCE_PIXELS);
+  return result.sizeChanged || result.pixels > tolerated;
 }
 
 // ---------------------------------------------------------------- folder layout
@@ -204,21 +215,34 @@ export async function readManifest(dir) {
 }
 
 /**
- * Remove what a capture or compare wrote before — images, diff/, manifest, reports —
- * and nothing else, so a mistyped --out never deletes someone's files.
+ * A folder visual-qa may write into: missing, empty, or one a capture or compare wrote
+ * before (it holds the manifest or a report). Anything else is someone's — a mistyped --out
+ * must never delete or overwrite their files.
  */
-export async function cleanOwnFiles(dir) {
-  const root = resolve(dir);
+async function assertOwnFolder(root) {
   let entries = [];
   try {
     entries = await readdir(root, { withFileTypes: true });
   } catch {
-    return;
+    return entries;
   }
-  if (entries.length && !entries.some((e) => e.name === MANIFEST_NAME))
+  const ours = async () =>
+    entries.some((e) => e.name === MANIFEST_NAME) ||
+    (await readFile(join(root, "report.json"), "utf8").then(
+      (text) => JSON.parse(text).schema_version === COMPARE_SCHEMA,
+      () => false,
+    ));
+  if (entries.length && !(await ours()))
     throw new Error(
-      `${root} is not empty and holds no ${MANIFEST_NAME} — refusing to write baseline images into it; pick an empty or earlier baseline folder`,
+      `${root} is not empty and holds neither ${MANIFEST_NAME} nor a compare report.json — refusing to write into it; pick an empty or earlier baseline folder`,
     );
+  return entries;
+}
+
+/** Remove what a capture or compare wrote before — images, diff/, manifest, reports — and nothing else. */
+export async function cleanOwnFiles(dir) {
+  const root = resolve(dir);
+  const entries = await assertOwnFolder(root);
   await rm(join(root, "diff"), { recursive: true, force: true });
   for (const name of OWN_FILES) await rm(join(root, name), { force: true });
   for (const entry of entries) {
@@ -250,13 +274,20 @@ const diffFileName = (e) => `${e.route_key}__${e.viewport}__${e.part}.png`;
 export async function compareFolders(
   baseDir,
   newDir,
-  { thresholdPct = DEFAULT_THRESHOLD_PCT, outDir = newDir, scope = null } = {},
+  {
+    thresholdPct = DEFAULT_THRESHOLD_PCT,
+    pixelThreshold = DEFAULT_PIXEL_THRESHOLD,
+    outDir = newDir,
+    scope = null,
+  } = {},
 ) {
   const base = resolve(baseDir);
   const fresh = resolve(newDir);
   const out = resolve(outDir);
   if (base === fresh) throw new Error("baseline and new folder are the same folder");
   if (out === base) throw new Error("output folder must not be the baseline folder");
+  // Default out = the new folder (its owner chose it); any other --out must be ours or empty.
+  if (out !== fresh) await assertOwnFolder(out);
   const before = await listImages(base);
   const after = await listImages(fresh);
   if (!before.size) throw new Error(`no baseline images in ${base}`);
@@ -283,7 +314,7 @@ export async function compareFolders(
       added.push({ ...entry, route: routeLabel(entry.route_key, targets) });
       continue;
     }
-    const result = compareImages(await readFile(old.path), await readFile(entry.path));
+    const result = compareImages(await readFile(old.path), await readFile(entry.path), { pixelThreshold });
     const row = {
       route: routeLabel(entry.route_key, targets),
       route_key: entry.route_key,
@@ -297,7 +328,7 @@ export async function compareFolders(
       old_path: old.path,
       new_path: entry.path,
     };
-    if (result.sizeChanged || result.pct > thresholdPct) {
+    if (isChange(result, thresholdPct)) {
       row.diff_path = join(out, "diff", diffFileName(row));
       await writeFile(row.diff_path, result.diffPng);
       changed.push(row);
@@ -308,15 +339,18 @@ export async function compareFolders(
       missing.push({ ...entry, route: routeLabel(entry.route_key, targets) });
   }
   const errors = newManifest?.errors ?? [];
+  const below = same.filter((r) => r.pixels > 0);
   const result = {
-    schema_version: "vqa-baseline-compare-0.1",
+    schema_version: COMPARE_SCHEMA,
     baseline: base,
     current: fresh,
     threshold_pct: thresholdPct,
+    pixel_threshold: pixelThreshold,
     ok: !changed.length && !missing.length && !errors.length,
     compared: changed.length + same.length,
     changed,
     same: same.length,
+    tolerated: { images: below.length, max_pixels: Math.max(0, ...below.map((r) => r.pixels)) },
     added,
     missing,
     errors,
@@ -338,9 +372,14 @@ function renderReport(r, out) {
     "",
     `${r.ok ? "**PASS**" : "**FAIL**"} · ${r.compared} compared, ${r.changed.length} changed, ${r.same} same, ${r.added.length} new, ${r.missing.length} missing, ${r.errors.length} load errors`,
     "",
-    `Baseline \`${r.baseline}\` · Current \`${r.current}\` · Threshold ${r.threshold_pct} % of an image's pixels (a size change always counts)`,
+    `Baseline \`${r.baseline}\` · Current \`${r.current}\` · Threshold ${r.threshold_pct} % of an image's pixels (at most of one ${REFERENCE_PIXELS.toLocaleString("en-US")}-pixel screen), colour distance ${r.pixel_threshold} (a size change always counts)`,
     "",
   ];
+  if (r.tolerated.images)
+    lines.push(
+      `Below the threshold, not counted: ${r.tolerated.images} image${r.tolerated.images === 1 ? "" : "s"} differ by at most ${r.tolerated.max_pixels} px`,
+      "",
+    );
   const cond = r.conditions.current ?? r.conditions.baseline;
   if (cond)
     lines.push(
@@ -396,13 +435,32 @@ const QUIET_POLL_MS = 100;
 const QUIET_EQUAL_PROBES = 3;
 const QUIET_MAX_PROBES = 50;
 
-/** In-page: every inner vertical scroller in DOM order gets data-vqa-scroller="<n>". Returns the count. */
+/**
+ * In-page, the one definition of an inner scroller: <body> and everything in it that scrolls
+ * vertically (not a form field), in DOM order, with more than `slack` px still to scroll.
+ * The page's own scrolling (<html>) is the page part, not a scroller. Capture, the settle
+ * check and the layout check all ask this; a page function reaches it through inPage().
+ */
+function innerScrollers(slack) {
+  return [...document.querySelectorAll("body, body *")].filter(
+    (el) =>
+      !["TEXTAREA", "SELECT", "INPUT"].includes(el.tagName) &&
+      /(auto|scroll)/.test(getComputedStyle(el).overflowY) &&
+      el.scrollHeight > el.clientHeight + slack,
+  );
+}
+
+/** page.evaluate for a function that may call innerScrollers(slack). Built as text, so a page CSP cannot block it. */
+export function inPage(page, fn, arg) {
+  return page.evaluate(
+    `(() => { ${innerScrollers}; return (${fn})(${JSON.stringify(arg ?? null)}); })()`,
+  );
+}
+
+/** In-page: every inner scroller worth a picture gets data-vqa-scroller="<n>". Returns the count. */
 export function markScrollers() {
   let count = 0;
-  for (const el of document.querySelectorAll("body *")) {
-    if (["TEXTAREA", "SELECT", "INPUT"].includes(el.tagName)) continue;
-    if (!/(auto|scroll)/.test(getComputedStyle(el).overflowY)) continue;
-    if (el.scrollHeight <= el.clientHeight + 1) continue;
+  for (const el of innerScrollers(1)) {
     if (el.clientWidth < 32 || el.clientHeight < 32) continue;
     count += 1;
     el.setAttribute("data-vqa-scroller", String(count));
@@ -432,7 +490,8 @@ export function stretchScroller(n) {
     if (position === "sticky" && el.contains(node)) continue;
     addStyle(node, "visibility:hidden!important");
   }
-  for (let node = el; node && node !== document.documentElement; node = node.parentElement) {
+  // Up to <html>: with html{overflow:hidden} and a scrolling <body>, html would cut the grown box off.
+  for (let node = el; node; node = node.parentElement) {
     const position = getComputedStyle(node).position;
     // top + bottom together would pin the height of an absolute box.
     const pin =
@@ -456,15 +515,11 @@ export function restoreStretch() {
 
 function toTop() {
   window.scrollTo(0, 0);
-  for (const el of document.querySelectorAll("body *")) if (el.scrollTop) el.scrollTop = 0;
+  for (const el of document.querySelectorAll("body, body *")) if (el.scrollTop) el.scrollTop = 0;
 }
 
 function layoutSignature() {
-  const scrollers = [];
-  for (const el of document.querySelectorAll("body *")) {
-    if (/(auto|scroll)/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight + 1)
-      scrollers.push([el.scrollHeight, el.scrollTop]);
-  }
+  const scrollers = innerScrollers(1).map((el) => [el.scrollHeight, el.scrollTop]);
   const pending = [...document.images].filter((img) => !img.complete).length;
   return JSON.stringify([window.scrollY, document.documentElement.scrollHeight, scrollers, pending]);
 }
@@ -478,7 +533,7 @@ async function settle(page) {
   let equal = 0;
   for (let i = 0; i < QUIET_MAX_PROBES && equal < QUIET_EQUAL_PROBES; i += 1) {
     await page.waitForTimeout(QUIET_POLL_MS);
-    const now = await page.evaluate(layoutSignature);
+    const now = await inPage(page, layoutSignature);
     equal = now === last ? equal + 1 : 0;
     last = now;
   }
@@ -538,7 +593,7 @@ async function captureRoute(page, { url, target, routeKey, viewport, dir, naviga
   const docHeight = await page.evaluate(() => document.documentElement.scrollHeight);
   if (docHeight > viewport.height + 1)
     await shoot("page", (path) => page.screenshot({ path, fullPage: true, ...SHOT }));
-  const scrollers = await page.evaluate(markScrollers);
+  const scrollers = await inPage(page, markScrollers);
   for (let n = 1; n <= scrollers; n += 1) {
     try {
       await page.evaluate(stretchScroller, n);
@@ -580,6 +635,8 @@ export async function captureBaselines({
   const routes = new Map();
   for (const target of targets) {
     const key = routeKeyFromTarget(target, baseUrl);
+    if (key === "diff")
+      throw new Error(`route "${target}" would be stored in "diff/", the folder of the diff images — it cannot be baselined`);
     if (routes.has(key) && routes.get(key) !== target)
       throw new Error(
         `routes "${routes.get(key)}" and "${target}" map to the same folder "${key}"`,
@@ -664,6 +721,7 @@ export async function compareToBaseline({
   locale,
   timezone,
   thresholdPct = DEFAULT_THRESHOLD_PCT,
+  pixelThreshold = DEFAULT_PIXEL_THRESHOLD,
   navigationTimeoutMs,
 } = {}) {
   const base = resolve(baselineDir);
@@ -671,17 +729,22 @@ export async function compareToBaseline({
     throw new Error("output folder must not be the baseline folder (it would be emptied)");
   const manifest = await readManifest(base);
   const cond = manifest?.conditions ?? {};
+  // A baseline that recorded no conditions at all (an old capture) has nothing to contradict.
   const pick = (given, recorded, label) => {
-    if (given != null && recorded != null && given !== recorded)
+    if (given != null && manifest?.conditions && given !== (recorded ?? null))
       throw new Error(
-        `${label} "${given}" differs from the baseline's "${recorded}" — compare under the same conditions or capture a new baseline`,
+        `${label} "${given}" differs from the baseline's "${recorded ?? "real time"}" — compare under the same conditions or capture a new baseline`,
       );
     return given ?? recorded;
   };
   const useClock = pick(clock, cond.clock, "clock") ?? null;
   const useLocale = pick(locale, cond.locale, "locale") ?? DEFAULT_LOCALE;
   const useZone = pick(timezone, cond.timezone, "timezone") ?? DEFAULT_TIMEZONE;
-  const useTargets = targets?.length ? targets : manifest?.routes?.map((r) => r.target) ?? ["/"];
+  // Routes: asked for, else what the baseline recorded (an old capture only lists them per image).
+  const recorded = manifest?.routes?.map((r) => r.target) ?? [
+    ...new Set((manifest?.entries ?? []).map((e) => e.target).filter(Boolean)),
+  ];
+  const useTargets = targets?.length ? targets : recorded.length ? recorded : ["/"];
   const useViewports = viewports?.length ? viewports : manifest?.viewports ?? DEFAULT_VIEWPORTS;
   const capture = await captureBaselines({
     baseUrl,
@@ -697,6 +760,6 @@ export async function compareToBaseline({
     routeKeys: new Set(useTargets.map((t) => routeKeyFromTarget(t, baseUrl))),
     viewports: new Set(useViewports.map((v) => v.name)),
   };
-  const result = await compareFolders(base, capture.outDir, { thresholdPct, scope });
+  const result = await compareFolders(base, capture.outDir, { thresholdPct, pixelThreshold, scope });
   return { ...result, capture };
 }

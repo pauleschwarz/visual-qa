@@ -137,8 +137,9 @@ visual-qa agent-gate <QA-DIR> <verity.json> [--json] # fail-closed Visual QA + V
 **Mode:** `--mode off|changed|full` · `--changed-target URL` (repeatable;
 required for `changed`) · `--baseline-dir DIR` (`<route>/<viewport>.png` or
 legacy flat) · `--design-contract FILE` (or auto `DESIGN.md`) ·
-`--allow-destructive` (only with `--isolated`) · `--threshold-pct N` (baseline
-tolerance) · `--internal-scrollers-as-finding`.
+`--allow-destructive` (only with `--isolated`) · `--threshold-pct N` ·
+`--pixel-threshold N` (baseline tolerance, see "Baselines") ·
+`--internal-scrollers-as-finding`.
 
 **Review defaults (`run`):** auto-exports harness vision tasks after the walk
 (`--no-prepare-review` to skip) · edge input probes on text fields
@@ -178,7 +179,7 @@ visual-qa baseline diff .qa-baseline .qa-baseline-compare --threshold-pct 0.001
 | --- | --- |
 | `top` | the first view, as a visitor sees it |
 | `page` | the whole document — only when the page scrolls |
-| `scroller-<n>` | every inner scroll area, shown whole (DOM order). The area and its parents are stretched, fixed/sticky chrome elsewhere (header, rail, composer, cookie banner) is hidden so it cannot cover content, and everything is put back afterwards. Textareas, selects and strips under 32 px are not parts. |
+| `scroller-<n>` | every inner scroll area, shown whole (DOM order). The area and its parents are stretched, fixed/sticky chrome elsewhere (header, rail, composer, cookie banner) is hidden so it cannot cover content, and everything is put back afterwards. A scrolling `<body>` counts. Textareas, selects and strips under 32 px are not parts. |
 
 **Calm capture, same for capture and compare:** reduced motion, CSS animations and caret off,
 network idle, `document.fonts.ready`, then layout unchanged for 300 ms; locale `en-US` and
@@ -188,15 +189,20 @@ reads clock, locale, timezone, routes and viewports from the baseline's
 `baseline-manifest.json`; passing a different clock/locale/timezone is refused (exit 2), a
 subset of routes/viewports only has to match itself.
 
-**Threshold** (`--threshold-pct`, default `0.0005`): the share of one image's pixels, in
-percent, that may differ before the image counts as changed. Measured, not guessed: the same
-state captured three times differs by 0 px, and one changed digit is 7–11 px — 0.0005–0.0009 %
-of a 1440×900 first view. A single stray pixel therefore never fails a run, and a size
-change always does. Very tall full-page images tolerate proportionally more pixels; lower the
-threshold there. Pixel colour distance is pixelmatch's default (anti-aliasing ignored).
+**Threshold** (`--threshold-pct`, default `0.0005`; `--pixel-threshold`, default `0.05`). An
+image counts as changed when its size changed, or when more than `threshold-pct` percent of
+its pixels differ — measured against at most one 1440×900 screen (1,296,000 px), so a tall
+page never tolerates more than ≈6 px. A pixel differs when pixelmatch's colour distance
+(0–1, anti-aliasing ignored) exceeds `--pixel-threshold`. Measured, not guessed: three
+captures at once next to busy processes differ by 0 px even at distance 0; one changed digit
+in a 16 px footer of a 1440×3726 page is 21–24 px; one Tailwind step of a label colour
+(`#374151` → `#4b5563`) is 148 px. **Blind spot:** a colour change below distance 0.05
+(`#333` → `#3a3a3a`) is not seen — lower `--pixel-threshold` to see it. What stayed below
+the threshold is listed in the report: «Below the threshold, not counted: n images differ by
+at most m px».
 
 **Result:** `report.md` + `report.json` list route · viewport · part · share changed · size
-old → new · diff path. Diff images show differing pixels in red over a faded copy. A new
+old → new · diff path. Diff images show differing pixels in red (differences that are only anti-aliasing: yellow) over a faded copy. A new
 image without baseline is `new` (not an error); a baseline image the new capture lacks is
 missing (error); HTTP ≥ 400 and navigation failures are listed as load errors and make the run
 fail, they never crash it.
@@ -204,9 +210,12 @@ fail, they never crash it.
 **Exit codes:** `0` no change · `1` change, missing image or load error · `2` wrong call,
 unreachable server (checked before anything on disk is touched), invalid config.
 `--out` is emptied of earlier baseline files first, but only those files — a folder that
-holds other things and no `baseline-manifest.json` is refused.
+holds other things and no `baseline-manifest.json` is refused. `baseline diff --out DIR`
+follows the same rule: DIR must be empty or hold an earlier compare (manifest or compare
+`report.json`); without `--out` the report goes into the second folder.
 
-**Config** (`.visual-qa.yml` in the working directory; flags win):
+**Config** (`.visual-qa.yml` in the working directory, read by `baseline capture|compare|diff`;
+flags win. `run` and `explore` do not read it — they take the flags):
 
 ```yaml
 baseline:
@@ -215,6 +224,7 @@ baseline:
     - mobile: 390x844
     - desktop: 1440x900
   threshold_pct: 0.0005
+  pixel_threshold: 0.05
   clock: 2026-10-05T10:00:00+02:00
   locale: en-US
   timezone: UTC
@@ -227,8 +237,8 @@ baseline:
 
 **Inner scrollers are not defects.** The layout check reports a tall inner scroll area as
 `info` (an app shell is a design choice) and `info` never turns a `PASS` into `UNPROVEN`.
-`--internal-scrollers-as-finding` (config `internalScrollers: "finding"`) restores the
-`medium` finding.
+`--internal-scrollers-as-finding` restores the `medium` finding (through the API:
+`internalScrollers: "finding"` in `resolveConfig`; `.visual-qa.yml` has no such key).
 
 ## Agent loop (short)
 

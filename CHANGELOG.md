@@ -13,10 +13,17 @@
   change, missing image or load error; new images are `new`; load failures never crash.
   `diff DIR_A DIR_B` compares two folders without a browser. `--out` only removes earlier
   baseline files, never a foreign folder.
-- Threshold in percent (`--threshold-pct`, default 0.0005, measured): a single stray pixel is
-  no longer a finding; a size change always is. Applies to `--baseline-dir` in `run`/`explore`.
+- Threshold (`--threshold-pct`, default 0.0005, measured; `--pixel-threshold`, default 0.05): a
+  single stray pixel is no longer a finding, a size change always is. The percentage is
+  measured against at most one 1440×900 screen, so a changed footer digit on a tall page and a
+  one-step label colour are found; the report lists what stayed below the threshold. Applies
+  to `--baseline-dir` in `run`/`explore`.
 - `.visual-qa.yml` `baseline:` block (`routes`, `viewports`, `threshold_pct`, `clock`, `locale`,
-  `timezone`).
+  `timezone`, `pixel_threshold`).
+- Behaviour change: `baseline-capture` (the alias) now replaces what an earlier capture left in `--out`
+  instead of adding to it, and refuses a folder that holds foreign files. `compareScreenshots` no
+  longer counts every differing pixel: it takes `thresholdPct` (default 0) and `pixelThreshold`
+  (default 0.05, was pixelmatch's 0.1; `threshold` still works as its older name).
 - Behaviour change: a tall inner scroll area is now severity `info` (new, last in report order,
   never lowers a `PASS`); `--internal-scrollers-as-finding` keeps the old `medium` finding.
 

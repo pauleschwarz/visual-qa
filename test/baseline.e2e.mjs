@@ -2,7 +2,7 @@
 // sensitivity, load errors, conditions, CLI.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readdir, readFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,7 +11,9 @@ import { startBaselineApp } from "../fixture/baseline-app.mjs";
 import {
   captureBaselines,
   compareFolders,
+  compareImages,
   compareToBaseline,
+  inPage,
   markScrollers,
   restoreStretch,
   stretchScroller,
@@ -108,6 +110,29 @@ test("parts: top always, page only when the document scrolls, one image per real
   assert.equal(manifest.entries.length, 5 + 4 + 2 + 4);
 });
 
+test("a scrolling <body> under html{overflow:hidden} is a scroller: its whole content is captured", async () => {
+  app.setVariant("");
+  const { dir, errors } = await capture(["/bodyscroll"], { viewports: [VIEWPORTS[0]] });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(await names(dir, "bodyscroll"), ["desktop.png", "desktop.scroller-1.png"]);
+  const whole = await png(join(dir, "bodyscroll", "desktop.scroller-1.png"));
+  assert.ok(whole.height > 2500, `60 rows shown whole (${whole.height})`);
+});
+
+test("an inner scroller that is already scrolled is captured from its top, like its unscrolled twin", async () => {
+  const { dir } = await capture(["/prescrolled", "/unscrolled"], { viewports: [VIEWPORTS[0]] });
+  for (const part of ["desktop.png", "desktop.scroller-1.png"]) {
+    const [a, b] = await Promise.all([readFile(join(dir, "prescrolled", part)), readFile(join(dir, "unscrolled", part))]);
+    assert.equal(compareImages(a, b, { pixelThreshold: 0 }).pixels, 0, part);
+  }
+});
+
+test("settle waits for an inner scroller that is still scrolling by itself", async () => {
+  const { dir } = await capture(["/autoscroll"], { viewports: [VIEWPORTS[0]] });
+  const top = await png(join(dir, "autoscroll", "desktop.png"));
+  assert.deepEqual([...top.data.slice((10 * top.width + 10) * 4, (10 * top.width + 10) * 4 + 3)], [0xcc, 0, 0], "shot taken after the scroll ended (red bar)");
+});
+
 test("stretching and restoring leaves the page exactly as it was", async () => {
   const { chromium } = await import("playwright");
   const browser = await chromium.launch();
@@ -115,7 +140,7 @@ test("stretching and restoring leaves the page exactly as it was", async () => {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     await page.goto(app.url);
     const before = await page.evaluate(() => document.documentElement.outerHTML);
-    assert.equal(await page.evaluate(markScrollers), 2);
+    assert.equal(await inPage(page, markScrollers), 2);
     await page.evaluate(stretchScroller, 2);
     const during = await page.evaluate(() => ({
       composer: getComputedStyle(document.querySelector(".composer")).visibility,
@@ -138,6 +163,17 @@ test("stretching and restoring leaves the page exactly as it was", async () => {
       "markup identical after restore (apart from the scroller marks)",
     );
     assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector(".thread")).position), "fixed");
+    // The scroller that is <body> grows html too; html gets its own style back.
+    await page.goto(`${app.url}/bodyscroll`);
+    const bodyBefore = await page.evaluate(() => document.documentElement.outerHTML);
+    assert.equal(await inPage(page, markScrollers), 1);
+    await page.evaluate(stretchScroller, 1);
+    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).overflowY), "visible");
+    await page.evaluate(restoreStretch);
+    assert.equal(
+      (await page.evaluate(() => document.documentElement.outerHTML)).replace(/ data-vqa-scroller="\d+"/g, ""),
+      bodyBefore,
+    );
   } finally {
     await browser.close();
   }
@@ -154,6 +190,39 @@ test("stability: the same state captured three times differs by 0 pixels", async
     assert.equal(r.ok, true);
     assert.equal(r.compared, 5 + 4 + 2 + 4 + 2);
   }
+});
+
+test("stability under load: three captures at once, next to busy processes, differ by 0 pixels", async () => {
+  app.setVariant("");
+  const burners = Array.from({ length: 4 }, () => spawn("nice", ["-n", "5", process.execPath, "-e", "for(;;);"], { stdio: "ignore" }));
+  try {
+    const targets = ["/", "/report", "/long", "/widgets"];
+    const [a, b, c] = await Promise.all([capture(targets), capture(targets), capture(targets)]);
+    for (const next of [b, c]) {
+      const r = await compareFolders(a.dir, next.dir, { thresholdPct: 0, outDir: await tmp("load") });
+      assert.deepEqual(r.changed.map((e) => `${e.route_key}/${e.viewport}/${e.part} ${e.pixels}px`), []);
+      assert.deepEqual(r.tolerated, { images: 0, max_pixels: 0 }, "no noise even at threshold 0");
+    }
+  } finally {
+    burners.forEach((p) => p.kill());
+  }
+});
+
+test("sensitivity: a changed digit in the footer of a whole page and a one-step label colour are found", async () => {
+  app.setVariant("");
+  const base = await capture(["/report"]);
+  // The digit sits far below the fold: only the whole page shows it. The label is in the first view too.
+  const expected = {
+    digit: ["report/desktop/page", "report/mobile/page"],
+    label: ["report/desktop/page", "report/desktop/top", "report/mobile/page", "report/mobile/top"],
+  };
+  for (const variant of ["digit", "label"]) {
+    app.setVariant(variant);
+    const next = await capture(["/report"]);
+    const r = await compareFolders(base.dir, next.dir, { outDir: await tmp(variant) });
+    assert.deepEqual(changedKeys(r), expected[variant], variant);
+  }
+  app.setVariant("");
 });
 
 test("reduced motion is requested, and a never-ending animation does not move the picture", async () => {
@@ -298,6 +367,13 @@ test("compare: new is no error, missing is, scope and conditions are kept", asyn
   assert.deepEqual(gone.errors.map((e) => `${e.route}: ${e.message}`), ["/about-us: HTTP 404", "/about-us: HTTP 404"]);
   assert.deepEqual(gone.missing.map((e) => `${e.route} ${e.viewport}`).sort(), ["/about-us desktop", "/about-us mobile"]);
 
+  // A baseline that recorded real time cannot be compared under a fixed clock.
+  const live = await capture(["/short"], { clock: null, viewports: [VIEWPORTS[0]] });
+  await assert.rejects(
+    compareToBaseline({ baseUrl: app.url, baselineDir: live.dir, outDir: await tmp("c7"), clock: CLOCK }),
+    /clock .* differs from the baseline's "real time"/,
+  );
+
   // Other conditions would make every difference meaningless.
   await assert.rejects(
     compareToBaseline({ baseUrl: app.url, baselineDir: base.dir, outDir: await tmp("c5"), clock: "2027-01-01T00:00:00Z" }),
@@ -311,6 +387,24 @@ test("compare: new is no error, missing is, scope and conditions are kept", asyn
     compareToBaseline({ baseUrl: app.url, baselineDir: base.dir, outDir: base.dir }),
     /must not be the baseline folder/,
   );
+});
+
+test("compare against an old capture (no routes, no conditions in its manifest) checks every route it holds", async () => {
+  app.setVariant("");
+  const modern = await capture(["/short", "/about-us"], { viewports: [VIEWPORTS[0]] });
+  const old = await tmp("old");
+  const entries = [];
+  for (const [key, target] of [["short", "/short"], ["about-us", "/about-us"]]) {
+    await mkdir(join(old, key), { recursive: true });
+    await copyFile(join(modern.dir, key, "desktop.png"), join(old, key, "desktop.png"));
+    entries.push({ route_key: key, target, viewport: "desktop" });
+  }
+  await writeFile(join(old, "baseline-manifest.json"), JSON.stringify({ schema_version: "vqa-baseline-capture-0.1", entries }));
+  const r = await compareToBaseline({
+    baseUrl: app.url, baselineDir: old, outDir: await tmp("old-out"), viewports: [VIEWPORTS[0]], clock: CLOCK,
+  });
+  assert.equal(r.compared, 2, "both routes, not just /");
+  assert.equal(r.ok, true, r.report);
 });
 
 test("capture replaces an earlier capture; a different route set leaves no old image behind", async () => {
@@ -336,7 +430,9 @@ test("CLI: capture, compare, change found, alias, load errors", async () => {
 
   app.setVariant("b");
   const changed = await cli("baseline", "compare", "--url", app.url, "--baseline", base, "--out", out);
+  const blind = await cli("baseline", "compare", "--url", app.url, "--baseline", base, "--out", await tmp("cli-blind"), "--pixel-threshold", "1");
   app.setVariant("");
+  assert.equal(blind.status, 0, "colour distance 1 sees no colour change: the flag reaches compare");
   assert.equal(changed.status, 1);
   assert.match(changed.stdout, /\| \/ \| desktop \| scroller-1 \|/);
   assert.ok((await readdir(join(out, "diff"))).includes("root__desktop__scroller-1.png"));
@@ -368,9 +464,25 @@ test("internal scrollers: info by default (a shell is no defect), a finding on o
     assert.equal(byDefault.severity, "info");
     const optIn = (await runLayoutChecks(page, viewport, { internalScrollers: "finding" })).find((i) => i.title === title);
     assert.equal(optIn.severity, "medium");
+    // The layout check wants real overflow (24 px); capture takes a scroller from 2 px on.
+    await page.setContent(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Shell</title></head><body style="margin:0">
+      <main style="width:70vw;height:420px;overflow-y:auto"><div style="height:440px">Cards</div></main></body></html>`);
+    assert.equal((await runLayoutChecks(page, viewport)).find((i) => i.title === title), undefined);
   } finally {
     await browser.close();
   }
+});
+
+test("explore passes --internal-scrollers-as-finding on: info by default, medium with the flag", async () => {
+  const viewports = [{ name: "desktop", width: 1280, height: 800 }];
+  const bounds = { max_states: 1, max_depth: 1, max_actions_per_state: 1, max_total_actions: 1, max_runtime_ms: 60_000 };
+  const title = "Tall content trapped in an internal scroller";
+  const severity = async (extra) => {
+    const report = await explore({ baseUrl: app.url, outDir: await tmp("ex-scroll"), viewports, bounds, ...extra });
+    return report.issues.find((i) => i.title === title)?.severity;
+  };
+  assert.equal(await severity({}), "info");
+  assert.equal(await severity({ internalScrollers: "finding" }), "medium");
 });
 
 test("explore --baseline-dir: one stray pixel passes at the default threshold, fails at 0", async () => {
@@ -396,4 +508,8 @@ test("explore --baseline-dir: one stray pixel passes at the default threshold, f
     baseUrl: url, outDir: await tmp("ex-c"), baselineDir, viewports, bounds, baseline: { threshold_pct: 0 },
   });
   assert.equal(differs(strict), true, "threshold 0 sees the pixel");
+  const blind = await explore({
+    baseUrl: url, outDir: await tmp("ex-d"), baselineDir, viewports, bounds, baseline: { threshold_pct: 0, pixel_threshold: 1 },
+  });
+  assert.equal(differs(blind), false, "colour distance 1 sees no colour difference: the flag reaches explore");
 });

@@ -34,9 +34,11 @@ function usage({ error = false, message = null } = {}) {
     "  visual-qa review-apply <DIR> <findings.json>            apply harness findings (fail-closed coverage)\n" +
     "  visual-qa baseline capture --url URL [--out DIR] [--route PATH ...] [--viewport name=WxH ...]\n" +
     "                 [--clock ISO] [--locale TAG] [--timezone ZONE]   calm screenshots: top, page, every inner scroller\n" +
-    "  visual-qa baseline compare --url URL --baseline DIR [--out DIR] [--threshold-pct N] [route/viewport flags]\n" +
+    "  visual-qa baseline compare --url URL --baseline DIR [--out DIR] [--threshold-pct N] [--pixel-threshold N]\n" +
+    "                 [route/viewport flags]\n" +
     "                                                         capture now under the baseline's conditions, diff, report.md; exit 1 on change\n" +
-    "  visual-qa baseline diff DIR_A DIR_B [--out DIR] [--threshold-pct N]   compare two folders, no browser\n" +
+    "  visual-qa baseline diff DIR_A DIR_B [--out DIR] [--threshold-pct N] [--pixel-threshold N]\n" +
+    "                                                         compare two folders, no browser; --out must be empty or an earlier compare\n" +
     "  visual-qa baseline-capture --url URL --out DIR [--changed-target URL ...]   alias of baseline capture\n" +
     "  visual-qa agent-run --url URL [--baseline-url URL] [--out DIR] [--git-ref REF]\n" +
     "                 [--design-contract FILE]                git UI-diff → routes → observe/compare only\n" +
@@ -46,6 +48,7 @@ function usage({ error = false, message = null } = {}) {
     "              --path-prefix PATH (skip same-origin links outside pathname prefix)\n" +
     "              --baseline-dir DIR (<route-key>/<viewport>.png or legacy <viewport>.png)\n" +
     "              --threshold-pct N (share of pixels that may differ from the baseline, default 0.0005)\n" +
+    "              --pixel-threshold N (colour distance 0–1 for a pixel to differ, default 0.05)\n" +
     "              --internal-scrollers-as-finding (inner scroll areas are info by default; opt in to report them)\n" +
     "              --design-contract FILE (DESIGN.md; auto-discover DESIGN.md in cwd when present)\n" +
     "              --allow-destructive (only with --isolated)\n" +
@@ -72,6 +75,7 @@ const VALUE_OPTIONS = new Set([
   "--locale",
   "--timezone",
   "--threshold-pct",
+  "--pixel-threshold",
   "--changed-target",
   "--path-prefix",
   "--design-contract",
@@ -118,8 +122,8 @@ function exitCodeForReport(report) {
 
 const BASELINE_FLAGS = {
   capture: ["--url", "--out", "--route", "--changed-target", "--viewport", "--clock", "--locale", "--timezone"],
-  compare: ["--url", "--baseline", "--out", "--route", "--changed-target", "--viewport", "--clock", "--locale", "--timezone", "--threshold-pct"],
-  diff: ["--out", "--threshold-pct"],
+  compare: ["--url", "--baseline", "--out", "--route", "--changed-target", "--viewport", "--clock", "--locale", "--timezone", "--threshold-pct", "--pixel-threshold"],
+  diff: ["--out", "--threshold-pct", "--pixel-threshold"],
 };
 
 /** `baseline capture|compare|diff` (and the alias `baseline-capture`). Returns the exit code. */
@@ -156,14 +160,18 @@ async function baselineCommand(sub, rest) {
     const given = { ...config.baseline };
     if (routes.length) given.routes = routes;
     if (viewports.length) given.viewports = viewports;
-    for (const key of ["clock", "locale", "timezone", "threshold-pct"])
+    for (const key of ["clock", "locale", "timezone", "threshold-pct", "pixel-threshold"])
       if (opts[key] !== undefined) given[key.replace("-", "_")] = opts[key];
     const cfg = resolveBaselineConfig(given);
     // Values the user did not set stay null so compare can inherit the baseline's own.
     const common = { clock: cfg.clock ?? undefined, locale: cfg.locale ?? undefined, timezone: cfg.timezone ?? undefined };
     if (sub === "diff") {
       const [a, b] = positional.map((p) => resolve(p));
-      const result = await compareFolders(a, b, { thresholdPct: cfg.threshold_pct, outDir: resolve(opts.out ?? b) });
+      const result = await compareFolders(a, b, {
+        thresholdPct: cfg.threshold_pct,
+        pixelThreshold: cfg.pixel_threshold,
+        outDir: resolve(opts.out ?? b),
+      });
       console.log(result.report);
       return result.ok ? 0 : 1;
     }
@@ -187,6 +195,7 @@ async function baselineCommand(sub, rest) {
       targets: cfg.routes,
       viewports: cfg.viewports,
       thresholdPct: cfg.threshold_pct,
+      pixelThreshold: cfg.pixel_threshold,
       ...common,
     });
     console.log(result.report);
@@ -519,6 +528,7 @@ if (command === "agent-gate") {
     intent = null,
     baselineDir = null,
     thresholdPct = undefined,
+    pixelThreshold = undefined,
     internalScrollers = "info",
     designContractPath = null,
     pathPrefix = null,
@@ -541,6 +551,7 @@ if (command === "agent-gate") {
     else if (arg === "--allow-destructive") allowDestructive = true;
     else if (arg === "--baseline-dir") baselineDir = resolve(args[++i]);
     else if (arg === "--threshold-pct") thresholdPct = Number(args[++i]);
+    else if (arg === "--pixel-threshold") pixelThreshold = Number(args[++i]);
     else if (arg === "--internal-scrollers-as-finding") internalScrollers = "finding";
     else if (arg === "--design-contract") designContractPath = args[++i];
     else if (arg === "--changed-target") changedTargets.push(args[++i]);
@@ -636,7 +647,7 @@ if (command === "agent-gate") {
       isolatedEnvironment,
       allowDestructive,
       baselineDir,
-      baseline: thresholdPct === undefined ? undefined : { threshold_pct: thresholdPct },
+      baseline: { threshold_pct: thresholdPct, pixel_threshold: pixelThreshold },
       internalScrollers,
       designContractPath,
       projectRoot: process.cwd(),

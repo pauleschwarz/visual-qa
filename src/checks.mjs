@@ -3,8 +3,8 @@
 
 import { AxeBuilder } from "@axe-core/playwright";
 import { readFile } from "node:fs/promises";
-import { compareImages } from "./baseline.mjs";
-import { redact } from "./config.mjs";
+import { compareImages, inPage, isChange } from "./baseline.mjs";
+import { DEFAULT_PIXEL_THRESHOLD, redact } from "./config.mjs";
 import { sameOrigin } from "./state.mjs";
 
 function issue(type, title, severity, detail, evidence = {}) {
@@ -82,7 +82,7 @@ export async function runLayoutChecks(
   // contributes a false PASS. Mirror runA11y and report the scan itself.
   let findings;
   try {
-    findings = await page.evaluate(() => {
+    findings = await inPage(page, () => {
       // Shared visibility gate for layout/touch/name probes. Zero-size rects
       // alone are not enough: visibility:hidden skip-links keep a layout box
       // and would otherwise look like tiny touch targets.
@@ -284,18 +284,14 @@ export async function runLayoutChecks(
       // scroller is a separate browsing surface: it traps wheel/touch input,
       // hides page context, and often cuts through cards. Flag only substantial
       // containers so menus, comboboxes, textareas, and side rails stay valid.
-      const internalScrollers = [...document.querySelectorAll("body *")]
+      const internalScrollers = innerScrollers(24)
         .filter((el) => {
-          const cs = getComputedStyle(el);
-          if (!["auto", "scroll"].includes(cs.overflowY)) return false;
-          if (el.scrollHeight <= el.clientHeight + 24) return false;
           const r = el.getBoundingClientRect();
           const substantial = r.width >= window.innerWidth * 0.45;
           const tall = r.height >= Math.min(320, window.innerHeight * 0.45);
           const role = el.getAttribute("role");
           const exempt =
             ["listbox", "menu", "dialog", "navigation"].includes(role) ||
-            ["TEXTAREA", "SELECT"].includes(el.tagName) ||
             el.closest("[role=listbox],[role=menu],[role=dialog],nav,aside");
           return substantial && tall && !exempt;
         })
@@ -749,21 +745,22 @@ export async function runRuntimeChecks(events = {}, stepIssues = []) {
 
 /**
  * Did two screenshots change? `thresholdPct` is the share of pixels (percent) that may
- * differ before it counts; 0 means any differing pixel. A size change always counts.
+ * differ before it counts; 0 means any differing pixel. `pixelThreshold` (0–1) is how
+ * different two pixels must look; `threshold` is its older name. A size change always counts.
  */
 export async function compareScreenshots(
   beforePath,
   afterPath,
-  { thresholdPct = 0 } = {},
+  { thresholdPct = 0, pixelThreshold = DEFAULT_PIXEL_THRESHOLD, threshold = pixelThreshold } = {},
 ) {
   const [before, after] = await Promise.all([
     readFile(beforePath),
     readFile(afterPath),
   ]);
-  const result = compareImages(before, after, { diff: false });
+  const result = compareImages(before, after, { diff: false, pixelThreshold: threshold });
   if (result.sizeChanged) return { changed: true, ratio: 1, pixels: null };
   return {
-    changed: result.pct > thresholdPct,
+    changed: isChange(result, thresholdPct),
     ratio: result.pixels / result.total,
     pixels: result.pixels,
   };
