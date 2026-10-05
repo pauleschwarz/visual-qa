@@ -21,6 +21,18 @@ export const DEFAULT_VIEWPORTS = [
   { name: "desktop", width: 1440, height: 900 },
 ];
 
+/**
+ * Baseline compare: share of one image's pixels (percent) that may differ before it counts
+ * as a change. Measured, not guessed: repeated captures of one stable state differ by 0 px
+ * (test/baseline.e2e.mjs), and one changed digit is 7–11 px — 0.0005–0.0009 % of a 1440×900
+ * first view, 0.002–0.003 % at 390×844. 0.0005 % (≈6 px at 1440×900) keeps a single stray
+ * pixel from failing a run and still catches that digit; very tall full-page images tolerate
+ * proportionally more pixels, so lower it there (`--threshold-pct`).
+ */
+export const DEFAULT_THRESHOLD_PCT = 0.0005;
+export const DEFAULT_BASELINE_LOCALE = "en-US";
+export const DEFAULT_BASELINE_TIMEZONE = "UTC";
+
 // Side-effect policy. Destructive actions are refused unless the environment is
 // explicitly declared isolated in config - never inferred.
 export const RISK = {
@@ -175,6 +187,78 @@ function resolvedViewports(input) {
   });
 }
 
+const BASELINE_KEYS = [
+  "routes",
+  "viewports",
+  "threshold_pct",
+  "clock",
+  "locale",
+  "timezone",
+];
+
+/** "mobile=390x844" or "390x844" → { name, width, height }. */
+export function parseViewport(text) {
+  const match = /^(?:([^=\s]+)=)?(\d+)x(\d+)$/i.exec(String(text).trim());
+  if (!match)
+    throw new Error(`viewport "${text}" must look like name=390x844 or 390x844`);
+  const [, name, width, height] = match;
+  return { name: name ?? `${width}x${height}`, width: Number(width), height: Number(height) };
+}
+
+/**
+ * The `baseline:` block of .visual-qa.yml / the baseline flags. null means "not set": a
+ * capture then falls back to the defaults, a compare to what the baseline folder recorded.
+ */
+export function resolveBaselineConfig(input = {}) {
+  if (input === null || typeof input !== "object" || Array.isArray(input))
+    throw new Error("baseline must be an object");
+  const unknown = Object.keys(input).find((key) => !BASELINE_KEYS.includes(key));
+  if (unknown) throw new Error(`Unknown baseline key "${unknown}"`);
+  const routes = [];
+  for (const route of input.routes ?? []) {
+    const text = String(route).trim();
+    if (!text) throw new Error("baseline routes must not contain an empty entry");
+    routes.push(text);
+  }
+  const thresholdPct =
+    input.threshold_pct === undefined || input.threshold_pct === null
+      ? DEFAULT_THRESHOLD_PCT
+      : Number(input.threshold_pct);
+  if (!Number.isFinite(thresholdPct) || thresholdPct < 0)
+    throw new Error(
+      `baseline threshold_pct must be a number >= 0 (percent of an image's pixels); received ${input.threshold_pct}`,
+    );
+  const clock = input.clock == null ? null : String(input.clock);
+  if (clock !== null && Number.isNaN(new Date(clock).getTime()))
+    throw new Error(`baseline clock "${clock}" is not an ISO date-time`);
+  const locale = input.locale == null ? null : String(input.locale);
+  if (locale !== null) {
+    try {
+      new Intl.DateTimeFormat(locale);
+    } catch {
+      throw new Error(`baseline locale "${locale}" is not a valid locale tag`);
+    }
+  }
+  const timezone = input.timezone == null ? null : String(input.timezone);
+  if (timezone !== null) {
+    try {
+      new Intl.DateTimeFormat("en", { timeZone: timezone });
+    } catch {
+      throw new Error(`baseline timezone "${timezone}" is not a valid IANA zone`);
+    }
+  }
+  return {
+    routes,
+    viewports: input.viewports?.length
+      ? resolvedViewports(input.viewports.map((v) => (typeof v === "string" ? parseViewport(v) : v)))
+      : null,
+    threshold_pct: thresholdPct,
+    clock,
+    locale,
+    timezone,
+  };
+}
+
 export function resolveConfig(input = {}) {
   // The mode is a contract, not a hint: an unknown value must block the run
   // instead of silently degrading to a full walk.
@@ -231,6 +315,10 @@ export function resolveConfig(input = {}) {
       input.isolatedEnvironment === true && input.allowDestructive === true,
     intent: input.intent || null,
     baselineDir: input.baselineDir || null,
+    baseline: resolveBaselineConfig(input.baseline ?? {}),
+    // An app shell with its own scroll areas is a design choice, not a defect:
+    // reported as info unless the project opts in to treat it as a finding.
+    internalScrollers: input.internalScrollers === "finding" ? "finding" : "info",
     // Optional DESIGN.md contract (full object or path resolved by CLI/run).
     designContract:
       input.designContract && typeof input.designContract === "object"

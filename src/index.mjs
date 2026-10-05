@@ -2,8 +2,10 @@ export { BrowserRuntime, probeValueFor } from "./browser.mjs";
 export {
   classifyRisk,
   DEFAULT_BOUNDS,
+  DEFAULT_THRESHOLD_PCT,
   MODES,
   redact,
+  resolveBaselineConfig,
   resolveConfig,
 } from "./config.mjs";
 export {
@@ -36,6 +38,9 @@ export { evaluateAgentGate, writeAgentGate } from "./agent-gate.mjs";
 export { agentRun } from "./agent-run.mjs";
 export {
   captureBaselines,
+  compareFolders,
+  compareImages,
+  compareToBaseline,
   resolveBaselinePath,
   routeKeyFromTarget,
 } from "./baseline.mjs";

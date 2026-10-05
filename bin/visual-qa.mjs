@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { agentRun } from "../src/agent-run.mjs";
-import { captureBaselines } from "../src/baseline.mjs";
+import { agentRun, loadVisualQaConfig } from "../src/agent-run.mjs";
+import {
+  captureBaselines,
+  compareFolders,
+  compareToBaseline,
+} from "../src/baseline.mjs";
 import { demo } from "../src/demo.mjs";
-import { DEFAULT_VIEWPORTS } from "../src/config.mjs";
+import { resolveBaselineConfig } from "../src/config.mjs";
 import { resolveDesignContract } from "../src/design-contract.mjs";
 import { explore } from "../src/explore.mjs";
 import { dryRunIntent, parseIntent } from "../src/intent.mjs";
@@ -28,8 +32,12 @@ function usage({ error = false, message = null } = {}) {
     "  visual-qa review-prepare <DIR> [--max-pairs N] [--max-state-pairs N] [--batch-size N] [--skills loop|all|list]\n" +
     "                                                         export subagent vision batches (default path)\n" +
     "  visual-qa review-apply <DIR> <findings.json>            apply harness findings (fail-closed coverage)\n" +
-    "  visual-qa baseline-capture --url URL --out DIR [--changed-target URL ...]\n" +
-    "                                                         capture hierarchical baselines from a live URL\n" +
+    "  visual-qa baseline capture --url URL [--out DIR] [--route PATH ...] [--viewport name=WxH ...]\n" +
+    "                 [--clock ISO] [--locale TAG] [--timezone ZONE]   calm screenshots: top, page, every inner scroller\n" +
+    "  visual-qa baseline compare --url URL --baseline DIR [--out DIR] [--threshold-pct N] [route/viewport flags]\n" +
+    "                                                         capture now under the baseline's conditions, diff, report.md; exit 1 on change\n" +
+    "  visual-qa baseline diff DIR_A DIR_B [--out DIR] [--threshold-pct N]   compare two folders, no browser\n" +
+    "  visual-qa baseline-capture --url URL --out DIR [--changed-target URL ...]   alias of baseline capture\n" +
     "  visual-qa agent-run --url URL [--baseline-url URL] [--out DIR] [--git-ref REF]\n" +
     "                 [--design-contract FILE]                git UI-diff → routes → observe/compare only\n" +
     "  visual-qa agent-gate <QA-DIR> <verity.json> [--json]     join independent Visual QA + Verity evidence\n" +
@@ -37,6 +45,8 @@ function usage({ error = false, message = null } = {}) {
     "Mode flags:   --changed-target URL (repeatable, required for --mode changed)\n" +
     "              --path-prefix PATH (skip same-origin links outside pathname prefix)\n" +
     "              --baseline-dir DIR (<route-key>/<viewport>.png or legacy <viewport>.png)\n" +
+    "              --threshold-pct N (share of pixels that may differ from the baseline, default 0.0005)\n" +
+    "              --internal-scrollers-as-finding (inner scroll areas are info by default; opt in to report them)\n" +
     "              --design-contract FILE (DESIGN.md; auto-discover DESIGN.md in cwd when present)\n" +
     "              --allow-destructive (only with --isolated)\n" +
     "Review flags (run): --no-prepare-review  skip auto vision task export\n" +
@@ -55,6 +65,13 @@ const VALUE_OPTIONS = new Set([
   "--mode",
   "--baseline-dir",
   "--baseline-url",
+  "--baseline",
+  "--route",
+  "--viewport",
+  "--clock",
+  "--locale",
+  "--timezone",
+  "--threshold-pct",
   "--changed-target",
   "--path-prefix",
   "--design-contract",
@@ -97,6 +114,87 @@ function reportWasBlocked(report) {
 function exitCodeForReport(report) {
   if (reportWasBlocked(report)) return 2;
   return report.verdict === "PASS" ? 0 : 1;
+}
+
+const BASELINE_FLAGS = {
+  capture: ["--url", "--out", "--route", "--changed-target", "--viewport", "--clock", "--locale", "--timezone"],
+  compare: ["--url", "--baseline", "--out", "--route", "--changed-target", "--viewport", "--clock", "--locale", "--timezone", "--threshold-pct"],
+  diff: ["--out", "--threshold-pct"],
+};
+
+/** `baseline capture|compare|diff` (and the alias `baseline-capture`). Returns the exit code. */
+async function baselineCommand(sub, rest) {
+  const allowed = BASELINE_FLAGS[sub];
+  if (!allowed) {
+    usage({ error: true, message: `visual-qa baseline: expected capture, compare or diff, got "${sub ?? ""}"` });
+    return 2;
+  }
+  const opts = {};
+  const routes = [];
+  const viewports = [];
+  const positional = [];
+  for (let i = 0; i < rest.length; i += 1) {
+    const arg = rest[i];
+    if (!arg.startsWith("--")) positional.push(arg);
+    else if (!allowed.includes(arg)) {
+      usage({ error: true, message: `baseline ${sub}: flag ${arg} does not apply` });
+      return 2;
+    } else if (arg === "--route" || arg === "--changed-target") routes.push(rest[++i]);
+    else if (arg === "--viewport") viewports.push(rest[++i]);
+    else opts[arg.slice(2)] = rest[++i];
+  }
+  const need = (ok, message) => {
+    if (ok) return false;
+    usage({ error: true, message: `baseline ${sub}: ${message}` });
+    return true;
+  };
+  if (sub === "diff" ? need(positional.length === 2, "needs exactly two folders: diff DIR_A DIR_B") : need(positional.length === 0, `unexpected argument ${positional[0]}`)) return 2;
+  if (sub !== "diff" && need(opts.url, "requires --url")) return 2;
+  if (sub === "compare" && need(opts.baseline, "requires --baseline DIR")) return 2;
+  try {
+    const { config } = await loadVisualQaConfig(process.cwd());
+    const given = { ...config.baseline };
+    if (routes.length) given.routes = routes;
+    if (viewports.length) given.viewports = viewports;
+    for (const key of ["clock", "locale", "timezone", "threshold-pct"])
+      if (opts[key] !== undefined) given[key.replace("-", "_")] = opts[key];
+    const cfg = resolveBaselineConfig(given);
+    // Values the user did not set stay null so compare can inherit the baseline's own.
+    const common = { clock: cfg.clock ?? undefined, locale: cfg.locale ?? undefined, timezone: cfg.timezone ?? undefined };
+    if (sub === "diff") {
+      const [a, b] = positional.map((p) => resolve(p));
+      const result = await compareFolders(a, b, { thresholdPct: cfg.threshold_pct, outDir: resolve(opts.out ?? b) });
+      console.log(result.report);
+      return result.ok ? 0 : 1;
+    }
+    if (sub === "capture") {
+      const result = await captureBaselines({
+        baseUrl: opts.url,
+        outDir: resolve(opts.out ?? ".qa-baselines"),
+        targets: cfg.routes.length ? cfg.routes : ["/"],
+        ...(cfg.viewports ? { viewports: cfg.viewports } : {}),
+        ...common,
+      });
+      console.log(`baseline capture: ${result.entries.length} images, ${result.errors.length} load errors → ${result.outDir}`);
+      for (const e of result.errors) console.log(`  ${e.route} · ${e.viewport}: ${e.message}`);
+      console.log(`manifest: ${result.manifestPath}`);
+      return result.errors.length ? 1 : 0;
+    }
+    const result = await compareToBaseline({
+      baseUrl: opts.url,
+      baselineDir: resolve(opts.baseline),
+      outDir: resolve(opts.out ?? ".qa-baseline-compare"),
+      targets: cfg.routes,
+      viewports: cfg.viewports,
+      thresholdPct: cfg.threshold_pct,
+      ...common,
+    });
+    console.log(result.report);
+    return result.ok ? 0 : 1;
+  } catch (error) {
+    console.error(`Visual QA BLOCKED: ${error.message}`);
+    return 2;
+  }
 }
 
 const args = process.argv.slice(2);
@@ -184,40 +282,11 @@ if (command === "agent-gate") {
     console.error(`Agent gate BLOCKED: ${error.message}`);
     process.exitCode = 2;
   }
-} else if (command === "baseline-capture") {
-  let baseUrl = null;
-  let outDir = ".qa-baselines";
-  const targets = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--url") baseUrl = args[++i];
-    else if (arg === "--out") outDir = args[++i];
-    else if (arg === "--changed-target") targets.push(args[++i]);
-    else {
-      usage({ error: true, message: `Unknown baseline-capture flag: ${arg}` });
-      process.exit(2);
-    }
-  }
-  if (!baseUrl) {
-    usage({ error: true, message: "baseline-capture requires --url" });
-    process.exit(2);
-  }
-  try {
-    const result = await captureBaselines({
-      baseUrl,
-      outDir: resolve(outDir),
-      targets: targets.length ? targets : ["/"],
-      viewports: DEFAULT_VIEWPORTS,
-    });
-    console.log(
-      `baseline-capture: ${result.entries.length} shots → ${result.outDir}`,
-    );
-    console.log(`manifest: ${result.manifestPath}`);
-    process.exitCode = 0;
-  } catch (error) {
-    console.error(`Visual QA BLOCKED: ${error.message}`);
-    process.exitCode = 2;
-  }
+} else if (command === "baseline" || command === "baseline-capture") {
+  process.exitCode = await baselineCommand(
+    command === "baseline-capture" ? "capture" : args.shift(),
+    args,
+  );
 } else if (command === "agent-run") {
   let url = null;
   let baselineUrl = null;
@@ -449,6 +518,8 @@ if (command === "agent-gate") {
     fixDir = null,
     intent = null,
     baselineDir = null,
+    thresholdPct = undefined,
+    internalScrollers = "info",
     designContractPath = null,
     pathPrefix = null,
     format = "human",
@@ -469,6 +540,8 @@ if (command === "agent-gate") {
     else if (arg === "--isolated") isolatedEnvironment = true;
     else if (arg === "--allow-destructive") allowDestructive = true;
     else if (arg === "--baseline-dir") baselineDir = resolve(args[++i]);
+    else if (arg === "--threshold-pct") thresholdPct = Number(args[++i]);
+    else if (arg === "--internal-scrollers-as-finding") internalScrollers = "finding";
     else if (arg === "--design-contract") designContractPath = args[++i];
     else if (arg === "--changed-target") changedTargets.push(args[++i]);
     else if (arg === "--path-prefix") pathPrefix = args[++i];
@@ -563,6 +636,8 @@ if (command === "agent-gate") {
       isolatedEnvironment,
       allowDestructive,
       baselineDir,
+      baseline: thresholdPct === undefined ? undefined : { threshold_pct: thresholdPct },
+      internalScrollers,
       designContractPath,
       projectRoot: process.cwd(),
       changedTargets,

@@ -3,8 +3,7 @@
 
 import { AxeBuilder } from "@axe-core/playwright";
 import { readFile } from "node:fs/promises";
-import { PNG } from "pngjs";
-import pixelmatch from "pixelmatch";
+import { compareImages } from "./baseline.mjs";
 import { redact } from "./config.mjs";
 import { sameOrigin } from "./state.mjs";
 
@@ -74,7 +73,11 @@ export async function runA11y(page) {
   }
 }
 
-export async function runLayoutChecks(page, viewport) {
+export async function runLayoutChecks(
+  page,
+  viewport,
+  { internalScrollers: scrollerPolicy = "info" } = {},
+) {
   // A broken evaluate must never look like "zero findings": that silently
   // contributes a false PASS. Mirror runA11y and report the scan itself.
   let findings;
@@ -343,7 +346,8 @@ export async function runLayoutChecks(page, viewport) {
       issue(
         "visual",
         "Tall content trapped in an internal scroller",
-        "medium",
+        // App shells scroll inside panels on purpose; a finding only on opt-in.
+        scrollerPolicy === "finding" ? "medium" : "info",
         "A major content surface uses its own vertical scrollbar instead of the page scroll; verify that cards and programme context are not trapped inside an embedded viewport",
         { viewport, items: findings.internalScrollers },
       ),
@@ -743,28 +747,26 @@ export async function runRuntimeChecks(events = {}, stepIssues = []) {
   return out;
 }
 
-export function compareScreenshots(
+/**
+ * Did two screenshots change? `thresholdPct` is the share of pixels (percent) that may
+ * differ before it counts; 0 means any differing pixel. A size change always counts.
+ */
+export async function compareScreenshots(
   beforePath,
   afterPath,
-  { threshold = 0.1 } = {},
+  { thresholdPct = 0 } = {},
 ) {
-  return Promise.all([readFile(beforePath), readFile(afterPath)]).then(
-    ([before, after]) => {
-      const a = PNG.sync.read(before);
-      const b = PNG.sync.read(after);
-      if (a.width !== b.width || a.height !== b.height)
-        return { changed: true, ratio: 1, pixels: null };
-      const diff = new PNG({ width: a.width, height: a.height });
-      const pixels = pixelmatch(a.data, b.data, diff.data, a.width, a.height, {
-        threshold,
-      });
-      return {
-        changed: pixels > 0,
-        ratio: pixels / (a.width * a.height),
-        pixels,
-      };
-    },
-  );
+  const [before, after] = await Promise.all([
+    readFile(beforePath),
+    readFile(afterPath),
+  ]);
+  const result = compareImages(before, after, { diff: false });
+  if (result.sizeChanged) return { changed: true, ratio: 1, pixels: null };
+  return {
+    changed: result.pct > thresholdPct,
+    ratio: result.pixels / result.total,
+    pixels: result.pixels,
+  };
 }
 
 export function dedupeIssues(issues) {
@@ -781,6 +783,7 @@ export function verdictFor({ issues, complete }) {
   if (!complete) return "COVERAGE_INCOMPLETE";
   if (issues.some((i) => ["critical", "high"].includes(i.severity)))
     return "FAIL";
-  if (issues.length) return "UNPROVEN";
+  // `info` notes what a reader should know; it is not a defect and cannot hold a PASS.
+  if (issues.some((i) => i.severity !== "info")) return "UNPROVEN";
   return "PASS";
 }

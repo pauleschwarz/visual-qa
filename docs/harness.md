@@ -104,7 +104,10 @@ visual-qa agent-run --url http://127.0.0.1:3000 \
 - UI diff without matching `route_map` → fail-closed.
 - Never applies fixers; evidence + compare only. Coding agents may loop
   review→fix at most twice (`max_review_fix_loops` in `.visual-qa.yml`).
-- `baseline-capture` writes hierarchical `<route-key>/<viewport>.png` from a live URL.
+- `baseline capture` writes `<route-key>/<viewport>[.page|.scroller-<n>].png` plus
+  `baseline-manifest.json` from a live URL; `baseline compare` / `baseline diff` produce
+  `report.md`, `report.json` and `diff/*.png` (exit 0 / 1 / 2 — see README "Baselines").
+  `baseline-capture` is kept as an alias.
 
 ## DESIGN.md
 

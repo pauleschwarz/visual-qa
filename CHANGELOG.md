@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Baseline v2
+- `baseline capture|compare|diff` (`baseline-capture` stays as an alias). Per route × viewport:
+  `top`, `page` (only if the document scrolls) and `scroller-<n>` — every inner scroll area shown
+  whole, fixed/sticky chrome elsewhere hidden, everything restored afterwards.
+- Calm capture: reduced motion, animations and caret off, network idle, `fonts.ready`, layout
+  unchanged for 300 ms; `--clock`, `--locale`, `--timezone`; compare reuses the baseline's own
+  conditions and refuses different ones.
+- `compare` writes `report.md` + `report.json` and red diff images to `<out>/diff/`; exit 1 on
+  change, missing image or load error; new images are `new`; load failures never crash.
+  `diff DIR_A DIR_B` compares two folders without a browser. `--out` only removes earlier
+  baseline files, never a foreign folder.
+- Threshold in percent (`--threshold-pct`, default 0.0005, measured): a single stray pixel is
+  no longer a finding; a size change always is. Applies to `--baseline-dir` in `run`/`explore`.
+- `.visual-qa.yml` `baseline:` block (`routes`, `viewports`, `threshold_pct`, `clock`, `locale`,
+  `timezone`).
+- Behaviour change: a tall inner scroll area is now severity `info` (new, last in report order,
+  never lowers a `PASS`); `--internal-scrollers-as-finding` keeps the old `medium` finding.
+
 ## 0.2.13 — 2026-09-20
 
 ### OmniRoute vision bus default
