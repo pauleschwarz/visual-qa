@@ -4,9 +4,9 @@
 
 ### States, sign-in and journeys
 - Check an app in a named state, not only as an anonymous visitor: `.visual-qa.yml` gains `setup` (`setup(page, ctx)` hook), `storage_state`, `states` and `journeys`. `run`/`explore` take `--state NAME` and `--journey NAME` (repeatable) and `--config FILE`; `path@state` works on the CLI and in `route_map` for `agent-run`.
-- Every state and journey step leaves an image and the visible text beside it (`.txt`), and goes through the usual checks.
-- `expect_api` (alias `fail_api`) injects an HTTP error status or a timeout per URL glob. The injected failure is not a finding; an error state without a visible reason or without a way forward is (medium).
-- New `visual-qa journeys` command and `.mjs` journeys (`step` / `check`): the first red step fails the run with the step named and a stop image.
+- Every state and journey step leaves an image and the visible text beside it (`.txt`). A state goes through the accessibility, layout, scroll, placeholder-copy and runtime checks; a green journey step through accessibility, layout and runtime checks. Journey pages resolve `page.goto("/path")` against `--url`.
+- `expect_api` (alias `fail_api`) injects an HTTP error status or a timeout per URL glob; a value that injects nothing (`expect_api: 500`, an empty block) stops the run with exit 2. The injected failure is not a finding, also when its URL carries a token. An error state without a visible reason (alert/status region or `reason` text) or without a way forward is (medium); both are judged against the same state loaded without the failure, so only what the failure added counts.
+- New `visual-qa journeys` command (`--only a,b` or `--journey NAME`, repeatable) and `.mjs` journeys (`step` / `check`): the first red step fails the run with the step named and a stop image.
 - A broken setup, journey or `storage_state` file stops the run with exit 2 and names the file. Unknown keys in `.visual-qa.yml` now print a warning instead of being ignored silently.
 - The README no longer says authenticated areas are out of reach. Bundled example app: `fixture/app-server.mjs`, `fixture/example/`.
 - Existing configs and commands behave as before; `coverage.viewports_covered` lists each viewport once.

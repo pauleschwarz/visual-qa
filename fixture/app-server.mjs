@@ -24,9 +24,9 @@ input{min-height:44px;font:inherit;padding:0 10px;display:block;margin:4px 0 12p
 <header><nav aria-label="Main"><a href="/">Home</a><a href="/account">Account</a><a href="/orders">Orders</a><a href="/checkout">Checkout</a></nav></header>
 <main>${body}</main>${script ? `<script>${script}</script>` : ""}</body></html>`;
 
-const ORDERS_SCRIPT = (onError) => `
+const ORDERS_SCRIPT = (onError, query = "") => `
 const box=document.querySelector('#orders');
-fetch('/api/orders').then(r=>{if(!r.ok)throw new Error(r.status);return r.json()})
+fetch('/api/orders${query}').then(r=>{if(!r.ok)throw new Error(r.status);return r.json()})
 .then(list=>{box.innerHTML='<ul>'+list.map(o=>'<li>'+o+'</li>').join('')+'</ul>'})
 .catch(()=>{${onError}});`;
 
@@ -46,6 +46,19 @@ const LOGIN_FORM = `<h1>Sign in</h1>
 <label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" required>
 <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required>
 <button type="submit">Sign in</button></form>`;
+
+// Pages with seeded defects, so tests can prove the usual checks run in states and journey steps.
+const DEFECTS = `<h1>Defects</h1>
+<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="40" height="40">
+<div style="width:2000px;height:20px;background:#eee">Too wide for the screen</div>
+<p style="color:#bbb">Low contrast text</p>
+<div style="position:fixed;top:0;left:0;width:200px;height:60px;background:#12324a;color:#fff">Bar one</div>
+<div style="position:fixed;top:30px;left:0;width:200px;height:60px;background:#0b4f8a;color:#fff">Bar two</div>`;
+// Normal content that mentions errors, with links, and an API call whose failure it swallows.
+const DOCS = `<h1>Docs</h1><p>Error handling is covered in chapter 3. We could not be happier.</p>
+<p><a href="/checkout">Chapter 3</a></p>
+<script>fetch('/api/orders').catch(()=>{})</script>`;
+const DRAFT = "<h1>Lorem ipsum dolor sit amet</h1><p>consectetur adipiscing elit.</p>";
 
 const signedIn = (req) => /(?:^|;\s*)sid=demo(?:;|$)/.test(req.headers.cookie ?? "");
 
@@ -82,15 +95,19 @@ export function createAppServer() {
       "/orders": RETRY,
       "/orders-reason-only": REASON_ONLY,
       "/orders-silent": SILENT,
+      "/orders-token": RETRY,
     }[path];
     if (orders !== undefined)
       return html(
         PAGE(
           "Orders",
           '<h1>Your orders</h1><div id="orders">Loading…</div>',
-          ORDERS_SCRIPT(orders),
+          ORDERS_SCRIPT(orders, path === "/orders-token" ? "?token=abc123&page=1" : ""),
         ),
       );
+    if (path === "/defects") return html(PAGE("Defects", DEFECTS));
+    if (path === "/docs") return html(PAGE("Docs", DOCS));
+    if (path === "/draft") return html(PAGE("Draft", DRAFT));
     if (path === "/checkout")
       return html(PAGE("Checkout", '<div id="view"></div>', CHECKOUT_SCRIPT));
     if (path === "/") return html(PAGE("Shop", "<h1>Shop</h1><p>Welcome to the shop.</p>"));

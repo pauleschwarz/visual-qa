@@ -7,7 +7,6 @@
 
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { BrowserRuntime } from "./browser.mjs";
 import {
   dedupeIssues,
   issue,
@@ -21,6 +20,7 @@ import {
   newWalk,
   SetupError,
   sessionHooks,
+  sessionRuntime,
   writeShot,
 } from "./session.mjs";
 
@@ -40,20 +40,15 @@ async function runOne({ config, viewport, journey, walk, budget }) {
     viewport,
     locale: "en-US",
   };
-  const runtime = new BrowserRuntime({
-    baseUrl: config.baseUrl,
+  const runtime = sessionRuntime(
+    config,
     viewport,
-    trace: false,
-    outDir: config.outDir,
-    stableFrames: config.stable_frames,
-    stableGap: config.stable_gap_ms,
-    navigationTimeout: config.navigation_timeout_ms,
-    ...sessionHooks({
+    sessionHooks({
       session: config.session,
       def: { fresh: journey.fresh },
       ctx,
     }),
-  });
+  );
   let steps = 0;
   let failure = null;
   const record = async (kind, name, run) => {

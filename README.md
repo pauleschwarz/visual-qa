@@ -124,7 +124,7 @@ visual-qa run --url URL [--out DIR] [--isolated] [--autofix verified] [--fix-dir
               [--intent "…"] [--max-agent-calls N] [--mode off|changed|full] [bounds]
               [--no-prepare-review] [--no-edge-input-probes] [--design-contract FILE]
               [--state NAME …] [--journey NAME …] [--config FILE]   # named states / journeys
-visual-qa journeys --url URL [--only a,b] [--out DIR] [--config FILE]
+visual-qa journeys --url URL [--only a,b | --journey NAME ...] [--out DIR] [--config FILE]
 visual-qa explore --url URL [--out DIR] [bounds]     # deterministic core only
 visual-qa report <DIR> [--json]                      # agent-friendly summary
 visual-qa intent --intent "…" --fix-dir DIR [--json]  # catalog dry-run, no browser
@@ -203,10 +203,9 @@ export async function setup(page, ctx) {
 // step(name, async (page, ctx) => …) acts; check(name, async (page, ctx) => …)
 // returns true, or false / a string saying why not. The first red one stops
 // the journey with a stop image.
+// page.goto("/path") resolves against the --url under test.
 export default async function ({ step, check }) {
-  await step("open checkout", (page, ctx) =>
-    page.goto(new URL("/checkout", ctx.baseUrl).href),
-  );
+  await step("open checkout", (page) => page.goto("/checkout"));
   await step("continue", (page) =>
     page.getByRole("button", { name: "Continue" }).click(),
   );
@@ -231,7 +230,8 @@ visual-qa journeys --url http://127.0.0.1:4174          # every journey in the c
 ```
 
 - **Sessions.** `setup` exports `setup(page, ctx)` with
-  `ctx = { baseUrl, state, viewport, locale }`. Instead of (or together with)
+  `ctx = { baseUrl, state, viewport, locale }` (`state` is the state's name,
+  also for `path@state`; `null` in a journey). Instead of (or together with)
   a hook, `storage_state: ./auth.json` loads a Playwright storage-state file
   (cookies and local storage; it holds live sessions, keep it out of git).
   `fresh: true` on a state or journey skips the session, so a signed-out page
@@ -241,19 +241,27 @@ visual-qa journeys --url http://127.0.0.1:4174          # every journey in the c
   `route_map` entry for `agent-run`) captures the same state on another path.
   Each state gets a full-page image and the visible text next to it
   (`screenshots/appstate-<state>-<viewport>.png` and `.txt`) and goes through
-  the same checks as any explored page.
+  the accessibility, layout, scroll (fixed chrome, blank runs), placeholder-copy
+  and runtime checks of an explored page.
 - **Failures on demand.** `expect_api` (alias `fail_api`) maps a URL glob to an
   HTTP error status or `timeout` (the request is aborted as timed out).
   The injected failure itself is not a finding. The *error state* must show
-  a reason (an alert or error text; or the text in `reason`, for apps not in
-  English) and a way forward (a focusable control in the content area; header,
-  nav and footer links do not count). Missing either is a medium finding. A
+  a reason (an alert or status region, or the text in `reason`, for apps not
+  in English) and a way
+  forward (a focusable control in the content area) that the same page does
+  not show without the failure: visual-qa loads the state a second time
+  without the injection and counts only what the failure added, so error
+  words in normal content, header/nav/footer links or an always-present
+  status line cannot pass for an error state. Missing either is a medium
+  finding. `expect_api` needs at least one `glob: status` line. A
   failure the page never requests is a low finding: the state was not
   exercised. Any other failing request in the state is a normal finding.
 - **Journeys.** `step(name, async (page, ctx) => …)` acts, `check(name, async
   (page, ctx) => …)` returns `true` (holds), or `false` / a string with the
   reason. Every step leaves an image and a text file
-  (`journeys/<name>/<viewport>/NN-<step>.png`). The first red step or check
+  (`journeys/<name>/<viewport>/NN-<step>.png`); after every green one the
+  accessibility and layout checks run on the page it left. `page.goto("/cart")`
+  resolves against `--url`. The first red step or check
   fails the run (`high`), names the step, writes a `…-FAILED.png` stop image
   and skips the rest. A step that cannot find its target fails after 15 s, not Playwright's 30 s.
   Value forms: `name: ./file.mjs`, or `name:` with `file:` and `fresh: true`.

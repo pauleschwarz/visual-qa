@@ -9,6 +9,7 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BrowserRuntime } from "./browser.mjs";
+import { redact } from "./config.mjs";
 import {
   dedupeIssues,
   issue,
@@ -56,7 +57,17 @@ const ERROR_STATUS = (value) =>
   Number.isInteger(value) && value >= 400 && value <= 599;
 
 function normalizeExpectApi(name, def) {
-  const merged = { ...(def.fail_api ?? {}), ...(def.expect_api ?? {}) };
+  const merged = {};
+  for (const key of ["fail_api", "expect_api"]) {
+    const value = def[key];
+    if (value === undefined) continue;
+    // `expect_api: 500` or an empty block would inject nothing and let the state pass untested.
+    if (!value || typeof value !== "object" || Array.isArray(value) || !Object.keys(value).length)
+      throw new SetupError(
+        `state "${name}": ${key} must map a URL glob to an HTTP error status or "timeout" (for example "**/api/orders": 500); received ${JSON.stringify(value) ?? "nothing"}`,
+      );
+    Object.assign(merged, value);
+  }
   for (const [glob, how] of Object.entries(merged)) {
     if (how !== "timeout" && !ERROR_STATUS(how))
       throw new SetupError(
@@ -233,7 +244,8 @@ async function installFailures(page, expectApi, expected) {
 /** Events caused by an injected failure are the point of the state, not findings. */
 export function withoutExpectedFailures(events, expected) {
   if (!expected.length) return events;
-  const urls = new Set(expected.map((item) => item.url));
+  // The runtime stores redacted urls; match on the same form.
+  const urls = new Set(expected.map((item) => redact(item.url)));
   return {
     ...events,
     network: (events.network ?? []).filter((item) => !urls.has(item.url)),
@@ -242,6 +254,20 @@ export function withoutExpectedFailures(events, expected) {
       (item) => !/Failed to load resource/i.test(item.text ?? ""),
     ),
   };
+}
+
+/** One browser for a state or journey run: the project's session hooks plus the run's timing. */
+export function sessionRuntime(config, viewport, hooks) {
+  return new BrowserRuntime({
+    baseUrl: config.baseUrl,
+    viewport,
+    trace: false,
+    outDir: config.outDir,
+    stableFrames: config.stable_frames,
+    stableGap: config.stable_gap_ms,
+    navigationTimeout: config.navigation_timeout_ms,
+    ...hooks,
+  });
 }
 
 export function newWalk(viewport) {
@@ -272,58 +298,103 @@ export async function writeShot(runtime, base) {
   return { screenshot: `${base}.png`, text: `${base}.txt`, content: text };
 }
 
-const REASON_WORDS =
-  /\b(error|failed|failure|could(?:n['’]?t| not)|can(?:['’]?t|not)|unable|unavailable|went wrong|try again|timed out|offline)\b/i;
-
 /**
- * An error state owes the reader two things: why, and where to go next.
- * Reason: visible alert text (or the configured `reason` text). Way forward:
- * a focusable control in the content area - header/nav/footer links exist on
- * every page and do not count.
+ * What a reader can see and use on the page: the text of visible alert/status
+ * regions and the focusable controls of the content area (header, nav, footer
+ * and aside controls exist on every page and are left out).
  */
-export async function inspectErrorState(page, reason) {
-  return page.evaluate(
-    ({ reason, wordsSource }) => {
-      const words = new RegExp(wordsSource, "i");
-      const shown = (el) => {
-        const rect = el.getBoundingClientRect();
-        const style = getComputedStyle(el);
-        return (
-          rect.width > 0 &&
-          rect.height > 0 &&
-          style.visibility !== "hidden" &&
-          style.display !== "none" &&
-          !el.closest("[hidden],[aria-hidden='true'],[inert]")
-        );
-      };
-      const chrome = "header,nav,footer,aside";
-      const content = document.querySelector("main,[role=main]") ?? document.body;
-      const text = (document.body?.innerText ?? "").replace(/\s+/g, " ");
-      let hasReason;
-      if (reason) hasReason = text.toLowerCase().includes(reason.toLowerCase());
-      else {
-        const alerts = [
-          ...document.querySelectorAll("[role=alert]"),
-        ].filter((el) => shown(el) && (el.innerText ?? "").trim());
-        hasReason =
-          alerts.length > 0 ||
-          words.test((content.innerText ?? "").replace(/\s+/g, " "));
-      }
-      const controls = [
-        ...content.querySelectorAll(
-          "a[href],button,input:not([type=hidden]),select,textarea,summary,[tabindex]",
-        ),
-      ].filter(
+export async function readErrorSignals(page) {
+  return page.evaluate(() => {
+    const shown = (el) => {
+      const rect = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.visibility !== "hidden" &&
+        style.display !== "none" &&
+        !el.closest("[hidden],[aria-hidden='true'],[inert]")
+      );
+    };
+    const squash = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+    const content = document.querySelector("main,[role=main]") ?? document.body;
+    const alerts = [
+      ...document.querySelectorAll(
+        "[role=alert],[role=status],[aria-live]:not([aria-live=off])",
+      ),
+    ]
+      .filter(shown)
+      .map((el) => squash(el.innerText))
+      .filter(Boolean);
+    const controls = [
+      ...content.querySelectorAll(
+        "a[href],button,input:not([type=hidden]),select,textarea,summary,[tabindex]",
+      ),
+    ]
+      .filter(
         (el) =>
           !el.disabled &&
           el.tabIndex >= 0 &&
           shown(el) &&
-          !el.closest(chrome),
+          !el.closest("header,nav,footer,aside"),
+      )
+      .map((el) =>
+        [
+          el.tagName,
+          el.getAttribute("href") ?? "",
+          squash(el.innerText || el.getAttribute("aria-label") || el.value || el.title),
+        ].join("|"),
       );
-      return { hasReason, hasWayForward: controls.length > 0 };
-    },
-    { reason, wordsSource: REASON_WORDS.source },
+    return { text: squash(document.body?.innerText), alerts, controls };
+  });
+}
+
+/**
+ * An error state owes the reader two things: why, and where to go next - and
+ * only what the failure added counts. `healthy` is the same state without the
+ * injected failure: an alert region or a link that is on the healthy page too
+ * is not the page reacting to the failure.
+ */
+export function judgeErrorState(seen, healthy, reason) {
+  const hasReason = reason
+    ? seen.text.toLowerCase().includes(String(reason).toLowerCase())
+    : seen.alerts.some((alert) => !healthy.alerts.includes(alert));
+  const hasWayForward = seen.controls.some(
+    (control) => !healthy.controls.includes(control),
   );
+  return { hasReason, hasWayForward };
+}
+
+/** Open a state's path and let it settle. */
+async function openState(runtime, config, path) {
+  await runtime.navigate(new URL(path, config.baseUrl).href);
+  await runtime.page
+    .waitForLoadState("networkidle", { timeout: 3_000 })
+    .catch(() => {});
+  await runtime.waitForStableState({
+    frames: config.stable_frames,
+    gap: config.stable_gap_ms,
+  });
+}
+
+/** The same state without the injected failure: what the page shows when nothing is wrong. */
+async function readHealthySignals({ config, viewport, def, ctx }) {
+  const runtime = sessionRuntime(
+    config,
+    viewport,
+    sessionHooks({
+      session: config.session,
+      def: { ...def, expectApi: {} },
+      ctx,
+    }),
+  );
+  try {
+    await runtime.start();
+    await openState(runtime, config, def.path);
+    return await readErrorSignals(runtime.page);
+  } finally {
+    await runtime.stop();
+  }
 }
 
 async function captureOne({ config, viewport, name, def, walk }) {
@@ -334,35 +405,19 @@ async function captureOne({ config, viewport, name, def, walk }) {
   );
   const ctx = {
     baseUrl: config.baseUrl,
-    state: name,
+    // The state's name, also when it was picked as "/path@name"; `name` itself is the selector.
+    state: parseStateSelector(name).name,
     viewport,
     locale: "en-US",
   };
   const expected = [];
   const hooks = sessionHooks({ session: config.session, def, ctx, expected });
-  const runtime = new BrowserRuntime({
-    baseUrl: config.baseUrl,
-    viewport,
-    trace: false,
-    outDir: config.outDir,
-    stableFrames: config.stable_frames,
-    stableGap: config.stable_gap_ms,
-    navigationTimeout: config.navigation_timeout_ms,
-    ...hooks,
-  });
+  const runtime = sessionRuntime(config, viewport, hooks);
   const where = { state: name, viewport: viewport.name, path: def.path };
   try {
     await runtime.start();
     const end = runtime.markStep(`state:${name}`);
-    const url = new URL(def.path, config.baseUrl).href;
-    await runtime.navigate(url);
-    await runtime.page
-      .waitForLoadState("networkidle", { timeout: 3_000 })
-      .catch(() => {});
-    await runtime.waitForStableState({
-      frames: config.stable_frames,
-      gap: config.stable_gap_ms,
-    });
+    await openState(runtime, config, def.path);
     const shot = await writeShot(runtime, base);
     const stateId = `app-state:${name}`;
     walk.states.push({
@@ -406,7 +461,11 @@ async function captureOne({ config, viewport, name, def, walk }) {
           ),
         );
       else {
-        const seen = await inspectErrorState(page, def.reason);
+        const seen = judgeErrorState(
+          await readErrorSignals(page),
+          await readHealthySignals({ config, viewport, def, ctx }),
+          def.reason,
+        );
         if (!seen.hasReason)
           walk.issues.push(
             issue(
@@ -415,7 +474,7 @@ async function captureOne({ config, viewport, name, def, walk }) {
               "medium",
               def.reason
                 ? `State "${name}" does not show the expected text "${def.reason}".`
-                : `State "${name}" fails an API call but shows no alert or error text; the user cannot tell what went wrong.`,
+                : `State "${name}" fails an API call but shows no alert or status text that the healthy page lacks; the user cannot tell what went wrong.`,
               evidence,
             ),
           );
@@ -425,7 +484,7 @@ async function captureOne({ config, viewport, name, def, walk }) {
               "state",
               `Error state ${name} offers no way forward`,
               "medium",
-              `State "${name}" fails an API call but its content area has no focusable control (retry, back, link); the user is stuck.`,
+              `State "${name}" fails an API call but its content area has no focusable control that the healthy page lacks (retry, back, link); the user is stuck.`,
               evidence,
             ),
           );

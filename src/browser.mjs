@@ -165,6 +165,8 @@ export class BrowserRuntime {
       .launch({ args: ["--use-gl=angle", "--enable-gpu"] })
       .catch(() => chromium.launch());
     this.context = await this.browser.newContext({
+      // Relative targets (page.goto("/cart")) resolve against the URL under test.
+      ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
       viewport: { width: this.viewport.width, height: this.viewport.height },
       reducedMotion: "reduce",
       // Deterministic rendering: no locale/timezone drift between runs.

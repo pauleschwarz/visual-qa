@@ -131,11 +131,18 @@ function parseYamlBlock(lines, index, indent) {
 /** Top-level keys of the new session sections, parsed on their own so older files keep their exact behaviour. */
 function parseSessionSections(text, result) {
   const lines = [];
+  let topKey = null;
   text.split(/\r?\n/).forEach((raw, i) => {
     const stripped = stripYamlComment(raw);
     if (!stripped.trim()) return;
-    if (/^\s*\t/.test(stripped))
-      throw new Error(`.visual-qa.yml line ${i + 1}: tabs are not allowed`);
+    if (/^\s*\t/.test(stripped)) {
+      // Older sections (trigger, route_map, …) accepted tabs; only the new ones refuse them.
+      if (topKey === "states" || topKey === "journeys")
+        throw new Error(`.visual-qa.yml line ${i + 1}: tabs are not allowed`);
+      return;
+    }
+    if (!/^\s/.test(stripped) && !stripped.startsWith("-"))
+      topKey = stripped.match(/^["']?([^:"']+)/)?.[1].trim() ?? null;
     lines.push({
       no: i + 1,
       indent: stripped.match(/^ */)[0].length,
@@ -159,6 +166,12 @@ function parseSessionSections(text, result) {
     if (key === "setup" || key === "storage_state") {
       result[key] = rest.trim() ? String(yamlScalar(rest, line.no)) : null;
     } else if (key === "states" || key === "journeys") {
+      if (rest.trim()) {
+        yamlScalar(rest, line.no);
+        throw new Error(
+          `.visual-qa.yml line ${line.no}: ${key} must be an indented block of named entries, not "${rest.trim()}"`,
+        );
+      }
       if (i < lines.length && lines[i].indent > 0) {
         let block;
         [block, i] = parseYamlBlock(lines, i, lines[i].indent);

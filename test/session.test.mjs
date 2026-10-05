@@ -7,8 +7,9 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { parseVisualQaYaml } from "../src/agent-run.mjs";
 import {
-  inspectErrorState,
+  judgeErrorState,
   parseStateSelector,
+  readErrorSignals,
   resolveSessionInput,
   SetupError,
   splitStateRoutes,
@@ -105,6 +106,29 @@ test("yaml: tabs in a session section are refused with their line", () => {
   );
 });
 
+test("yaml: an older config with tab-indented trigger and route_map still parses, without warnings", () => {
+  const config = parseVisualQaYaml('trigger:\n\t- src/**\nroute_map:\n\t"src/**": FULL\n\t"lib/**":\n\t\t- /a\n');
+  assert.deepEqual(config.trigger, ["src/**"]);
+  assert.deepEqual(config.route_map, { "src/**": "FULL", "lib/**": ["/a"] });
+  assert.deepEqual(config.warnings, []);
+  // The refusal is for the new sections only, wherever they sit in the file.
+  assert.throws(
+    () => parseVisualQaYaml('trigger:\n\t- src/**\nstates:\n\ta:\n\t\tpath: /x\n'),
+    /line 4: tabs are not allowed/,
+  );
+});
+
+test("yaml: states or journeys written inline at the top level are refused with their line", () => {
+  assert.throws(
+    () => parseVisualQaYaml("setup: ./s.mjs\nstates: {orders: {path: /orders}}\n"),
+    /line 2: inline/,
+  );
+  assert.throws(
+    () => parseVisualQaYaml("journeys: checkout\n"),
+    /line 1: journeys must be an indented block of named entries/,
+  );
+});
+
 test("yaml: inline flow style in a session section is refused with its line", () => {
   assert.throws(
     () => parseVisualQaYaml("states:\n  a: {path: /x}\n"),
@@ -173,6 +197,14 @@ test("states: unknown name, missing path, bad expect_api and unknown state setup
     reason: "7",
     expectApi: { "**/api": 500 },
   });
+  // A bare value or an empty block would inject nothing and let the state pass untested.
+  for (const [shape, received] of [[500, "500"], [{}, "{}"], [["**/api"], '\\["\\*\\*/api"\\]'], [null, "null"]]) {
+    for (const key of ["expect_api", "fail_api"])
+      await rejectsSetup(
+        resolveSessionInput({ states: { a: { path: "/a", [key]: shape } } }, { baseDir: dir, states: ["a"] }),
+        new RegExp(`state "a": ${key} must map a URL glob to an HTTP error status or "timeout".* received ${received}`),
+      );
+  }
   // fail_api is the same injection under its other name; expect_api wins on a clash.
   const alias = await resolveSessionInput(
     { states: { a: { path: "/a", fail_api: { "**/x": "timeout", "**/y": 500 }, expect_api: { "**/y": 503 } } } },
@@ -227,6 +259,38 @@ test("expected failures drop only the injected requests, not other 5xx", () => {
   assert.equal(withoutExpectedFailures(events, []), events);
 });
 
+test("expected failures are matched on redacted urls: a ?token= on the injected request is no finding", async () => {
+  const { redact } = await import("../src/config.mjs");
+  const raw = "http://a.test/api/orders?token=abc123&page=2";
+  const seenByRuntime = redact(raw);
+  assert.notEqual(seenByRuntime, raw, "precondition: the runtime stores the redacted url");
+  const events = {
+    network: [
+      { kind: "http", url: seenByRuntime, status: 500 },
+      { kind: "http", url: redact("http://a.test/api/other?token=zzz"), status: 500 },
+    ],
+    console: [],
+  };
+  for (const url of [raw, seenByRuntime]) {
+    const filtered = withoutExpectedFailures(events, [{ url, glob: "**/api/orders*", how: 500 }]);
+    assert.deepEqual(filtered.network.map((item) => item.url), [redact("http://a.test/api/other?token=zzz")]);
+  }
+});
+
+test("cli: --journey names journeys on the journeys command, like --only", async () => {
+  const dir = await project({
+    ".visual-qa.yml": "journeys:\n  a: ./gone-a.mjs\n  b: ./gone-b.mjs\n",
+  });
+  const run = (...args) =>
+    spawnSync(process.execPath, [CLI, "journeys", "--url", "http://127.0.0.1:1", ...args], { cwd: dir, encoding: "utf8", timeout: 30_000 });
+  // Only the named journey is resolved: a missing file of the other one does not matter.
+  assert.match(run("--journey", "a").stderr, /journey "a": file not found: .*gone-a\.mjs/);
+  assert.match(run("--journey", "b").stderr, /journey "b": file not found: .*gone-b\.mjs/);
+  assert.match(run("--only", "b", "--journey", "a").stderr, /journey "b": file not found/);
+  assert.match(run("--journey", "nope").stderr, /unknown journey "nope"; known: a, b/);
+  assert.match(run().stderr, /journey "a": file not found/);
+});
+
 test("cli: states and journeys need a config, known names and a loadable setup (exit 2, no browser)", async () => {
   const run = (cwd, ...args) =>
     spawnSync(process.execPath, [CLI, ...args], { cwd, encoding: "utf8", timeout: 30_000 });
@@ -251,6 +315,17 @@ test("cli: states and journeys need a config, known names and a loadable setup (
   assert.equal(gone.status, 2);
   assert.match(gone.stderr, /config file not found: .*nope\.yml/);
 
+  // A state that would inject nothing, or sections written in a form that is not read: exit 2, never a quiet pass.
+  for (const [yaml, message] of [
+    ["states:\n  a:\n    path: /a\n    expect_api: 500\n", /state "a": expect_api must map a URL glob/],
+    ["states:\n  a:\n    path: /a\n    expect_api:\n", /state "a": expect_api must map a URL glob/],
+    ["states: {a: {path: /a}}\n", /line 1: inline/],
+  ]) {
+    const bad = run(await project({ ".visual-qa.yml": yaml }), "explore", "--url", "http://127.0.0.1:1", "--state", "a");
+    assert.equal(bad.status, 2, bad.stdout + bad.stderr);
+    assert.match(bad.stderr, message);
+  }
+
   const only = run(dir, "explore", "--url", "http://127.0.0.1:1", "--only", "a");
   assert.equal(only.status, 2);
   assert.match(only.stderr, /--only belongs to the journeys command/);
@@ -264,24 +339,33 @@ test("readme shows the shipped example files verbatim", async () => {
   }
 });
 
-// What an error state owes the reader, judged in a real page: a reason and a
-// control in the content area that can take focus.
+// What an error state owes the reader, judged in a real page against the same
+// page without the failure: a reason and a control in the content area that the
+// failure added.
 test("error state: reason and way forward are judged on what a reader can see and use", async (t) => {
   const browser = await chromium.launch();
   t.after(() => browser.close());
   const page = await browser.newPage();
+  const signals = async (html) => {
+    await page.setContent(`<!doctype html><html lang="en"><body>${html}</body></html>`);
+    return readErrorSignals(page);
+  };
   const ALERT = '<p role="alert">Sorry about that.</p>';
   const WORDS = "<p>Could not load your orders.</p>";
   const BUTTON = "<button>Try again</button>";
+  const FINE = "<main><p>Fine.</p></main>";
   const cases = [
     ["alert and button", `<main>${ALERT}${BUTTON}</main>`, null, true, true],
-    ["error words and link, no alert", `<main>${WORDS}<a href="/">Back</a></main>`, null, true, true],
-    ["nothing at all", "<main><p>Fine.</p></main>", null, false, false],
+    ["status text and link", `<main><p role="status">Offline.</p><a href="/">Back</a></main>`, null, true, true],
+    ["live region", `<main><p aria-live="polite">Offline.</p>${BUTTON}</main>`, null, true, true],
+    ["error words in the content, no alert", `<main>${WORDS}<a href="/">Back</a></main>`, null, false, true],
+    ["nothing at all", FINE, null, false, false],
     ["disabled button", `<main>${ALERT}<button disabled>Try again</button></main>`, null, true, false],
     ["tabindex -1 only", `<main>${ALERT}<div tabindex="-1">x</div></main>`, null, true, false],
     ["hidden button", `<main>${ALERT}<button hidden>Try again</button><button style="display:none">x</button></main>`, null, true, false],
     ["hidden input", `<main>${ALERT}<input type="hidden" value="x"></main>`, null, true, false],
     ["alert that is empty", '<main><p role="alert"></p><p>Fine.</p></main>', null, false, false],
+    ["hidden alert", '<main><p role="alert" hidden>Gone.</p><p>Fine.</p></main>', null, false, false],
     ["control in header", `<header><a href="/">Home</a></header><main>${ALERT}</main>`, null, true, false],
     ["control in nav", `<nav><a href="/">Home</a></nav><main>${ALERT}</main>`, null, true, false],
     ["control in footer", `<main>${ALERT}</main><footer><a href="/">Help</a></footer>`, null, true, false],
@@ -291,8 +375,24 @@ test("error state: reason and way forward are judged on what a reader can see an
     ["reason text present, any case", `<main><p>COULD NOT LOAD</p>${BUTTON}</main>`, "could not load", true, true],
     ["reason text absent although an alert shows", `<main>${ALERT}${BUTTON}</main>`, "could not load", false, true],
   ];
-  for (const [name, html, reason, hasReason, hasWayForward] of cases) {
-    await page.setContent(`<!doctype html><html lang="en"><body>${html}</body></html>`);
-    assert.deepEqual(await inspectErrorState(page, reason), { hasReason, hasWayForward }, name);
-  }
+  const healthy = await signals(FINE);
+  for (const [name, html, reason, hasReason, hasWayForward] of cases)
+    assert.deepEqual(judgeErrorState(await signals(html), healthy, reason), { hasReason, hasWayForward }, name);
+
+  // A page that swallows the failure and merely looks like an error page: the same
+  // words in the content, the same alert region and the same links as when healthy.
+  const DOCS = `<header><a href="/">Home</a></header><main><h1>Docs</h1><p>Error handling is covered in chapter 3. We could not be happier.</p>
+    <div role="status">Docs are up to date.</div><a href="/ch3">Chapter 3</a><button>Search</button></main>`;
+  assert.deepEqual(judgeErrorState(await signals(DOCS), await signals(DOCS), null), {
+    hasReason: false,
+    hasWayForward: false,
+  });
+  // The same page reacting to the failure: a new alert and a new control count, old ones do not.
+  const REACTED = DOCS.replace("</main>", `<p role="alert">Could not refresh.</p><button>Retry</button></main>`);
+  assert.deepEqual(judgeErrorState(await signals(REACTED), await signals(DOCS), null), {
+    hasReason: true,
+    hasWayForward: true,
+  });
+  // A configured reason is read as text on the error page (the healthy page does not matter).
+  assert.equal(judgeErrorState(await signals(DOCS), await signals(DOCS), "docs are up").hasReason, true);
 });

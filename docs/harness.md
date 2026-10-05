@@ -118,7 +118,7 @@ state instead of hoping the walk finds it. Contract for agents:
 - Config in `.visual-qa.yml`: `setup`, `storage_state`, `states`, `journeys`
   (full example and semantics: README "States, sign-in and journeys").
 - `visual-qa run|explore --state NAME … --journey NAME …` and
-  `visual-qa journeys --url URL [--only a,b]` run exactly what is named
+  `visual-qa journeys --url URL [--only a,b | --journey NAME …]` run exactly what is named
   (no base-URL walk), per viewport.
 - Evidence for the vision review and for you: `screenshots/appstate-*.png` with
   the visible text in a `.txt` of the same name; `journeys/<name>/<viewport>/NN-*.png`
@@ -126,7 +126,8 @@ state instead of hoping the walk finds it. Contract for agents:
 - A red journey check is `FAIL` (exit `1`) with the step named in the issue
   title and a `…-FAILED.png`. A broken setup/journey file is exit `2`, never a finding.
 - An injected failure (`expect_api`) is expected, so its 4xx/5xx is not a
-  finding; an error state with no visible reason or no way forward is (`medium`).
+  finding; an error state with no visible reason or no way forward is (`medium`),
+  judged against the same state loaded without the failure.
 
 ## DESIGN.md
 
@@ -236,6 +237,8 @@ const summary = summarizeReport(report);
   as unparsed.
 - Contrast fixes need axe to measure — unverifiable nodes are reported
   (`color-contrast-incomplete`), not auto-fixed.
-- Exploration is bounded BFS with semantic-state identity; deep
-  authenticated flows need an app-level login or a reachable session URL.
+- Exploration is bounded BFS with semantic-state identity. Authenticated
+  and mid-flow pages are reached by naming them (`setup` / `storage_state`,
+  `states`, `journeys`, see above); the plain walk only sees what a visitor
+  can reach by clicking.
 - Vision findings are capped at `medium`: they flag, they never gate.

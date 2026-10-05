@@ -151,6 +151,60 @@ test("an error state without reason or without way forward is a medium finding",
   assert.equal(report.verdict, "UNPROVEN");
 });
 
+test("an injected failure on a url with a secret-like query is no finding either", async () => {
+  const dir = await inProject(
+    SETUP + 'states:\n  tokened:\n    path: /orders-token\n    expect_api:\n      "**/api/orders*": 500\n',
+  );
+  const { report, outDir } = await check(dir, { states: ["tokened"] });
+  assert.deepEqual(titles(report), []);
+  assert.equal(report.verdict, "PASS");
+  assert.match(await readFile(join(outDir, "screenshots", "appstate-tokened-desktop.txt"), "utf8"), /Could not load your orders/);
+});
+
+test("a page that swallows the failure is not rescued by error words and links in its normal content", async () => {
+  const dir = await inProject(
+    SETUP + 'states:\n  docs:\n    path: /docs\n    expect_api:\n      "**/api/orders": 500\n',
+  );
+  const { report } = await check(dir, { states: ["docs"] });
+  assert.deepEqual(titles(report).sort(), [
+    "Error state docs offers no way forward",
+    "Error state docs shows no reason",
+  ]);
+  assert.equal(report.verdict, "UNPROVEN");
+});
+
+test("the setup hook sees the state's name, also when the state is picked as path@name", async () => {
+  const dir = await inProject(
+    "setup: ./hooks.mjs\nstates:\n  orders-error:\n    path: /orders\n    expect_api:\n      \"**/api/orders\": 500\n",
+    {
+      "hooks.mjs":
+        'import { appendFile } from "node:fs/promises";\n' +
+        'export async function setup(page, ctx) { await appendFile(new URL("./seen.log", import.meta.url), `${ctx.state}\\n`); await page.context().addCookies([{ name: "sid", value: "demo", url: ctx.baseUrl }]); }\n',
+    },
+  );
+  await check(dir, { states: ["/orders@orders-error", "orders-error"] });
+  const seen = (await readFile(join(dir, "seen.log"), "utf8")).trim().split("\n");
+  assert.ok(seen.length >= 2, seen.join());
+  assert.deepEqual([...new Set(seen)], ["orders-error"]);
+});
+
+test("the usual checks run in a state: accessibility, layout, scroll chrome and placeholder copy", async () => {
+  const dir = await inProject(
+    "states:\n  defects:\n    path: /defects\n  draft:\n    path: /draft\n",
+  );
+  const { report } = await check(dir, { states: ["defects", "draft"] });
+  const found = report.issues.map((item) => `${item.type}: ${item.title}`);
+  for (const expected of [
+    "vqa-accessibility: Images must have alternative text",
+    "vqa-accessibility: Elements must meet minimum color contrast ratio thresholds",
+    "vqa-visual: Horizontal overflow",
+    "vqa-visual: Fixed chrome overlaps",
+    "vqa-slop: Lorem ipsum placeholder copy",
+  ])
+    assert.ok(found.includes(expected), `${expected} missing in: ${found.join(" | ")}`);
+  assert.equal(report.verdict, "FAIL");
+});
+
 test("an injected failure that the page never requests is reported, not trusted", async () => {
   const dir = await inProject(
     SETUP + 'states:\n  home:\n    path: /\n    expect_api:\n      "**/api/orders": 500\n',
@@ -218,6 +272,24 @@ test("journey: a red check fails the run, names the step and leaves a stop image
   assert.match(failure.evidence.screenshot, /02-receipt_is_shown-FAILED\.png$/);
   const files = await readdir(join(outDir, "journeys", "broken", "desktop"));
   assert.equal(files.some((name) => name.startsWith("03-")), false, files.join());
+});
+
+test("the usual checks run after every green journey step: accessibility and layout", async () => {
+  const dir = await inProject(
+    "journeys:\n  defects: ./defects.mjs\n",
+    {
+      // A relative target resolves against --url, like in any Playwright script.
+      "defects.mjs": 'export default async ({ step }) => { await step("open defects", (page) => page.goto("/defects")); };\n',
+    },
+  );
+  const { report } = await check(dir, { journeys: ["defects"] });
+  const found = report.issues.map((item) => `${item.type}: ${item.title}`);
+  assert.ok(!found.some((title) => title.startsWith("vqa-journey")), found.join(" | "));
+  for (const expected of [
+    "vqa-accessibility: Images must have alternative text",
+    "vqa-visual: Horizontal overflow",
+  ])
+    assert.ok(found.includes(expected), `${expected} missing in: ${found.join(" | ")}`);
 });
 
 test("journey: fresh runs without the session, a normal one runs with it", async () => {
@@ -366,7 +438,7 @@ test("a state that cannot be loaded is an incomplete run with a named finding", 
   assert.equal(finding.severity, "high");
 });
 
-test("cli: a red journey exits 1, a green one exits 0, --only picks by name", async () => {
+test("cli: a red journey exits 1, a green one exits 0, --only and --journey pick by name", async () => {
   const dir = await inProject(
     SETUP +
       `journeys:\n  checkout: ${join(EXAMPLE, "checkout.journey.mjs")}\n  broken: ${join(ROOT, "test", "journeys", "broken.journey.mjs")}\n`,
@@ -378,6 +450,12 @@ test("cli: a red journey exits 1, a green one exits 0, --only picks by name", as
   const red = await cli("--only", "broken", "--out", join(dir, "red"));
   assert.equal(red.status, 1, red.stdout + red.stderr);
   assert.match(red.stdout, /HIGH vqa-journey-journey-broken-failed-at-check-receipt-is-shown/);
+  // --journey is the same switch as on run/explore: only the named journey runs.
+  const named = await cli("--journey", "checkout", "--out", join(dir, "named"));
+  assert.equal(named.status, 0, named.stdout + named.stderr);
+  assert.match(named.stdout, /Visual QA PASS/);
+  const both = await cli("--only", "checkout", "--journey", "broken", "--out", join(dir, "both"));
+  assert.equal(both.status, 1, both.stdout + both.stderr);
   const unknown = await cli("--only", "nope");
   assert.equal(unknown.status, 2);
   assert.match(unknown.stderr, /unknown journey "nope"; known: checkout, broken/);

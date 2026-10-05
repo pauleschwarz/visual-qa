@@ -24,7 +24,7 @@ function usage({ error = false, message = null } = {}) {
     "                 [--path-prefix PATH] [--no-prepare-review] [--no-edge-input-probes] [--design-contract FILE]\n" +
     "                 [--max-pairs N] [--max-state-pairs N] [--batch-size N] [--skills loop|all|list]\n" +
     "                 [--state NAME ...] [--journey NAME ...] [--config FILE]   named states / journeys (see README)\n" +
-    "  visual-qa journeys --url URL [--only a,b] [--out DIR] [--config FILE]   scripted journeys from the config\n" +
+    "  visual-qa journeys --url URL [--only a,b | --journey NAME ...] [--out DIR] [--config FILE]   scripted journeys from the config\n" +
     "  visual-qa explore --url URL [--out DIR] [bounds flags]  deterministic core only\n" +
     "  visual-qa report <DIR> [--json]                         summarize an out-dir for agents\n" +
     '  visual-qa intent --intent "..." --fix-dir DIR [--json]   catalog dry-run, no browser\n' +
@@ -589,10 +589,15 @@ if (command === "agent-gate") {
         );
       for (const warning of project.warnings)
         console.error(`visual-qa: warning: ${warning}`);
+      // On `journeys`, --only a,b and --journey a --journey b both name journeys; naming none runs all.
+      const named = [
+        ...(only === null ? [] : only.split(",").map((name) => name.trim())),
+        ...journeyNames,
+      ].filter(Boolean);
       const journeysToRun =
         command === "journeys"
-          ? only !== null
-            ? only.split(",").map((name) => name.trim()).filter(Boolean)
+          ? named.length
+            ? [...new Set(named)]
             : Object.keys(project.journeys)
           : journeyNames;
       if (command === "journeys" && !journeysToRun.length)
