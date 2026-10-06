@@ -363,7 +363,7 @@ test("agent-run: a port someone else holds ends with exit 2 and a sentence, not 
   writeFileSync(join(dir, "src", "App.tsx"), "export const a = 1;\n");
   writeFileSync(
     join(dir, ".visual-qa.yml"),
-    `route_map:\n  "src/**":\n    - /\nserver:\n  command: node -e "setInterval(() => {}, 1000)"\n  health: http://127.0.0.1:${port}/\n`,
+    `route_map:\n  "src/**":\n    - /\nserver:\n  command: node -e "setInterval(() => { try { process.kill(${process.pid}, 0) } catch { process.exit(0) } }, 1000)"\n  health: http://127.0.0.1:${port}/\n`,
   );
   git("add", ".");
   git("commit", "-qm", "init");
@@ -404,7 +404,8 @@ test("agent-run: a server.health without http:// is a config error at once, the 
 // ── Besitz der Adresse: TCP, nicht Antwortzeit ──
 
 /** A command that proves it was started (writes `marker`) and then stays up. */
-const marking = (marker) => `node -e "require('fs').writeFileSync('${marker}','1');setInterval(()=>{},1e9)"`;
+const marking = (marker) =>
+  `node -e "require('fs').writeFileSync('${marker}','1');setInterval(()=>{try{process.kill(${process.pid},0)}catch{process.exit(0)}},1000)"`;
 const markerPath = () => join(mkdtempSync(join(tmpdir(), "vqa-marker-")), "started");
 
 test("healthEndpoint: host and port of an http(s) URL, the scheme's default port, no brackets on IPv6, null for anything else", () => {
