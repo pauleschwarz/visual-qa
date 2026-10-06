@@ -9,19 +9,20 @@
 - `server: {command, health, startup_timeout_ms}` in `.visual-qa.yml`: visual-qa starts the app after the routes are known, waits for `health`, and always stops the process group it started (also on errors, and on SIGINT/SIGTERM/SIGHUP/SIGQUIT/SIGUSR2, even while it is stopping). `health` must be an http(s) URL; without `--url`, its origin is the app. A server that exits, never answers, or an address where something already listens before the start (however slowly it answers) stops the run with exit 2 and a sentence.
 - Existing configs behave as before; without a base branch `agent-run` now stops (exit 2) where it used to diff against `HEAD`.
 ### Geometry
-- New `visual-qa geometry --url URL [--route …] [--viewport name=WxH …] [--sweep FROM-TO[:STEP]] [--height N] [--checks a,b]
-  [--selector first-view=CSS|stable=[hover:]CSS …] [--state NAME …] [--min-gap N] [--touch-max N] [--out DIR]`: seven measured checks —
-  `first-view`, `covered`, `stable`, `edges`, `text-fit`, `row-align`, `tap-size` — across a width sweep (each width a fresh page).
-  A finding has severity, selector, viewport, a number in px and one image with the box outlined (worst width, worst of each kind first,
-  at most 40); a defect at 320–440 px is one finding with its range. `report.md` + `report.json` (`vqa-geometry-0.1`) + `images/`;
-  exit 0 clean, 1 findings, 2 not everything measured (call error, unreachable, page that does not load, trigger that matches nothing).
-- `--state` measures named states (V1); routes are visited anonymously.
-- `run`/`explore --geometry` adds the checks that need no input to every scanned state as `vqa-geometry` issues. Off by default.
-- `src/geometry.mjs` exports `geometry`, `runGeometryChecks`, `geometryIssues`, `parseSweep`, `resolveChecks` …; `settle` of the baseline capture is exported and shared.
-- Nothing is cut silently: the worst 100 findings of each kind and page are kept and the rest is counted (`truncated` in `report.json`, "Cut short" in `report.md`); a page `covered` cannot walk to the end (> 10000 content elements) blocks the run (exit 2). `tap-size` and `row-align` measure the whole page.
-- Fixed in the first review round: `tap-size` overlap is compared at one scroll position among controls that scroll together (a spread-out list in a scrolling sheet is no overlap); the worst width of a tap area is the narrowest, severity the highest over the sweep; a link inside `<sup>`/`<em>` in a sentence is exempt; table rows are no boxes of `row-align`, a cell spanning rows has no baseline finding; a `stable` trigger that replaces the page is an error.
-- Second review round: `tap-size` overlap cuts each control's rect at the boxes that clip it and compares across the page — two fixed elements, two `overflow:hidden` cards — instead of only among controls of one scroller; the caps of earlier versions (first-view 5, edges 40, text-fit 40, stable 1500 boxes / 8 movers, row-align 6 lines) and the limits themselves (exactly 100 findings of a kind, exactly `coveredMax` elements, controls at a third) have a test each.
-- Fixture `fixture/geometry-app.mjs`: per check a page with the defect built in and a twin without; `test/geometry.test.mjs`, `test/geometry.e2e.mjs` (in `npm run selftest`).
+- New `visual-qa geometry --url URL` (flags in the README, section "Geometry"): seven measured checks —
+  `first-view`, `covered`, `stable`, `edges`, `text-fit`, `row-align`, `tap-size` — across a width sweep, each width
+  a fresh page. A finding has severity, selector, viewport, a number in px and one image with the box outlined; a
+  defect at 320–440 px is one finding with its range. `report.md` + `report.json` (`vqa-geometry-0.1`) + `images/`;
+  exit 0 clean, 1 findings, 2 not everything measured (call error, unreachable, page that does not load, trigger
+  that matches nothing or replaces the page, a page `covered` cannot walk to the end).
+- `tap-size` cuts each tap area at the boxes that clip it (fixed layers, `overflow:hidden`, scrollers) and compares
+  across the page; a link inside a sentence is exempt. `row-align` measures no table rows.
+- Nothing is cut silently: per kind and page the worst 100 findings are kept and the rest counted (`truncated` in
+  `report.json`, "Cut short" in `report.md`).
+- `--state NAME` measures named states. `run`/`explore --geometry` adds the checks that need no input to every
+  scanned state as `vqa-geometry` issues; off by default.
+- `src/geometry.mjs` exports `geometry`, `runGeometryChecks`, `geometryIssues`, `parseSweep`, `resolveChecks`; the
+  baseline's `settle` is shared. Example app with each defect and a twin without: `fixture/geometry-app.mjs`.
 
 ### States, sign-in and journeys
 - Check an app in a named state, not only as an anonymous visitor: `.visual-qa.yml` gains `setup` (`setup(page, ctx)` hook), `storage_state`, `states` and `journeys`. `run`/`explore` take `--state NAME` and `--journey NAME` (repeatable) and `--config FILE`; `path@state` works on the CLI and in `route_map` for `agent-run`.
