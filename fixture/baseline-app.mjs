@@ -198,6 +198,11 @@ export function render(route, variant = "") {
     return page(
       `<div style="height:200px;width:300px;overflow:auto;position:relative"><div style="height:30px">Title</div><div style="position:absolute;top:30px;left:0;width:100%;height:600px;background:#e8e8f4">absolute</div></div>`,
     );
+  if (route === "/partial70" || route === "/partial95")
+    // The edge of «a strip»: 420 of 600 px (70 %) stay in the flow → skipped; 570 of 600 px (95 %) → captured.
+    return page(
+      `<div style="height:200px;width:300px;overflow:auto;position:relative"><div style="height:${route === "/partial70" ? 420 : 570}px;background:#e8e8f4">in the flow</div><div style="position:absolute;top:0;left:0;width:10px;height:600px">x</div></div>`,
+    );
   if (route === "/vanish")
     // A script removes the scroller as soon as anything touches its style.
     return page(`<div id="s" style="height:200px;width:300px;overflow:auto">${rows(20, "Line")}</div>`, {

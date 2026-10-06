@@ -632,18 +632,26 @@ test("explore --baseline-dir: one stray pixel passes at the default threshold, f
 
 test("a scroller that cannot be photographed whole is skipped and named, never a load error (Guardian mobile)", async () => {
   const started = Date.now();
-  const { dir, errors, skipped } = await capture(["/collapsing", "/rehiding", "/partial", "/vanish"]);
+  const { dir, errors, skipped } = await capture(["/collapsing", "/rehiding", "/partial", "/vanish", "/partial70", "/partial95"]);
   assert.deepEqual(errors, [], "one odd box must not fail the whole capture");
   assert.deepEqual(await names(dir, "collapsing"), ["desktop.png", "desktop.scroller-2.png", "mobile.png", "mobile.scroller-2.png"], "the scroller beside it is still captured");
   assert.deepEqual(await names(dir, "rehiding"), ["desktop.png", "mobile.png"]);
   assert.deepEqual(await names(dir, "partial"), ["desktop.png", "mobile.png"], "a strip is no picture of the scroller");
   assert.deepEqual(await names(dir, "vanish"), ["desktop.png", "mobile.png"]);
+  assert.deepEqual(await names(dir, "partial70"), ["desktop.png", "mobile.png"], "70 % of the content is still a strip");
+  assert.deepEqual(
+    await names(dir, "partial95"),
+    ["desktop.png", "desktop.scroller-1.png", "mobile.png", "mobile.scroller-1.png"],
+    "95 % of the content is the scroller (the measure is its content, not its box)",
+  );
   const why = skipped.map((s) => `${s.route_key}/${s.viewport}/${s.part}: ${s.reason.split(" (")[0]}`).sort();
   assert.deepEqual(why, [
     "collapsing/desktop/scroller-1: has no box when grown",
     "collapsing/mobile/scroller-1: has no box when grown",
     "partial/desktop/scroller-1: shows 30 of 630 px when grown",
     "partial/mobile/scroller-1: shows 30 of 630 px when grown",
+    "partial70/desktop/scroller-1: shows 420 of 600 px when grown",
+    "partial70/mobile/scroller-1: shows 420 of 600 px when grown",
     "rehiding/desktop/scroller-1: no picture within 5 s",
     "rehiding/mobile/scroller-1: no picture within 5 s",
     "vanish/desktop/scroller-1: removed by the page before its picture",
@@ -651,7 +659,7 @@ test("a scroller that cannot be photographed whole is skipped and named, never a
   ]);
   assert.ok(Date.now() - started < 30_000, `bounded by the short scroller timeout (${Date.now() - started} ms)`);
   const manifest = JSON.parse(await readFile(join(dir, "baseline-manifest.json"), "utf8"));
-  assert.equal(manifest.skipped.length, 8, "the manifest keeps them");
+  assert.equal(manifest.skipped.length, 10, "the manifest keeps them");
   const again = await capture(["/collapsing"]);
   const scope = { routeKeys: new Set(["collapsing"]), viewports: new Set(["desktop", "mobile"]) };
   const result = await compareFolders(dir, again.dir, { outDir: await tmp("skip-out"), scope });

@@ -503,7 +503,7 @@ export function markScrollers() {
  */
 export function stretchScroller(n) {
   const el = document.querySelector(`[data-vqa-scroller="${n}"]`);
-  if (!el) throw new Error("the scroller disappeared before it could be captured");
+  if (!el) return; // the page removed it; the capture names it as not captured
   const saved = new Map();
   // Written as attribute text, not through node.style: removing a style set via CSSOM leaves an empty style="".
   const addStyle = (node, css) => {
@@ -650,7 +650,7 @@ async function captureRoute(page, { url, target, routeKey, viewport, dir, naviga
         : !(grown.width > 0 && grown.height > 0)
           ? "has no box when grown (hidden, or all its content sits outside the flow)"
           : grown.height < 0.9 * before.content
-            ? `shows ${Math.round(grown.height)} of ${before.content} px when grown (the rest sits outside the flow)`
+            ? `shows ${Math.round(grown.height)} of ${before.content} px when grown (its content does not grow with it)`
             : null;
       if (reason) skipped.push({ ...where, part, reason });
       else

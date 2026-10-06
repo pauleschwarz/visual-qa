@@ -22,9 +22,9 @@
   or `content-visibility:hidden` are not parts, and `<body>` counts only when `<html>` is not
   `visible` in both axes (`html,body{height:100%}` pages are a `page`, not a scroller). The
   report names the threshold cap in px and lists the changed pixels first.
-- A scroller that cannot be photographed whole — no box when grown, only a strip of its content
-  in the flow, removed by the page, or no picture within 5 s — is skipped and listed under
-  «Not captured» (manifest, compare report, CLI); it never fails the capture.
+- A scroller that cannot be photographed whole — no box when grown, a grown box shorter than nine
+  tenths of its content, removed by the page, or no picture within 5 s — is skipped and listed
+  under «Not captured» (manifest, compare report, CLI); it never fails the capture.
 - `threshold_pct` and `pixel_threshold` accept numbers only: an empty YAML value is an error,
   not a silent 0.
 - `.visual-qa.yml` `baseline:` block (`routes`, `viewports`, `threshold_pct`, `clock`, `locale`,
