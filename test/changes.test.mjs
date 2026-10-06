@@ -663,3 +663,199 @@ test("agent-run: a noop that left changed files out says which, so a data file o
   const none = cli(clean, "agent-run", "--url", "http://127.0.0.1:1", "--out", join(clean, "out"));
   assert.match(none.stdout, /^agent-run: no UI diff → PASS \(noop\)$/m, "nothing changed, nothing to add");
 });
+
+// ── R3: der Kommentar-Scanner, die Namensliste, die Tiefe, der Hinweis — je Klausel ein Fall und sein Gegenfall ──
+
+const scan = (cases) => {
+  for (const [name, source, want] of cases) assert.deepEqual(importSpecifiers(source).sort(), [...want].sort(), name);
+};
+/** A real import after the text under test, then a comment: an early-opened comment swallows the import. */
+const LAZY = '\nconst L = () => import("./Lazy");\n/* end */';
+
+test("importSpecifiers: comments — in the list, around the keyword, in a path, commented-out imports", () => {
+  scan([
+    ["apostrophe in a line comment inside the list", "import {\n  A, // it's the card\n  B,\n} from \"./Card\";", ["./Card"]],
+    ["quote characters in a block comment", 'import {\n  A, /* "x" \'y\' `z` */\n} from "./Card";', ["./Card"]],
+    ["a comment that says from \"./other\"", 'import { A, // from "./other"\n B } from "./Card";', ["./Card"]],
+    ["commented-out import next to an apostrophe", '// import X from "./dead"; don\'t\nimport Y from "./live";', ["./live"]],
+    ["block comment between import and from", 'import Card /* c */ from "./Card";', ["./Card"]],
+    ["comment glued to the keyword", 'import/* c */Card from "./Card";', ["./Card"]],
+    ["comment between from and the string", 'import Card from /* c */ "./Card";', ["./Card"]],
+    ["side-effect import with a comment", 'import /* c */ "./side.css";', ["./side.css"]],
+    ["export * with a comment", 'export * /* all */ from "./a";', ["./a"]],
+    ["dynamic import with a webpack comment", 'const L = lazy(() => import(/* webpackChunkName: "x" */ "./Lazy"));', ["./Lazy"]],
+    ["require with a comment", 'const a = require(/* c */ "./a");', ["./a"]],
+    ["CRLF line comment", 'import {\r\n  A, // c\r\n} from "./Card";\r\n', ["./Card"]],
+    ["a line comment on the last line, no newline after it", 'import "./live"; // import "./dead"', ["./live"]],
+    ["a block comment around a whole import", '/* import "./dead"; */\nimport "./live";', ["./live"]],
+    ["type-only imports stay out, also with a comment inside", 'import type {\n  A, // c\n} from "./types";\nexport type { B } from "./t2";', []],
+    ["import { type A } is a runtime import", 'import { type A } from "./a";', ["./a"]],
+  ]);
+});
+
+test("importSpecifiers: strings, templates and their ${…} — a comment sign inside text is no comment, a comment inside ${…} is one", () => {
+  scan([
+    ["// inside a double-quoted string", 'import x from "http://example.com/a.js";', ["http://example.com/a.js"]],
+    ["/* inside a string", 'import x from "./a/*/b";\nimport y from "./y";', ["./a/*/b", "./y"]],
+    ["single-quoted glob with /*", `const pages = import.meta.glob('./pages/*/index.tsx');${LAZY}`, ["./Lazy"]],
+    ["// inside a template literal", "const u = `https://x/y`;\nimport z from './z';", ["./z"]],
+    ["/* inside a template literal", "const g = `src/*/x`; import './after-template'; /* import './dead' */", ["./after-template"]],
+    ["an escaped quote does not end the string", String.raw`const s = "say \"//\" ok"; import "./x"; // c`, ["./x"]],
+    ["an escaped backtick does not end the template", "const t = `a\\`b`; /* import \"./dead\" */ import \"./live\";", ["./live"]],
+    ["a string left open ends with its line", 'const s = \'open;\n// import dead from "./dead";\nimport live from "./live";', ["./live"]],
+    ["a block comment left open is no comment", 'const a = 1; /* open\nimport "./live";', ["./live"]],
+    ["a block comment left open after a closed one is no comment", 'a = 1; /* x */ b = 2; /* open\nimport "./live";', ["./live"]],
+    ["/*/ does not close itself, and is no comment without a closer", 'const a = 1; /*/ import "./live";', ["./live"]],
+    ["/*/ is not closed by its own star", '/*/ import "./dead" */ import "./live";', ["./live"]],
+    ["a comment inside ${…} is a comment", 'const t = `${ /* import "./dead" */ 1 }`; import "./live";', ["./live"]],
+    ["braces inside ${…} do not end it early", 'const t = `${ ({ a: 1 }).a /* import "./dead" */ }`; import "./live";', ["./live"]],
+    ["the } that ends ${…} is not a brace of the code around", 'const t = `${ ({ a: 1 }).a }`;\n/* import "./dead" */\nimport "./live";', ["./live"]],
+  ]);
+});
+
+test("importSpecifiers: a regex literal is not a comment — after an operator, bracket, `;`, a keyword or at the start; a division is none either", () => {
+  const tokens = [..."(,=:[!&|?{};+-*%<>~^", "return", "typeof", "case", "do", "else", "in", "of", "void", "delete", "throw", "new", "yield", "await"];
+  for (const token of tokens)
+    assert.deepEqual(importSpecifiers(`x ${token} /\\/*/.test(y);${LAZY}`), ["./Lazy"], `a regex after ${token}`);
+  scan([
+    ["a regex at the start of the file", `/\\/*/.test(y);${LAZY}`, ["./Lazy"]],
+    ["a regex with an escaped slash", `const parts = path.split(/\\//); const L = () => import("./Lazy");`, ["./Lazy"]],
+    ["a / inside a regex class", `const r = /[/']/; // import "./dead"\nimport "./live";`, ["./live"]],
+    ["a regex whose body holds an escaped slash", 'const r = /a\\//; // import "./dead"\nimport "./live";', ["./live"]],
+    ["a class that holds a quote, then a comment", `const r = /[a']/; // import "./dead"\nimport "./live";`, ["./live"]],
+    ["a regex is over after its closing slash", "const ok = /a/.test('/*');\nimport \"./live\";\n/* end */", ["./live"]],
+    ["a regex with flags, then a comment", `const r = /a*/gi; /* import "./dead" */ import "./live";`, ["./live"]],
+    ["a division after a word", 'const q = total / 2; const r = /* import "./dead" */ 1;\nimport "./live";', ["./live"]],
+    ["a division after a number", 'const q = 4 / 2 /* import "./dead" */;\nimport "./live";', ["./live"]],
+    ["a division after )", 'const q = (a + b) / 2 /* import "./dead" */;\nimport "./live";', ["./live"]],
+    ["a division after ]", 'const q = list[0] / 2 /* import "./dead" */;\nimport "./live";', ["./live"]],
+    ["a division after a string", 'const q = "4" / 2 /* import "./dead" */;\nimport "./live";', ["./live"]],
+    ["a division after a template", 'const q = `4` / 2 /* import "./dead" */;\nimport "./live";', ["./live"]],
+    ["a slash that closes nothing is a division", `const q = a /\nb; // import "./dead"\nimport "./live";`, ["./live"]],
+    ["a regex does not run over the end of its line", 'const r = /abc\n// import "./dead"\nimport "./live";', ["./live"]],
+    ["$ belongs to a word", 'const q = $in / 2 /* import "./dead" */;\nimport "./live";', ["./live"]],
+  ]);
+});
+
+test("importSpecifiers: JSX text and tags — src/* in text is no comment, {/* … */} in it is one, a generic is no tag", () => {
+  for (const token of ["=>", "(", "return", "?", ":", "&&", ","])
+    assert.deepEqual(importSpecifiers(`x ${token} <code>src/*</code>;${LAZY}`), ["./Lazy"], `JSX after ${token}`);
+  scan([
+    ["JSX at the start of the file", `<code>src/*</code>;${LAZY}`, ["./Lazy"]],
+    ["a fragment", `const a = <>src/*</>;${LAZY}`, ["./Lazy"]],
+    ["a dotted tag name", `const a = <Foo.Bar>src/*</Foo.Bar>;${LAZY}`, ["./Lazy"]],
+    ["a tag name with a dash", `const a = <my-element>src/*</my-element>;${LAZY}`, ["./Lazy"]],
+    ["a tag name with a colon", `const a = <svg:rect>src/*</svg:rect>;${LAZY}`, ["./Lazy"]],
+    ["apostrophes in the text", `import A from "./a";\nconst e = <p>Don't panic</p>;\nimport B from "./b";`, ["./a", "./b"]],
+    ["text between nested elements", `const a = <ul><li>a</li> src/* <li>b</li></ul>;${LAZY}`, ["./Lazy"]],
+    ["a comment after the element is a comment", `const a = <p>x</p>; /* import "./dead" */\nimport "./live";`, ["./live"]],
+    ["a self-closing element ends at once", `const a = <br />; /* import "./dead" */\nimport "./live";`, ["./live"]],
+    ["a > inside an attribute string", `const a = <a title="a>b" />; /* import "./dead" */\nimport "./live";`, ["./live"]],
+    ["an attribute string over two lines", `const a = <a title="x\ny" />; /* import "./dead" */\nimport "./live";`, ["./live"]],
+    ["an arrow inside an attribute expression", `const a = <a onClick={() => go()} />; /* import "./dead" */\nimport "./live";`, ["./live"]],
+    ["a comment in {…} between tags is a comment", `const a = <p>{/* import "./dead" */}</p>;\nimport "./live";`, ["./live"]],
+    ["an import inside {…} in a tag's text", `const a = <p>{import("./inside")}</p>;`, ["./inside"]],
+    ["a generic arrow is no tag", `const id = <T,>(x: T) => x; /* import "./dead" */\nimport "./live";`, ["./live"]],
+    ["a single-quoted attribute with a > inside", `const a = <a title='a>b' />; /* import "./dead" */\nimport "./live";`, ["./live"]],
+    ["a < after a word is a comparison, not a tag", `if (a <b && c > d) {} /* import "./dead" */\nimport "./live";`, ["./live"]],
+    ["a stray } at the top is no end of the file", '}\n/* import "./dead" */\nimport "./live";', ["./live"]],
+    ["a < followed by a digit is no tag", `const a = <1>; /* import "./dead" */\nimport "./live";`, ["./live"]],
+    ["a < that is no tag", `const lt = a < b; const c = 1 /* import "./dead" */;\nimport "./live";`, ["./live"]],
+    ["a closing tag that never ends does not hang", "const a = <p>text</p", []],
+  ]);
+});
+
+test("importSpecifiers: what ends a name list — each of ; ( ) = and the three quote characters", () => {
+  for (const stop of [";", "(", ")", "=", '"', "'", "`"])
+    assert.deepEqual(importSpecifiers(`export type { A } ${stop}\nimport B from "./b";`), ["./b"], `${stop} ends the list`);
+  scan([
+    ["export type {…}; then an import", 'export type { A };\nimport B from "./b";', ["./b"]],
+    ["export type {…}, a call, then an import — no semicolons", 'export type { A }\nrender()\nimport B from "./b"', ["./b"]],
+    ["export type X = {…}, then an import — no semicolons", 'export type X = { a: string }\nimport B from "./b"', ["./b"]],
+    ["a side-effect import, then an import — no semicolons", 'import "./side.css"\nimport B from "./b"', ["./side.css", "./b"]],
+    ["a long name list over lines", 'import {\n  A,\n  B as C,\n  type D,\n  default as E,\n} from "./list";', ["./list"]],
+    ["default and namespace forms", 'import Def, * as ns from "./d";\nimport Def2, { x } from "./e";', ["./d", "./e"]],
+    ["export * from and export {…} from", 'export * from "./a";\nexport { b } from "./b";\nexport * as c from "./c";', ["./a", "./b", "./c"]],
+  ]);
+});
+
+test("importSpecifiers: stylesheets — quoted with a space, single-quoted, url() with and without quotes, @use, @forward", () => {
+  scan([
+    ["a double-quoted path with a space", '@use "./a b.css";', ["./a b.css"]],
+    ["a single-quoted path with a space", "@forward './a b.css';", ["./a b.css"]],
+    ["a single-quoted path", "@import './s.css';", ["./s.css"]],
+    ["url() with double quotes", '@import url("./u.css");', ["./u.css"]],
+    ["url() with single quotes and a media query", "@import url('./u2.css') screen;", ["./u2.css"]],
+    ["url() without quotes", "@import url(./plain.css) screen;", ["./plain.css"]],
+    ["an unquoted path ends at a space", "@use ./bare as b", ["./bare"]],
+    ["url() with spaces inside the parentheses", '@import url( "./spaced.css" );', ["./spaced.css"]],
+    ["@use and @forward", '@use "./partial" as p;\n@forward "./f";', ["./partial", "./f"]],
+    ["a commented-out @import", '/* @import "./dead.css"; */\n@import "./live.css";', ["./live.css"]],
+    ["a SCSS line comment after @use", '@use "./a" // c\n;', ["./a"]],
+  ]);
+});
+
+test("importSpecifiers: a file of 100 k characters is read in well under a second", () => {
+  const started = Date.now();
+  importSpecifiers(`import a from "./a"; // c\nconst s = 'x'; /* c */ const r = a / 2; const e = <p>{a}</p>;\n`.repeat(1200));
+  importSpecifiers("x = 1; /* \n".repeat(9000));
+  assert.ok(Date.now() - started < 1000);
+});
+
+test("IMPORTERS: an importer beyond the depth that is in ignore is no reason to warn; a frontier nothing imports is none either", () => {
+  const MAP = { "src/pages/**": ["/p"], "src/*.tsx": "IMPORTERS" };
+  const run = (files, opts) =>
+    resolveRoutesFromMap(["src/Leaf.tsx"], MAP, { importersOf: importerIndex(Object.keys(files), (f) => files[f]), ...opts });
+  const beyond = { "src/Leaf.tsx": "", "src/B.tsx": 'import "./Leaf";', "src/B.test.tsx": 'import "./B";' };
+  assert.deepEqual(run(beyond, { depth: 1, ignore: ["src/*.test.tsx"] }).depth_exhausted, [], "the only way on is a test file");
+  assert.deepEqual(run(beyond, { depth: 1 }).depth_exhausted, ["src/Leaf.tsx"], "without ignore it is a way on");
+  const dead = { "src/Leaf.tsx": "", "src/B.tsx": 'import "./Leaf";' };
+  assert.deepEqual(run(dead, { depth: 1 }).depth_exhausted, [], "B is imported by nothing: the chain ended, it was not cut");
+  assert.deepEqual(run(dead, { depth: 1 }).unmapped, ["src/Leaf.tsx"]);
+  const cycle = { "src/Leaf.tsx": 'import "./A";', "src/A.tsx": 'import "./Leaf";' };
+  assert.deepEqual(run(cycle, { depth: 1 }).depth_exhausted, [], "a cycle back to where it came from is not further up");
+});
+
+test("IMPORTERS: a file that two IMPORTERS entries match is climbed once and named once", () => {
+  const files = { "src/Leaf.tsx": "", "src/B.tsx": 'import "./Leaf";', "src/pages/H.tsx": 'import "../B";', "src/Lone.tsx": "" };
+  const map = { "src/pages/**": ["/p"], "src/*.tsx": "IMPORTERS", "src/L*.tsx": "IMPORTERS" };
+  const importersOf = importerIndex(Object.keys(files), (f) => files[f]);
+  const cut = resolveRoutesFromMap(["src/Leaf.tsx"], map, { importersOf, depth: 1 });
+  assert.deepEqual(cut.depth_exhausted, ["src/Leaf.tsx"]);
+  assert.deepEqual(cut.unmapped, ["src/Leaf.tsx"]);
+  const alone = resolveRoutesFromMap(["src/Lone.tsx"], map, { importersOf });
+  assert.deepEqual(alone.unrendered, ["src/Lone.tsx"]);
+  const reached = resolveRoutesFromMap(["src/Leaf.tsx"], map, { importersOf });
+  assert.deepEqual(reached.route_reasons["/p"].length, 1, "one reason, not one per entry");
+});
+
+test("agent-run: the noop note lists five changed files, and says how many more there are only past five", () => {
+  const files = (n) => Object.fromEntries(Array.from({ length: n }, (_, k) => [`data/f${k}.json`, `{"v":${k}}\n`]));
+  for (const [count, tail] of [[6, /, … \(6 in all\)$/], [5, /f4\.json$/]]) {
+    const dir = repo({ "src/pages/Home.tsx": "export const Home = 1;\n", ".visual-qa.yml": 'route_map:\n  "src/pages/**": /\n' });
+    put(dir, files(count));
+    const run = cli(dir, "agent-run", "--url", "http://127.0.0.1:1", "--out", join(dir, "out"));
+    const note = run.stdout.split("\n").find((line) => line.includes("changed, not UI files"));
+    assert.ok(note, run.stdout + run.stderr);
+    assert.match(note, tail, `${count} files`);
+    assert.equal(note.includes("f4.json"), true);
+    assert.equal(note.includes("f5.json"), false, "the sixth is counted, not listed");
+  }
+});
+
+test("agent-run: a UI diff without any route_map fails closed with the plain sentence — no depth text, no crash", async () => {
+  const dir = repo({ "src/App.tsx": "export const a = 1;\n" });
+  put(dir, { "src/App.tsx": "export const a = 2;\n" });
+  const result = await agentRun({ url: "http://127.0.0.1:1", outDir: join(dir, "out"), projectRoot: dir });
+  assert.equal(result.ok, false);
+  assert.equal(result.report.issues[0].detail, "Changed UI files require .visual-qa.yml route_map entries; fail-closed.");
+  assert.deepEqual(result.agent.depth_exhausted_files, []);
+});
+
+test("config: server.health must be an http(s) URL that can be reached at all — scheme, host, port", () => {
+  const health = (value) => parseVisualQaYaml(`server:\n  command: x\n  health: ${value}\n`).server.health;
+  for (const bad of ["localhost:5173/health", "ftp://h/", "http://", "http://localhost:abc/", "http://localhost:99999/", "https://:5173/", "http://localhost:5173 /x", "not a url"])
+    assert.throws(() => health(JSON.stringify(bad)), /server\.health must be an http\(s\) URL/, bad);
+  for (const good of ["http://h", "https://h:1", "HTTPS://h:1/p", "http://[::1]:3000/", "http://localhost:5173/health?x=1", '" http://h:1/"'])
+    assert.equal(health(good.startsWith('"') ? good : JSON.stringify(good)), good.startsWith('"') ? JSON.parse(good) : good, good);
+});

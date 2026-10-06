@@ -128,7 +128,7 @@ function routeReasonLines(agent) {
 }
 
 /** What a "no UI diff" noop left out: every changed file is a non-UI one (a data file, an asset, an ignored one). */
-function notUiNote({ changed_files: changed = [] }) {
+function notUiNote({ changed_files: changed }) {
   if (!changed.length) return "";
   const shown = changed.slice(0, 5).join(", ");
   return ` — changed, not UI files (see trigger/ignore in .visual-qa.yml): ${shown}${changed.length > 5 ? `, … (${changed.length} in all)` : ""}`;

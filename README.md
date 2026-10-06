@@ -407,9 +407,12 @@ server:                        # optional: visual-qa starts and stops your app
 - **Routes.** Each changed UI file (`trigger` / `ignore`, default: web source files) is
   matched against `route_map`. A list gives its routes, `GLOBAL` (alias `FULL`) walks the
   whole app, `IMPORTERS` follows the files that import it (`import`, `export … from`,
-  `import()`, `require()`, CSS `@import`/`@use`, comments ignored; type-only imports render
-  nothing) up to `import_depth` levels, passing through files no entry matches until one
-  that does. A chain still going at `import_depth` is named in a warning.
+  `import()`, `require()`, CSS `@import`/`@use`; type-only imports render nothing) up to
+  `import_depth` levels, passing through files no entry matches until one that does. The
+  scan is text, not a parser: a small scanner skips comments and reads strings, template
+  literals, regex literals and JSX text so `/*` in them opens nothing; where it cannot tell
+  it keeps the text, so the error costs a route too many (a commented-out import counts), not one too few.
+  A chain still going at `import_depth` is named in a warning.
   Nothing imports it → noop `PASS` naming the file, with a warning: an entry point
   (`main.tsx`) or a file loaded some way the scan cannot follow (`import.meta.glob`,
   computed imports) shows up here too — map those directly (`GLOBAL` for an entry point).
@@ -423,10 +426,12 @@ server:                        # optional: visual-qa starts and stops your app
   `git.committed_files`, `untracked_files`, `deleted_files`, `renamed_files`, `merge_base`.
 - **Server.** With `server:`, the app starts after the routes are known (never for a noop),
   `health` is polled until it answers, and the process group visual-qa started is stopped
-  when the run ends, fails, or visual-qa gets `SIGINT`/`SIGTERM`/`SIGHUP` (also while it is
-  stopping it). `health` must be an `http(s)` URL. A command that exits early, a health URL
-  that never answers, or one that already answers before the start (someone else owns the
-  address) ends with exit `2` and a sentence (the server's last output, where there is one).
+  when the run ends, fails, or visual-qa gets `SIGINT`/`SIGTERM`/`SIGHUP`/`SIGQUIT`/`SIGUSR2`
+  (also while it is stopping it). `health` must be an `http(s)` URL. A command that exits early,
+  a health URL that never answers, or an address where something already listens before the
+  start (someone else owns it, however slowly it answers) ends with exit `2` and a sentence (the
+  server's last output, where there is one). Two runs starting the same port at the same moment
+  are not told apart.
   Nothing is stopped by name or port. `--baseline-url` stays yours to serve.
 
 ## Agent loop (short)

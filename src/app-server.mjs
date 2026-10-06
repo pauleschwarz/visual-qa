@@ -2,12 +2,15 @@
 // Only the process group visual-qa spawned is ever signalled — never a match by name or port.
 
 import { spawn, spawnSync } from "node:child_process";
+import net from "node:net";
 
 export const DEFAULT_STARTUP_TIMEOUT_MS = 60_000;
 const POLL_MS = 250;
 const GRACE_MS = 3_000;
 const TAIL_CHARS = 2_000;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+// Every signal whose default is to end visual-qa on the spot; each one takes the server down first.
+const STOP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT", "SIGUSR2"];
 
 /**
  * Signal the whole group the shell started (npm → node …). A group that is gone is fine; macOS
@@ -32,13 +35,43 @@ async function ask(health) {
   }
 }
 
+/** Host and port an http(s) health URL points at (http 80, https 443), or null for anything else. */
+export function healthEndpoint(health) {
+  try {
+    const url = new URL(health);
+    if (!/^https?:$/.test(url.protocol)) return null;
+    return { host: url.hostname.replace(/^\[|\]$/g, ""), port: Number(url.port) || (url.protocol === "https:" ? 443 : 80) };
+  } catch {
+    return null;
+  }
+}
+
+/** True when something takes a TCP connection at `endpoint` — however long it would take to answer HTTP. */
+function listening(endpoint) {
+  return new Promise((done) => {
+    const socket = net.connect({ ...endpoint, signal: AbortSignal.timeout(1_000) });
+    socket.once("connect", () => {
+      socket.destroy();
+      done(true);
+    });
+    socket.once("error", () => done(false));
+  });
+}
+
 async function waitForHealth(health, state, timeoutMs, output) {
   const deadline = Date.now() + timeoutMs;
   const tail = () => (output.text.trim() ? `\n--- server output (tail) ---\n${output.text.trim()}` : "");
-  for (;;) {
+  const stillAlive = () => {
     if (state.failed) throw new Error(`server could not start: ${state.failed.message}${tail()}`);
     if (state.exited) throw new Error(`server exited (${state.exited}) before ${health} answered${tail()}`);
-    if ((await ask(health))?.ok) return;
+  };
+  for (;;) {
+    stillAlive();
+    // An answer from an address whose own server is already gone is someone else's answer.
+    if ((await ask(health))?.ok) {
+      stillAlive();
+      return;
+    }
     if (Date.now() >= deadline)
       throw new Error(`${health} did not answer within ${Math.round(timeoutMs / 1000)}s${tail()}`);
     await sleep(POLL_MS);
@@ -47,15 +80,17 @@ async function waitForHealth(health, state, timeoutMs, output) {
 
 /**
  * Run `fn` while `server.command` serves `server.health`. The server is stopped when `fn`
- * returns, throws, the health wait fails, or visual-qa itself gets SIGINT/SIGTERM/SIGHUP —
- * also while it is being stopped. An address that answers before the start belongs to someone
- * else: refused, never run against.
+ * returns, throws, the health wait fails, or visual-qa itself gets one of STOP_SIGNALS —
+ * also while it is being stopped. An address where something already listens before the start
+ * belongs to someone else, even one that answers slowly: refused, never run against.
  */
 export async function withAppServer(server, fn, { cwd = process.cwd(), env = process.env } = {}) {
   const timeoutMs = server.startup_timeout_ms ?? DEFAULT_STARTUP_TIMEOUT_MS;
-  if (await ask(server.health))
+  const endpoint = healthEndpoint(server.health);
+  if (!endpoint) throw new Error(`health "${server.health}" is no http(s) URL`);
+  if (await listening(endpoint))
     throw new Error(
-      `${server.health} already answers before the server started: another process owns that address (stop it, or change the port in server.command and server.health)`,
+      `${server.health} is taken before the server started: another process listens on that address (stop it, or change the port in server.command and server.health)`,
     );
   const output = { text: "" };
   const child = spawn(server.command, {
@@ -82,7 +117,7 @@ export async function withAppServer(server, fn, { cwd = process.cwd(), env = pro
     });
 
   const killNow = () => signalGroup(child.pid, "SIGKILL");
-  const handlers = ["SIGINT", "SIGTERM", "SIGHUP"].map((signal) => {
+  const handlers = STOP_SIGNALS.map((signal) => {
     const handler = () => {
       release();
       killNow();

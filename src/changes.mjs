@@ -162,9 +162,129 @@ export function collectGitState(cwd, { base, candidates, exclude = [] } = {}) {
 const SOURCE_FILE = /\.(tsx?|jsx?|mjs|cjs|mts|cts|vue|svelte|css|scss|sass|less)$/i;
 const stripExt = (path) => path.replace(SOURCE_FILE, "");
 
-/** Comments out, strings kept (`"http://x"`, `"/*"`): a commented-out import is none, a comment inside one is no reason to miss it. */
-const COMMENTS = /("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`)|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
-const withoutComments = (text) => text.replace(COMMENTS, (_, kept) => kept ?? " ");
+// A small scanner, not a parser: strings, template literals, regex literals, JSX text and comments.
+// Where it cannot tell, it keeps the text — an extra import costs a route too many, a lost one a route unchecked.
+const TAG = /<(?:[A-Za-z][\w.:-]*(?=[\s>])|>)/y;
+const WORD = /[\w$]+/y;
+/** A `/` after one of these tokens starts a regex literal; after anything else it divides. */
+const REGEX_AFTER = new Set([
+  ...[..."(,=:[!&|?{};+-*%<>~^"],
+  ...["return", "typeof", "case", "do", "else", "in", "of", "void", "delete", "throw", "new", "yield", "await"],
+]);
+
+/** The text with its comments replaced by a space; strings, regexes, templates and JSX text stay as written. */
+function withoutComments(text) {
+  let out = "";
+  let mark = 0; // everything before it is in `out`
+  let i = 0;
+  let last = ""; // the last token of code: a word or one punctuation character
+  const lastClose = text.lastIndexOf("*/");
+  const at = (token) => text.startsWith(token, i);
+  const valueNext = () => last === "" || REGEX_AFTER.has(last);
+  const tagAt = () => {
+    TAG.lastIndex = i;
+    return TAG.test(text);
+  };
+
+  const quoted = (quote, multiline) => {
+    for (i++; i < text.length && text[i] !== quote; i++) {
+      if (text[i] === "\\") i++;
+      else if (!multiline && text[i] === "\n") return; // unterminated: the line ends it
+    }
+    i++;
+  };
+  const regexEnd = () => {
+    let inClass = false;
+    for (let j = i + 1; j < text.length && text[j] !== "\n"; j++) {
+      if (text[j] === "\\") j++;
+      else if (text[j] === "[") inClass = true;
+      else if (text[j] === "]") inClass = false;
+      else if (text[j] === "/" && !inClass) return j + 1;
+    }
+    return -1;
+  };
+  const template = () => {
+    for (i++; i < text.length && text[i] !== "`"; ) {
+      if (text[i] === "\\") i += 2;
+      else if (at("${")) {
+        i += 2;
+        code(true);
+      } else i++;
+    }
+    i++;
+  };
+  const children = () => {
+    while (i < text.length) {
+      if (text[i] === "{") {
+        i++;
+        code(true);
+      } else if (at("</")) {
+        const close = text.indexOf(">", i);
+        i = close < 0 ? text.length : close + 1;
+        return;
+      } else if (tagAt()) element();
+      else i++;
+    }
+  };
+  const element = () => {
+    i++;
+    let selfClosing = false;
+    while (i < text.length) {
+      if (text[i] === '"' || text[i] === "'") quoted(text[i], true);
+      else if (text[i] === "{") {
+        i++;
+        code(true);
+      } else if (text[i++] === ">") {
+        selfClosing = text[i - 2] === "/";
+        break;
+      }
+    }
+    if (!selfClosing) children();
+  };
+  const comment = (end) => {
+    out += `${text.slice(mark, i)} `;
+    i = mark = end;
+  };
+  /** Code up to the `}` that closes the `{` or `${` the caller opened (or to the end of the text). */
+  function code(inBraces) {
+    let depth = 0;
+    while (i < text.length) {
+      const c = text[i];
+      if (at("//")) {
+        const lineEnd = text.indexOf("\n", i);
+        comment(lineEnd < 0 ? text.length : lineEnd);
+      } else if (at("/*") && lastClose >= i + 2) comment(text.indexOf("*/", i + 2) + 2);
+      else if (c === '"' || c === "'") {
+        quoted(c, false);
+        last = c;
+      } else if (c === "`") {
+        template();
+        last = c;
+      } else if (c === "/") {
+        const end = valueNext() ? regexEnd() : -1;
+        i = end < 0 ? i + 1 : end;
+      } else if (c === "<" && valueNext() && tagAt()) element();
+      else if (c === "}" && inBraces && depth === 0) {
+        i++;
+        return;
+      } else {
+        WORD.lastIndex = i;
+        const word = WORD.exec(text)?.[0];
+        if (word) {
+          last = word;
+          i += word.length;
+        } else {
+          if (c === "{") depth++;
+          if (c === "}") depth--;
+          if (!/\s/.test(c)) last = c;
+          i++;
+        }
+      }
+    }
+  }
+  code(false);
+  return out + text.slice(mark);
+}
 
 /**
  * Runtime import specifiers of a module: static imports and re-exports, side-effect imports,
@@ -180,7 +300,8 @@ export function importSpecifiers(source) {
   ))
     if (!m[1]) specs.push(m[2]);
   for (const m of text.matchAll(/\b(?:import|require)\s*\(\s*["']([^"']+)["']/g)) specs.push(m[1]);
-  for (const m of text.matchAll(/@(?:import|use|forward)\s+(?:url\(\s*)?(["']?)([^"')\s;]+)\1/g)) specs.push(m[2]);
+  for (const m of text.matchAll(/@(?:import|use|forward)\s+(?:url\(\s*)?(?:"([^"]+)"|'([^']+)'|([^)\s]+))/g))
+    specs.push(m[1] ?? m[2] ?? m[3]);
   return [...new Set(specs)];
 }
 
@@ -280,7 +401,10 @@ export function resolveRoutesFromMap(
     else if (typeof mapping === "string") (routes[mapping] ??= []).push(reason);
   };
 
+  const climbed = new Set();
   const climb = (origin) => {
+    if (climbed.has(origin)) return; // two IMPORTERS entries on one file: one climb, named once
+    climbed.add(origin);
     const seen = new Set([origin]);
     let frontier = [{ file: origin, chain: [] }];
     let reached = false;

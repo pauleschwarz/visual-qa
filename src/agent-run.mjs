@@ -4,7 +4,7 @@
 import { realpathSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
-import { withAppServer } from "./app-server.mjs";
+import { healthEndpoint, withAppServer } from "./app-server.mjs";
 import { captureBaselines } from "./baseline.mjs";
 import {
   collectGitState,
@@ -172,7 +172,7 @@ function setServer(block, result) {
   const text = (value) => (typeof value === "string" && value.trim() ? value : null);
   if (!text(block.command) || !text(block.health))
     throw new Error(".visual-qa.yml: server needs both command and health");
-  if (!/^https?:\/\/[^\s/]+/i.test(block.health.trim()))
+  if (!healthEndpoint(block.health))
     throw new Error(
       `.visual-qa.yml: server.health must be an http(s) URL such as http://localhost:5173/ (got "${block.health}")`,
     );
