@@ -393,12 +393,12 @@ visual-qa geometry --url http://127.0.0.1:3000 --route /settings --selector stab
 | Check | Finds | Measure |
 | --- | --- | --- |
 | `first-view` | an element matching `--selector first-view=CSS` that does not end above the fold (also: matches nothing, or nothing visible) | px below the fold |
-| `covered` | a fixed or sticky element over content that no scrolling clears (the browser's centred scroll-into-view is clamped at the page ends and never passes a side rail), or over a control once the browser has scrolled it into view as it does on focus (`scroll-padding` fixes the second). A bar over content that scrolls out from under it is not a finding; an open modal is skipped | % of the element under the bar |
-| `stable` | elements that move between two states of one page: `--selector stable=CSS` clicks that element (`stable=hover:CSS` hovers it) and compares every visible box before and after; the trigger, its parents and children do not count, only the topmost mover is reported | px moved |
+| `covered` | a fixed or sticky element over content that no scrolling clears (the browser's centred scroll-into-view is clamped at the page ends and never passes a side rail), or over a control once the browser has scrolled it into view as it does on focus (`scroll-padding` fixes the second). A bar over content that scrolls out from under it is not a finding; an open modal is skipped. It scrolls to every content element, so a page with more than 10000 of them is not measured to the end: the run is blocked and says so (see "Result") | % of the element under the bar |
+| `stable` | elements that move between two states of one page: `--selector stable=CSS` clicks that element (`stable=hover:CSS` hovers it) and compares every visible box before and after; the trigger, its parents and children do not count, only the topmost mover is reported. A trigger that navigates away or reloads the page leaves nothing to compare with: that is an error, not "nothing moved" | px moved |
 | `edges` | stacked blocks whose left edges (and, when both have a background or border, right edges) are 1–4 px apart: nearly flush, not flush. Centred parents are skipped | px |
 | `text-fit` | text cut off by its box (`overflow:hidden`), an ellipsis or line clamp without `title`/`aria-label`, text sticking out of its box | px cut / out |
-| `row-align` | texts of sibling boxes on one line closer than `--min-gap` (default 6 px; overlap is `high`), and equally sized texts on one line whose baselines are 1 px or more apart (under 2 px is `low`). Words inside one sentence (inline elements) are not boxes of a row | px gap / px off |
-| `tap-size` | tap area below 44 px in either direction, and tap areas of two controls that overlap. The area is measured with `elementFromPoint` (box, label and `::after` reach count); a link inside a sentence is exempt. Only at widths up to `--touch-max` (default 820); the report says how often it ran | px, smaller side |
+| `row-align` | texts of sibling boxes on one line closer than `--min-gap` (default 6 px; overlap is `high`), and equally sized texts on one line whose baselines are 1 px or more apart (under 2 px is `low`). Words inside one sentence (inline elements) are not boxes of a row, a table row is not one either (its cells are), and a cell that spans rows is not compared for its baseline. Baselines are compared between boxes of the same number of lines: a cell centred in its row beside a taller one is placed so, not misaligned | px gap / px off |
+| `tap-size` | tap area below 44 px in either direction, and tap areas of two controls that overlap. The area is measured with `elementFromPoint` (box, label and `::after` reach count); a link inside a sentence is exempt, also when it sits in an `<em>`, `<sup>` or the like (the text of its nearest block counts). Overlap is compared at one scroll position, between controls that scroll together (the same page, the same fixed sheet, the same scroller). Only at widths up to `--touch-max` (default 820); the report says how often it ran | px, smaller side |
 
 `first-view` and `stable` need to be told where to look and run only when their `--selector` is given;
 `--checks a,b` narrows the set (a check that lacks its selector is a call error).
@@ -408,6 +408,8 @@ and `--viewport name=WxH` (repeatable) add up; with neither, mobile 390×844 and
 viewport opens a new page, so the page is what a visitor gets at that width. A finding that exists at 320–440 px is one
 finding with that range and its worst width, not one per width. Images are taken at the worst width, the worst of each kind first,
 at most 40; the rest is in `report.json`. A sweep of 29 widths on the bundled demo takes about 30 s.
+The sweep is a sample: a defect that exists only in a range narrower than STEP (363–381 px at step 40) can fall between two widths.
+Name such a width with `--viewport`, or use a smaller step.
 
 **States.** `--state NAME` (repeatable, `.visual-qa.yml` or `--config FILE`, see "States, sign-in and journeys")
 measures the page a state's setup leaves instead of `--route`; routes are visited as an anonymous visitor.
@@ -416,11 +418,17 @@ measures the page a state's setup leaves instead of `--route`; routes are visite
 `selector`, `route`, `state`, `viewports`, `widths`, `measure`, `worst`, `image`) and `images/`. A finding's selector is a short
 CSS path (an id, `data-testid` or tag and classes with `:nth-of-type`). Exit `0` nothing found, `1` findings, `2` not
 everything could be measured: a call error, unreachable server, a page that does not load (HTTP ≥ 400 included), a trigger that
-matches nothing. Such a run lists its errors in the report and is never `PASS`.
+matches nothing or replaces the page, a page with more content than `covered` walks. Such a run lists its errors in the report and is never `PASS`.
+
+Nothing is cut silently. Of each kind of finding, the worst 100 per page are kept (the smallest gap or tap area, the largest of every other number);
+what is left out is counted in `truncated` (`report.json`) and listed under "Cut short" in `report.md`. A cut that leaves part
+of the page unmeasured (`cut: "targets"`) blocks the run and the check counts as not run in `coverage`; a cut list of findings
+(`cut: "findings"`) is still a failing run. A finding with a box below the 2400 px a picture shows names the box's position in
+`image_note`.
 
 **What it is not.** Findings are measurements of a rendering, not verdicts on design: a deliberate overlay, a tooltip that opens in the
 flow, an indent of 3 px on purpose are all findings; look at the image. On a real page expect many small findings (tap targets of
-every inline link in a table); the report lists the worst ten of each kind and keeps all of them in `report.json`.
+every inline link in a table); the report lists the worst ten of each kind and keeps the worst 100 of each kind in `report.json`.
 
 **In `run`/`explore`:** `--geometry` adds the checks that need no input (`covered`, `edges`, `text-fit`, `row-align`, `tap-size`)
 to every scanned state at its viewport, as `vqa-geometry` issues. Off by default; `--state` captures are not part of it, use

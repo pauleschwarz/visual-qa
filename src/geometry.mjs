@@ -35,11 +35,19 @@ export const DEFAULTS = {
   tapMin: 44,
   /** stable: an element that moves by more than this (px) between two states is a finding */
   moveTol: 1,
+  /** per check and kind, the worst this many findings of one page are kept; the report says how many were found */
+  maxPerKind: 100,
+  /** covered scrolls to every content element (and a third as many controls); a page with more is not measured to the end and blocks */
+  coveredMax: 10000,
 };
 const MAX_IMAGES = 40;
 const MAX_ROWS = 10;
 const IMAGE_FILE = /^\d{2,}-[a-z-]+-.*\.png$/;
 const SEVERITY_RANK = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
+/** Kinds whose number shrinks as the defect grows: a gap, a tap area. For every other kind the larger number is the worse one. */
+const SMALLER_IS_WORSE = new Set(["gap", "small"]);
+/** Is hit `a` worse than hit `b`? Both of one kind: the number, in the direction of that kind (severity follows it). */
+const worseThan = (a, b) => (SMALLER_IS_WORSE.has(a.kind) ? a.value < b.value : a.value > b.value);
 
 // ---------------------------------------------------------------- options
 
@@ -184,6 +192,12 @@ function pageKit() {
     }
     return lines;
   };
+  /** Pages can be bigger than a check is willing to walk: what a check leaves out is recorded, never dropped silently. */
+  const caps = [];
+  const take = (list, limit, label) => {
+    if (list.length > limit) caps.push({ label, seen: list.length, kept: limit });
+    return list.slice(0, limit);
+  };
   const toTop = () => {
     scrollTo(0, 0);
     for (const el of document.querySelectorAll("body, body *")) if (el.scrollTop) el.scrollTop = 0;
@@ -195,7 +209,7 @@ function pageKit() {
       return false;
     }
   };
-  return { round, shown, docRect, selectorOf, snippet, stuck, textLines, toTop, modalOpen };
+  return { round, shown, docRect, selectorOf, snippet, stuck, textLines, toTop, modalOpen, caps, take };
 }
 
 /** first-view: every element matching a selector lies wholly above the fold of this viewport. */
@@ -221,7 +235,7 @@ function inFirstView(kit, { selectors }) {
       });
       continue;
     }
-    for (const el of visible.slice(0, 5)) {
+    for (const el of visible) {
       const r = el.getBoundingClientRect();
       const below = r.bottom - fold;
       if (below > 0.5)
@@ -246,7 +260,7 @@ function inFirstView(kit, { selectors }) {
  * is clamped at the page ends and never gets past a side rail), or over a control once the browser scrolls it into
  * view as it does on focus. A bar over content that scrolls out from under it is not a finding.
  */
-function inCovered(kit) {
+function inCovered(kit, { max }) {
   if (kit.modalOpen()) return []; // a modal covers the page on purpose
   const positioned = [...document.querySelectorAll("body *")].filter((el) => {
     const position = getComputedStyle(el).position;
@@ -255,7 +269,7 @@ function inCovered(kit) {
   if (!positioned.length) return [];
   const content = "h1,h2,h3,h4,p,li,label,img,a[href],button,input:not([type=hidden]),select,textarea,summary,[tabindex]:not([tabindex='-1'])";
   const control = "a[href],button,input:not([type=hidden]),select,textarea,summary,[tabindex]:not([tabindex='-1'])";
-  const targets = [...document.querySelectorAll(content)].filter((el) => kit.shown(el, 4) && !kit.stuck(el)).slice(0, 300);
+  const targets = [...document.querySelectorAll(content)].filter((el) => kit.shown(el, 4) && !kit.stuck(el));
   const worst = new Map();
   const probe = (el, phase) => {
     const r = el.getBoundingClientRect();
@@ -290,11 +304,11 @@ function inCovered(kit) {
         scroll: phase === "focus" ? "nearest" : "center",
       });
   };
-  for (const el of targets) {
+  for (const el of kit.take(targets, max, "content elements")) {
     el.scrollIntoView({ block: "center", inline: "nearest" });
     probe(el, "reveal");
   }
-  for (const el of targets.filter((e) => e.matches(control)).slice(0, 80)) {
+  for (const el of kit.take(targets.filter((e) => e.matches(control)), Math.ceil(max / 3), "controls")) {
     scrollTo(0, 0);
     el.scrollIntoView({ block: "nearest", inline: "nearest" });
     probe(el, "focus");
@@ -305,17 +319,14 @@ function inCovered(kit) {
 
 /** stable, first half: remember where everything is (document coordinates, so scrolling does not matter). */
 function inStableBefore(kit) {
-  const seen = [];
-  for (const el of document.querySelectorAll("body *")) {
-    if (seen.length >= 1500) break;
-    if (kit.shown(el)) seen.push([el, kit.docRect(el)]);
-  }
-  window.__vqaStable = seen;
+  window.__vqaStable = [...document.querySelectorAll("body *")].filter((el) => kit.shown(el)).map((el) => [el, kit.docRect(el)]);
 }
 
 /** stable, second half: who moved? Elements inside or around the trigger do not count. Topmost mover only. */
 function inStableAfter(kit, { trigger, tol }) {
-  const seen = window.__vqaStable ?? [];
+  // No earlier state means the page was replaced (the trigger navigated or reloaded): nothing to compare, and not "nothing moved".
+  if (!window.__vqaStable) throw new Error("the page was replaced after the trigger (it navigated or reloaded): there is no earlier state to compare");
+  const seen = window.__vqaStable;
   delete window.__vqaStable;
   const trig = document.querySelector(trigger);
   const moved = new Map();
@@ -344,7 +355,7 @@ function inStableAfter(kit, { trigger, tol }) {
       scroll: "center",
     });
   }
-  return out.sort((a, b) => b.value - a.value).slice(0, 8);
+  return out;
 }
 
 /** edges: stacked boxes whose left edges (or, for surfaces, right edges) are 1 to 4 px apart: almost flush, but not. */
@@ -383,7 +394,7 @@ function inEdges(kit) {
       });
     }
   }
-  return out.slice(0, 40);
+  return out;
 }
 
 /** text-fit: text cut off by its box, an ellipsis nobody can read in full, text sticking out of its box. */
@@ -391,7 +402,6 @@ function inTextFit(kit) {
   const out = [];
   const ownText = (el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
   for (const el of document.querySelectorAll("body *")) {
-    if (out.length >= 40) break;
     if (["INPUT", "SELECT", "TEXTAREA", "SVG", "SCRIPT", "STYLE", "OPTION"].includes(el.tagName.toUpperCase())) continue;
     if (!ownText(el) || !kit.shown(el, 4)) continue;
     const cs = getComputedStyle(el);
@@ -429,59 +439,72 @@ function inTextFit(kit) {
 /** row-align: texts that sit on one line must keep their distance, and equally sized ones a common baseline. */
 function inRowAlign(kit, { minGap }) {
   const out = [];
+  // A table row is not a box of its own: its cells are, and a cell that spans rows has its text between them.
+  const ROW_PARTS = /^table-(row|row-group|header-group|footer-group|column|column-group)$/;
   for (const parent of document.querySelectorAll("body, body *")) {
     const kids = [...parent.children]
       .filter((el) => {
         if (!kit.shown(el, 2)) return false;
         const cs = getComputedStyle(el);
-        return cs.display !== "inline" && cs.display !== "contents" && cs.position !== "absolute" && cs.position !== "fixed";
+        return cs.display !== "inline" && cs.display !== "contents" && !ROW_PARTS.test(cs.display) && cs.position !== "absolute" && cs.position !== "fixed";
       })
       .map((el) => ({ el, lines: kit.textLines(el) }))
       .filter((k) => k.lines.length);
-    if (kids.length < 2 || kids.length > 24) continue;
-    for (let i = 0; i < kids.length; i += 1) {
-      for (let j = i + 1; j < kids.length; j += 1) {
-        let found = null;
-        for (const a of kids[i].lines.slice(0, 6)) {
-          for (const b of kids[j].lines.slice(0, 6)) {
-            const overlap = Math.min(a.b, b.b) - Math.max(a.t, b.t);
-            if (overlap <= 0.5 * Math.min(a.b - a.t, b.b - b.t)) continue;
-            const [left, right] = a.l <= b.l ? [a, b] : [b, a];
-            const gap = right.l - left.r;
-            if (gap < minGap && (!found || gap < found.gap)) found = { gap, a, b };
-          }
+    if (kids.length < 2) continue;
+    // Only boxes whose texts share some height can be on one line: walk them top to bottom, not every pair of a long list.
+    for (const k of kids) {
+      k.top = Math.min(...k.lines.map((l) => l.t));
+      k.bottom = Math.max(...k.lines.map((l) => l.b));
+    }
+    const byTop = kids.map((_, i) => i).sort((x, y) => kids[x].top - kids[y].top);
+    const pairs = [];
+    for (let p = 0; p < byTop.length; p += 1)
+      for (let q = p + 1; q < byTop.length && kids[byTop[q]].top < kids[byTop[p]].bottom; q += 1)
+        pairs.push([Math.min(byTop[p], byTop[q]), Math.max(byTop[p], byTop[q])]);
+    pairs.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+    for (const [i, j] of pairs) {
+      let found = null;
+      for (const a of kids[i].lines) {
+        for (const b of kids[j].lines) {
+          const overlap = Math.min(a.b, b.b) - Math.max(a.t, b.t);
+          if (overlap <= 0.5 * Math.min(a.b - a.t, b.b - b.t)) continue;
+          const [left, right] = a.l <= b.l ? [a, b] : [b, a];
+          const gap = right.l - left.r;
+          if (gap < minGap && (!found || gap < found.gap)) found = { gap, a, b };
         }
-        const [first, second] = [kids[i], kids[j]];
-        if (found)
-          out.push({
-            kind: "gap",
-            severity: found.gap < 0 ? "high" : "medium",
-            selector: kit.selectorOf(second.el),
-            selector2: kit.selectorOf(first.el),
-            text: kit.snippet(second.el),
-            value: kit.round(found.gap),
-            message: `${found.gap < 0 ? "overlaps" : "is only " + kit.round(found.gap) + " px from"} the text of ${kit.selectorOf(first.el)} on the same line (minimum ${minGap} px)`,
-            scroll: "center",
-          });
-        // Same text size, same line, baselines 1 px or more apart: nearly aligned, not aligned.
-        const [a, b] = [first.lines[0], second.lines[0]];
-        const sameLine = Math.min(a.b, b.b) - Math.max(a.t, b.t) > 0.5 * Math.min(a.b - a.t, b.b - b.t);
-        const off = Math.abs(a.base - b.base);
-        if (sameLine && Math.abs(a.size - b.size) <= 1 && off >= 1 && off <= 0.5 * Math.min(a.b - a.t, b.b - b.t))
-          out.push({
-            kind: "baseline",
-            severity: off < 2 ? "low" : "medium",
-            selector: kit.selectorOf(second.el),
-            selector2: kit.selectorOf(first.el),
-            text: kit.snippet(second.el),
-            value: kit.round(off),
-            message: `baseline ${kit.round(off)} px off the text of ${kit.selectorOf(first.el)} on the same line (same text size)`,
-            scroll: "center",
-          });
       }
+      const [first, second] = [kids[i], kids[j]];
+      if (found)
+        out.push({
+          kind: "gap",
+          severity: found.gap < 0 ? "high" : "medium",
+          selector: kit.selectorOf(second.el),
+          selector2: kit.selectorOf(first.el),
+          text: kit.snippet(second.el),
+          value: kit.round(found.gap),
+          message: `${found.gap < 0 ? "overlaps" : "is only " + kit.round(found.gap) + " px from"} the text of ${kit.selectorOf(first.el)} on the same line (minimum ${minGap} px)`,
+          scroll: "center",
+        });
+      // Same text size, same line, baselines 1 px or more apart: nearly aligned, not aligned. Only boxes of as many lines
+      // as each other are compared: a centred or bottom-aligned neighbour of a taller text is placed so, not misaligned.
+      const [a, b] = [first.lines[0], second.lines[0]];
+      const sameLine = Math.min(a.b, b.b) - Math.max(a.t, b.t) > 0.5 * Math.min(a.b - a.t, b.b - b.t);
+      const off = Math.abs(a.base - b.base);
+      const spans = first.el.rowSpan > 1 || second.el.rowSpan > 1;
+      if (!spans && first.lines.length === second.lines.length && sameLine && Math.abs(a.size - b.size) <= 1 && off >= 1 && off <= 0.5 * Math.min(a.b - a.t, b.b - b.t))
+        out.push({
+          kind: "baseline",
+          severity: off < 2 ? "low" : "medium",
+          selector: kit.selectorOf(second.el),
+          selector2: kit.selectorOf(first.el),
+          text: kit.snippet(second.el),
+          value: kit.round(off),
+          message: `baseline ${kit.round(off)} px off the text of ${kit.selectorOf(first.el)} on the same line (same text size)`,
+          scroll: "center",
+        });
     }
   }
-  return out.slice(0, 40);
+  return out;
 }
 
 /** tap-size: the area that answers a tap (box, label, ::after reach — measured with elementFromPoint) and overlaps between targets. */
@@ -493,9 +516,12 @@ function inTapSize(kit, { min }) {
     ),
   ].filter((el) => {
     if (!kit.shown(el, 2) || el.disabled) return false; // a 1 px clip is a skip link waiting for focus, not a target
-    // A link inside a sentence is exempt (WCAG 2.5.8 inline exception).
+    // A link inside a sentence is exempt (WCAG 2.5.8 inline exception): the text of its nearest block, through
+    // inline wrappers such as <sup> or <em>, is more than the link itself.
     if (el.tagName === "A" && getComputedStyle(el).display === "inline") {
-      const around = (el.parentElement?.textContent ?? "").trim().length - (el.textContent ?? "").trim().length;
+      let block = el.parentElement;
+      while (block && getComputedStyle(block).display === "inline") block = block.parentElement;
+      const around = (block?.textContent ?? "").trim().length - (el.textContent ?? "").trim().length;
       if (around > 12) return false;
     }
     return true;
@@ -509,11 +535,23 @@ function inTapSize(kit, { min }) {
     };
     return { w: walk(-1, 0) + walk(1, 0) + 1, h: walk(0, -1) + walk(0, 1) + 1 };
   };
-  const boxes = [];
-  for (const el of targets.slice(0, 200)) {
+  // Overlap is a question of where boxes are at one scroll position. Every box is taken before the first scroll below, and
+  // only boxes that scroll together are compared: the same fixed sheet, the same scroller. A box in a sheet and one on the
+  // page behind it are not on one surface.
+  const ids = new Map();
+  const idOf = (node) => (node ? ids.get(node) ?? ids.set(node, ids.size + 1).get(node) : 0);
+  const scrollerOf = (el) => {
+    for (let n = el.parentElement; n && n !== document.documentElement; n = n.parentElement)
+      if (/auto|scroll|overlay|hidden|clip/.test(getComputedStyle(n).overflowX + getComputedStyle(n).overflowY)) return n;
+    return null;
+  };
+  const boxes = targets.map((el, order) => {
     const r = el.getBoundingClientRect();
-    let w = r.width;
-    let h = r.height;
+    return { el, order, x: r.left, y: r.top, w: r.width, h: r.height, surface: `${idOf(kit.stuck(el))}|${idOf(scrollerOf(el))}` };
+  });
+  for (const box of boxes) {
+    const { el } = box;
+    let { w, h } = box;
     if (w < min || h < min) {
       el.scrollIntoView({ block: "center", inline: "nearest" });
       const now = el.getBoundingClientRect();
@@ -521,8 +559,6 @@ function inTapSize(kit, { min }) {
       w = Math.max(w, seen.w);
       h = Math.max(h, seen.h);
     }
-    const rect = kit.docRect(el);
-    boxes.push({ el, rect });
     if (w >= min && h >= min) continue;
     const small = Math.min(w, h);
     out.push({
@@ -536,29 +572,34 @@ function inTapSize(kit, { min }) {
       scroll: "center",
     });
   }
-  for (let i = 0; i < boxes.length; i += 1) {
-    for (let j = i + 1; j < boxes.length; j += 1) {
-      const [a, b] = [boxes[i], boxes[j]];
-      if (a.el.contains(b.el) || b.el.contains(a.el)) continue;
-      if ([...(a.el.labels ?? [])].includes(b.el) || [...(b.el.labels ?? [])].includes(a.el)) continue;
-      const ow = Math.min(a.rect.x + a.rect.w, b.rect.x + b.rect.w) - Math.max(a.rect.x, b.rect.x);
-      const oh = Math.min(a.rect.y + a.rect.h, b.rect.y + b.rect.h) - Math.max(a.rect.y, b.rect.y);
-      if (ow < 2 || oh < 2) continue;
-      out.push({
-        kind: "overlap",
-        severity: "high",
-        selector: kit.selectorOf(b.el),
-        selector2: kit.selectorOf(a.el),
-        text: kit.snippet(b.el),
-        value: kit.round(Math.min(ow, oh)),
-        measure: { width: kit.round(ow), height: kit.round(oh) },
-        message: `tap area overlaps ${kit.selectorOf(a.el)} by ${kit.round(ow)} × ${kit.round(oh)} px`,
-        scroll: "center",
-      });
+  const bySurface = new Map();
+  for (const box of boxes) bySurface.set(box.surface, [...(bySurface.get(box.surface) ?? []), box]);
+  for (const surface of bySurface.values()) {
+    surface.sort((p, q) => p.y - q.y);
+    for (let i = 0; i < surface.length; i += 1) {
+      for (let j = i + 1; j < surface.length && surface[j].y < surface[i].y + surface[i].h - 2; j += 1) {
+        const [a, b] = surface[i].order < surface[j].order ? [surface[i], surface[j]] : [surface[j], surface[i]];
+        if (a.el.contains(b.el) || b.el.contains(a.el)) continue;
+        if ([...(a.el.labels ?? [])].includes(b.el) || [...(b.el.labels ?? [])].includes(a.el)) continue;
+        const ow = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+        const oh = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+        if (ow < 2 || oh < 2) continue;
+        out.push({
+          kind: "overlap",
+          severity: "high",
+          selector: kit.selectorOf(b.el),
+          selector2: kit.selectorOf(a.el),
+          text: kit.snippet(b.el),
+          value: kit.round(Math.min(ow, oh)),
+          measure: { width: kit.round(ow), height: kit.round(oh) },
+          message: `tap area overlaps ${kit.selectorOf(a.el)} by ${kit.round(ow)} × ${kit.round(oh)} px`,
+          scroll: "center",
+        });
+      }
     }
   }
   kit.toTop();
-  return out.slice(0, 60);
+  return out;
 }
 
 /** Outline the finding in the page (fixed overlays), scroll as the check did, say which part of the viewport to photograph. */
@@ -594,7 +635,12 @@ function inMark(kit, { selector, selector2, scroll, fold, before }) {
   document.documentElement.append(layer);
   const view = { x: 0, y: 0, width: innerWidth, height: innerHeight };
   // Below the fold: photograph the page down to the box, the fold as a red line.
-  if (fold && rect && rect.bottom > fold) return { clip: { ...view, height: Math.min(Math.ceil(rect.bottom) + 40, 2400) }, full: true };
+  if (fold && rect && rect.bottom > fold) {
+    const end = Math.ceil(rect.bottom) + 40;
+    // The picture stops at 2400 px: say where the box is when it lies below that.
+    const note = end > 2400 ? `the box lies ${kit.round(rect.top + scrollY)}–${kit.round(rect.bottom + scrollY)} px down the page, below the 2400 px this picture shows (the red line is the fold)` : null;
+    return { clip: { ...view, height: Math.min(end, 2400) }, full: true, note };
+  }
   if (fold || rect2 || before || !rect) return { clip: view, full: false };
   const pad = 80;
   const x = Math.max(0, rect.left - pad);
@@ -623,9 +669,28 @@ const IN_PAGE = {
   "tap-size": inTapSize,
 };
 
-/** Run a page-side function with the kit and a JSON argument. Sent as text, so a page's CSP cannot block it. */
+/**
+ * Run a page-side function with the kit and a JSON argument. Sent as text, so a page's CSP cannot block it.
+ * Answers { value, caps }: what the function returned, and what it left out because the page was bigger than it walks.
+ */
 function measure(page, fn, arg = null) {
-  return page.evaluate(`(() => { const kit = (${pageKit})(); return (${fn})(kit, ${JSON.stringify(arg)}); })()`);
+  return page.evaluate(`(() => { const kit = (${pageKit})(); const value = (${fn})(kit, ${JSON.stringify(arg)}); return { value, caps: kit.caps }; })()`);
+}
+
+/** Keep the worst `perKind` hits of each kind; what is left out is named, so a long list never reads as the whole list. */
+function keepWorst(check, hits, perKind) {
+  const byKind = new Map();
+  for (const hit of hits) byKind.set(hit.kind, [...(byKind.get(hit.kind) ?? []), hit]);
+  const kept = [];
+  const truncated = [];
+  for (const [kind, list] of byKind) {
+    if (list.length > perKind) {
+      list.sort((a, b) => (worseThan(a, b) ? -1 : worseThan(b, a) ? 1 : 0));
+      truncated.push({ check, cut: "findings", label: kind, seen: list.length, kept: perKind });
+    }
+    kept.push(...list.slice(0, perKind));
+  }
+  return { hits: kept, truncated };
 }
 
 // ---------------------------------------------------------------- one page, one width
@@ -635,6 +700,7 @@ const clipOf = (box) => ({ x: Math.max(0, box.x), y: Math.max(0, box.y), width: 
 /** Arguments of each check from the options. */
 function argsFor(check, options) {
   if (check === "first-view") return { selectors: options.selectors["first-view"] ?? [] };
+  if (check === "covered") return { max: options.coveredMax };
   if (check === "row-align") return { minGap: options.minGap };
   if (check === "tap-size") return { min: options.tapMin };
   return null;
@@ -651,18 +717,22 @@ export async function runGeometryChecks(page, options = {}) {
   const hits = [];
   const errors = [];
   const skipped = [];
+  const truncated = [];
   for (const check of checks) {
     if (check === "tap-size" && width > opts.touchMax) {
       skipped.push({ check, reason: `viewport ${width} px is wider than --touch-max ${opts.touchMax} px` });
       continue;
     }
     try {
-      for (const hit of await measure(page, IN_PAGE[check], argsFor(check, opts))) hits.push({ check, ...hit });
+      const { value, caps } = await measure(page, IN_PAGE[check], argsFor(check, opts));
+      const kept = keepWorst(check, value, opts.maxPerKind);
+      for (const hit of kept.hits) hits.push({ check, ...hit });
+      truncated.push(...kept.truncated, ...caps.map((cap) => ({ check, cut: "targets", ...cap })));
     } catch (error) {
       errors.push({ check, message: `check failed: ${String(error?.message ?? error).split("\n")[0]}` });
     }
   }
-  return { hits, errors, skipped };
+  return { hits, errors, skipped, truncated };
 }
 
 /** Findings of runGeometryChecks as the issues the other checks produce (explore --geometry). */
@@ -678,15 +748,24 @@ export function geometryIssues(hits, { viewport = null } = {}) {
   );
 }
 
+/** One line for a cut: what a check did not look at, or which findings the report does not carry. */
+const describeCut = (t) =>
+  t.cut === "targets"
+    ? `${t.check} measured ${t.kept} of ${t.seen} ${t.label}; the rest was not measured`
+    : `${t.check}/${t.label}: the worst ${t.kept} of ${t.seen} are kept, the rest are not in the report`;
+
 /**
  * The explore hook (--geometry): the checks that need no input, on the page as it is, as issues. A check that could not
- * run is an issue too: silence would read as clean.
+ * run, or only ran over part of the page, is an issue too: silence would read as clean.
  */
 export async function geometryFindings(page, viewport) {
-  const { hits, errors } = await runGeometryChecks(page);
+  const { hits, errors, truncated } = await runGeometryChecks(page);
   return [
     ...geometryIssues(hits, { viewport }),
     ...errors.map((e) => issue("geometry", `Geometry check ${e.check} unavailable`, "medium", e.message, { check: e.check, viewport })),
+    ...truncated.map((t) =>
+      issue("geometry", `Geometry check ${t.check}${t.cut === "findings" ? `/${t.label}` : ""} cut short`, t.cut === "targets" ? "medium" : "low", describeCut(t), { check: t.check, viewport }),
+    ),
   ];
 }
 
@@ -741,13 +820,16 @@ function parseTrigger(text) {
 
 async function runStable(page, trigger, tol) {
   const { how, css } = parseTrigger(trigger);
-  await measure(page, inStableBefore);
   const locator = page.locator(css).first();
   if (!(await locator.count())) throw new Error(`stable trigger "${css}" matches nothing`);
+  // The browser scrolls the trigger into view before it clicks or hovers, and a scroller scrolled moves what is in it:
+  // do that first, so only what the trigger itself changes is compared.
+  await locator.scrollIntoViewIfNeeded({ timeout: 5_000 });
+  await measure(page, inStableBefore);
   await locator[how === "hover" ? "hover" : "click"]({ timeout: 5_000 });
   await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
   await page.waitForTimeout(150);
-  return measure(page, inStableAfter, { trigger: css, tol });
+  return (await measure(page, inStableAfter, { trigger: css, tol })).value;
 }
 
 /**
@@ -786,6 +868,7 @@ export async function geometry(options = {}) {
   const groups = new Map();
   const errors = [];
   const warnings = [];
+  const cuts = new Map();
   const coverage = Object.fromEntries(checks.map((check) => [check, { ran: 0, of: 0 }]));
   const loaded = new Set();
   const started = Date.now();
@@ -806,10 +889,12 @@ export async function geometry(options = {}) {
           const run = await runGeometryChecks(page, { ...opts, checks });
           for (const check of checks.filter((c) => c !== "stable")) {
             coverage[check].of += 1;
-            if (!run.skipped.some((s) => s.check === check) && !run.errors.some((e) => e.check === check)) coverage[check].ran += 1;
+            const whole = !run.truncated.some((t) => t.check === check && t.cut === "targets");
+            if (whole && !run.skipped.some((s) => s.check === check) && !run.errors.some((e) => e.check === check)) coverage[check].ran += 1;
           }
           for (const e of run.errors) errors.push({ ...where, ...e });
           for (const hit of run.hits) collect(groups, hit, target, viewport);
+          noteCuts(cuts, run.truncated, target, viewport);
         } finally {
           await context.close().catch(() => {});
         }
@@ -819,8 +904,9 @@ export async function geometry(options = {}) {
             let again;
             try {
               again = await openPage(browser, { ...open, viewport, target });
-              for (const hit of await runStable(again.page, trigger, opts.moveTol))
-                collect(groups, { check: "stable", trigger, ...hit }, target, viewport);
+              const kept = keepWorst("stable", await runStable(again.page, trigger, opts.moveTol), opts.maxPerKind);
+              for (const hit of kept.hits) collect(groups, { check: "stable", trigger, ...hit }, target, viewport);
+              noteCuts(cuts, kept.truncated, target, viewport);
               coverage.stable.ran += 1;
             } catch (error) {
               errors.push({ ...where, check: "stable", message: `stable ${trigger}: ${firstLine(error)}` });
@@ -834,7 +920,7 @@ export async function geometry(options = {}) {
     const findings = finish(groups, opts.sweep?.step ?? 0);
     await photograph(browser, { findings, open, outDir, warnings });
     return await write({
-      baseUrl, outDir, checks, viewports, targets, findings, errors, warnings, coverage, loaded: loaded.size,
+      baseUrl, outDir, checks, viewports, targets, findings, errors, warnings, coverage, truncated: [...cuts.values()], loaded: loaded.size,
       seconds: Math.round((Date.now() - started) / 100) / 10, opts,
     });
   } finally {
@@ -846,12 +932,20 @@ export async function geometry(options = {}) {
 function collect(groups, hit, target, viewport) {
   const key = [hit.check, hit.kind, target.id, hit.selector, hit.selector2 ?? ""].join("|");
   const group = groups.get(key) ?? { hit, target, widths: [], worst: null };
-  const entry = { viewport, hit };
   group.widths.push(viewport);
-  // Worst = the largest number, except for gaps and first-view where only the sign/size of the miss matters: smallest gap is worst.
-  const worse = !group.worst || (hit.kind === "gap" ? hit.value < group.worst.hit.value : hit.value > group.worst.hit.value);
-  if (worse) group.worst = entry;
+  if (!group.worst || worseThan(hit, group.worst.hit)) group.worst = { viewport, hit };
   groups.set(key, group);
+}
+
+/** Collect what a page's checks cut short, one line per check and thing, with the biggest page seen and where. */
+function noteCuts(cuts, truncated, target, viewport) {
+  for (const t of truncated) {
+    const key = [t.check, t.cut, t.label, target.id].join("|");
+    const old = cuts.get(key) ?? { ...t, route: target.route, state: target.state, viewports: [] };
+    old.seen = Math.max(old.seen, t.seen);
+    old.viewports.push(viewport.name);
+    cuts.set(key, old);
+  }
 }
 
 function finish(groups, step) {
@@ -923,9 +1017,10 @@ async function photograph(browser, { findings, open, outDir, warnings }) {
         const name = `${String(index).padStart(2, "0")}-${safeName(finding.check)}-${safeName(finding.selector).slice(-40)}-${safeName(viewport.name)}.png`;
         const path = join(outDir, "images", name);
         try {
-          const { clip, full } = await measure(opened.page, inMark, finding._mark);
+          const { clip, full, note } = (await measure(opened.page, inMark, finding._mark)).value;
           await opened.page.screenshot({ path, clip: clipOf(clip), fullPage: full, animations: "disabled" });
           finding.image = relative(outDir, path).split(sep).join("/");
+          if (note) finding.image_note = note;
         } catch (error) {
           warnings.push(`no image for ${finding.check} ${finding.selector}: ${firstLine(error)}`);
         } finally {
@@ -972,20 +1067,27 @@ function renderReport(r) {
     if (hidden.length) lines.push("", `Not listed here, all in report.json: ${hidden.join(", ")}.`);
     lines.push("", "## Details", "");
     for (const { f, n } of shown)
-      lines.push(`${n}. **${f.check}** (${f.kind}) \`${f.selector}\`${f.text ? ` «${f.text}»` : ""} — ${f.message}. Worst at ${f.worst.width} × ${f.worst.height}; found at ${f.widths}.${f.trigger ? ` Trigger \`${f.trigger}\`.` : ""}`);
+      lines.push(`${n}. **${f.check}** (${f.kind}) \`${f.selector}\`${f.text ? ` «${f.text}»` : ""} — ${f.message}. Worst at ${f.worst.width} × ${f.worst.height}; found at ${f.widths}.${f.trigger ? ` Trigger \`${f.trigger}\`.` : ""}${f.image_note ? ` Picture: ${f.image_note}.` : ""}`);
     lines.push("");
   }
   const ranNote = Object.entries(r.coverage).filter(([, c]) => c.ran < c.of).map(([name, c]) => `${name} ran ${c.ran} of ${c.of} times`);
   if (ranNote.length) lines.push("## Coverage", "", ...ranNote.map((n) => `- ${n}`), "");
+  if (r.truncated.length)
+    lines.push(
+      "## Cut short",
+      "",
+      ...r.truncated.map((t) => `- ${describeCut(t)} (${t.state ?? t.route}, ${t.viewports.length === 1 ? t.viewports[0] : `${t.viewports.length} viewports`}${t.cut === "targets" ? ", run is BLOCKED" : ""})`),
+      "",
+    );
   if (r.errors.length) lines.push("## Errors", "", ...r.errors.map((e) => `- ${[e.route, e.viewport, e.check].filter(Boolean).join(" · ")}${e.message ? `: ${e.message}` : ""}`), "");
   if (r.warnings.length) lines.push("## Notes", "", ...r.warnings.map((w) => `- ${w}`), "");
   if (r.ok) lines.push("No finding.", "");
   return lines.join("\n");
 }
 
-async function write({ baseUrl, outDir, checks, viewports, targets, findings, errors, warnings, coverage, loaded, seconds, opts }) {
-  // Not measured is not clean: a page that did not load, or a check that failed, blocks a PASS.
-  const blocked = errors.length > 0 || loaded === 0;
+async function write({ baseUrl, outDir, checks, viewports, targets, findings, errors, warnings, coverage, truncated, loaded, seconds, opts }) {
+  // Not measured is not clean: a page that did not load, a check that failed, or a page too big to walk to the end blocks a PASS.
+  const blocked = errors.length > 0 || loaded === 0 || truncated.some((t) => t.cut === "targets");
   const result = {
     schema_version: GEOMETRY_SCHEMA,
     ok: !findings.length && !blocked,
@@ -998,6 +1100,7 @@ async function write({ baseUrl, outDir, checks, viewports, targets, findings, er
     findings,
     errors,
     warnings,
+    truncated,
     coverage,
     seconds,
   };

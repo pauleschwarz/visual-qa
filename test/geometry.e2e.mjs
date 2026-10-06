@@ -11,7 +11,8 @@ import { PNG } from "pngjs";
 import { startGeometryApp } from "../fixture/geometry-app.mjs";
 import { DEMO_HTML } from "../src/demo-html.mjs";
 import { explore } from "../src/explore.mjs";
-import { geometry, parseSweep } from "../src/geometry.mjs";
+import { chromium } from "playwright";
+import { geometry, geometryExitCode, geometryFindings, parseSweep } from "../src/geometry.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const app = await startGeometryApp();
@@ -397,4 +398,173 @@ test("explore --geometry adds the geometry findings to a state's issues; without
   // Everything else the run reports is the same.
   const other = (r) => r.issues.filter((i) => i.type !== "vqa-geometry").map((i) => i.issue_id).sort();
   assert.deepEqual(other(withGeometry), other(without));
+});
+
+// ---------------------------------------------------------------- what a page can do to a check: scroll, size, navigate
+
+test("tap-size: buttons 40 px apart in a scrolling fixed sheet never overlap, nor do they overlap the page links under the sheet; the two links in it that do are found, once", async () => {
+  const result = await run("/tap-size-sheet", ["tap-size"], { viewports: [PHONE] });
+  const overlaps = result.findings.filter((f) => f.kind === "overlap");
+  assert.deepEqual(overlaps.map((f) => [f.selector, f.selector2, f.measure.width, f.measure.height]), [["#two", "#one", 160, 20]]);
+  const small = result.findings.filter((f) => f.kind === "small");
+  assert.equal(small.length, 12);
+  assert.ok(small.every((f) => f.severity === "high" && f.measure.value === 20), "a 20 px button is high, below 24 px");
+});
+
+test("tap-size: the rows of a list that scrolls in a box do not overlap the page links below the box", async () => {
+  const result = await run("/tap-size-list", ["tap-size"], { viewports: [PHONE] });
+  assert.deepEqual([result.findings, result.errors], [[], []]);
+});
+
+test("tap-size: a 20 px button after 250 big links is measured; covered: a link after 400 paragraphs is found under the bar", async () => {
+  const late = await run("/tap-size-late", ["tap-size"], { viewports: [PHONE] });
+  assert.deepEqual(late.findings.map((f) => [f.selector, f.kind, f.measure.value]), [["#late", "small", 20]]);
+  const long = await run("/covered-long", ["covered"], { viewports: [PHONE] });
+  assert.equal(bySelector(long, "#last")?.kind, "covers-content");
+  assert.deepEqual([long.truncated, long.blocked], [[], false]);
+});
+
+test("covered: a page with more content than coveredMax is not measured to the end — blocked, named in the report, never clean", async () => {
+  const cut = await run("/covered-long", ["covered"], { viewports: [PHONE, DESKTOP], coveredMax: 100 });
+  assert.equal(cut.blocked, true);
+  assert.equal(cut.ok, false);
+  assert.equal(geometryExitCode(cut), 2);
+  assert.equal(cut.truncated.length, 1, "one line for the page, not one per width");
+  const [note] = cut.truncated;
+  assert.deepEqual([note.check, note.cut, note.label, note.kept, note.viewports], ["covered", "targets", "content elements", 100, ["phone", "desktop"]]);
+  assert.ok(note.seen > 400);
+  assert.deepEqual(cut.coverage.covered, { ran: 0, of: 2 });
+  assert.match(cut.report, /\*\*BLOCKED\*\*/);
+  assert.match(cut.report, /## Cut short\n\n- covered measured 100 of \d+ content elements; the rest was not measured \(\/covered-long, 2 viewports, run is BLOCKED\)/);
+  const json = JSON.parse(await readFile(join(cut.outDir, "report.json"), "utf8"));
+  assert.deepEqual(json.truncated.map((t) => [t.check, t.cut, t.kept]), [["covered", "targets", 100]]);
+});
+
+test("a long list of findings keeps the worst of each kind and says how many there were; the rare kind and the high ones stay", async () => {
+  const result = await run("/tap-size-cap", ["tap-size"], { viewports: [PHONE] });
+  const small = result.findings.filter((f) => f.kind === "small");
+  assert.equal(small.length, 100);
+  assert.equal(small.filter((f) => f.severity === "high").length, 5, "the five 20 px buttons are the worst: they stay");
+  assert.equal(result.findings.filter((f) => f.kind === "overlap").length, 1);
+  assert.deepEqual(result.truncated.map((t) => [t.check, t.cut, t.label, t.seen, t.kept]), [["tap-size", "findings", "small", 115, 100]]);
+  assert.equal(result.blocked, false, "findings cut by kind still are findings: the run fails on them, it is not 'not measured'");
+  assert.equal(result.ok, false);
+  assert.match(result.report, /## Cut short\n\n- tap-size\/small: the worst 100 of 115 are kept, the rest are not in the report \(\/tap-size-cap, phone\)/);
+  assert.equal(result.report.split("\n").filter((l) => /^\| \d+ \|/.test(l)).length, 11, "ten rows of the small ones, one of the overlap");
+  const roomy = await run("/tap-size-cap", ["tap-size"], { viewports: [PHONE], maxPerKind: 200 });
+  assert.deepEqual([roomy.findings.length, roomy.truncated], [116, []]);
+});
+
+test("explore --geometry: a check cut short is an issue of its own, not silence", async () => {
+  const input = { baseUrl: `${app.url}/tap-size-cap`, viewports: [PHONE], bounds: { max_runtime_ms: 60_000 }, geometry: true };
+  const found = (await explore({ ...input, outDir: await tmp("x2") })).issues.filter((i) => i.type === "vqa-geometry");
+  const cut = found.filter((i) => /cut short/.test(i.title));
+  assert.deepEqual(cut.map((i) => [i.title, i.evidence.check, i.severity]), [["Geometry check tap-size/small cut short", "tap-size", "low"]]);
+  assert.match(cut[0].detail, /the worst 100 of 115 are kept/);
+  assert.equal(found.filter((i) => i.evidence.check === "tap-size" && !/cut short/.test(i.title)).length, 101);
+});
+
+test("explore --geometry: a page with more content than covered walks is an issue of its own (medium), the default limit decides", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 700 } });
+    await page.goto(`${app.url}/covered-long`);
+    const walked = await geometryFindings(page, PHONE);
+    assert.ok(walked.some((i) => /#last/.test(i.title)), "the link under the bar is found");
+    assert.ok(!walked.some((i) => /cut short/.test(i.title)), "400 paragraphs are walked");
+    await page.goto(`${app.url}/covered-huge`);
+    const cut = (await geometryFindings(page, PHONE)).filter((i) => /cut short/.test(i.title));
+    assert.deepEqual(cut.map((i) => [i.title, i.severity]), [["Geometry check covered cut short", "medium"]]);
+    assert.match(cut[0].detail, /covered measured 10000 of 10\d\d\d content elements; the rest was not measured/);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("stable: a trigger that navigates away or reloads the page is an error, not 'nothing moved'", async () => {
+  for (const route of ["/stable-nav", "/stable-reload"]) {
+    const result = await run(route, ["stable"], { selectors: { stable: ["#go"] }, viewports: [DESKTOP] });
+    assert.equal(result.blocked, true, route);
+    assert.equal(result.ok, false, route);
+    assert.match(result.errors[0].message, /the page was replaced after the trigger/, route);
+    assert.deepEqual(result.coverage.stable, { ran: 0, of: 1 }, route);
+  }
+});
+
+test("stable: a trigger below the visible part of a scrolling sheet is scrolled into view first — the rows that scrolled are not movers", async () => {
+  const result = await run("/stable-sheet", ["stable"], { selectors: { stable: ["#save"] }, viewports: [PHONE] });
+  assert.deepEqual([result.findings, result.errors], [[], []]);
+});
+
+test("stable: hover and click are two triggers — hovering Save moves nothing, clicking it does", async () => {
+  const hover = await run("/stable-bad", ["stable"], { selectors: { stable: ["hover:#save"] }, viewports: [DESKTOP] });
+  assert.deepEqual([hover.findings, hover.errors], [[], []]);
+  for (const trigger of ["#save", "click:#save"]) {
+    const click = await run("/stable-bad", ["stable"], { selectors: { stable: [trigger] }, viewports: [DESKTOP] });
+    assert.deepEqual(click.findings.map((f) => f.selector), ["#cancel"], trigger);
+  }
+});
+
+test("sweep: a tap area that grows with the window is worst — and high — at the narrowest width, not at the widest", async () => {
+  const result = await run("/tap-size-vary", ["tap-size"], { viewports: [], sweep: parseSweep("320-800:80"), height: 700 });
+  assert.equal(result.findings.length, 1);
+  const [vary] = result.findings;
+  assert.deepEqual([vary.worst.width, vary.severity, vary.widths], [320, "high", "320–800"]);
+  assert.ok(vary.measure.value >= 16 && vary.measure.value < 24, `the 320 px value, ${vary.measure.value}`);
+});
+
+test("tap-size: a link inside a sentence is exempt through <sup>, <em> and <strong> too; a link alone in an <em> is not", async () => {
+  const result = await run("/tap-size-wrapped", ["tap-size"], { viewports: [PHONE] });
+  assert.deepEqual(result.findings.map((f) => f.selector), ["#alone"]);
+});
+
+test("row-align: a table row is no box, a cell spanning rows and a cell centred beside a taller one are placed, not misaligned; a cell 3 px off its row is found", async () => {
+  const table = await run("/row-align-table", ["row-align"], { viewports: [DESKTOP] });
+  assert.deepEqual(table.findings.map((f) => [f.kind, f.selector, f.measure.value]), [["baseline", "#low", 3], ["baseline", "#low", 3], ["baseline", "#low", 3]]);
+  for (const route of ["/row-align-rowspan", "/row-align-span-cell", "/row-align-lines"]) {
+    const result = await run(route, ["row-align"], { viewports: [DESKTOP] });
+    assert.deepEqual([route, result.findings], [route, []]);
+  }
+});
+
+test("row-align: boxes far down a row of thirty are compared too; an overlap is high, 2 px apart is medium", async () => {
+  const many = await run("/row-align-many", ["row-align"], { viewports: [PHONE] });
+  const second = bySelector(many, "#c1");
+  assert.deepEqual([second.kind, second.severity, second.measure.value], ["gap", "medium", 2]);
+  assert.equal(bySelector(many, "#c0"), undefined, "the first box has nothing before it");
+  assert.ok(many.findings.length > 20, `${many.findings.length}`);
+  const overlap = await run("/row-align-overlap", ["row-align"], { viewports: [DESKTOP] });
+  assert.deepEqual(overlap.findings.map((f) => [f.kind, f.severity, f.measure.value]), [["gap", "high", -20]]);
+});
+
+test("edges: the right edges of blocks without a background or border are not an edge, the same blocks with a background are", async () => {
+  const plain = await run("/edges-right-plain-ok", ["edges"], { viewports: [DESKTOP] });
+  assert.deepEqual(plain.findings, []);
+  assert.equal((await run("/edges-right-bad", ["edges"], { viewports: [DESKTOP] })).findings.length, 1);
+});
+
+test("first-view: a box lying beyond the picture says where it is; one inside the picture needs no note", async () => {
+  const sel = { "first-view": [".cta"] };
+  const far = await run("/first-view-far", ["first-view"], { selectors: sel, viewports: [PHONE] });
+  const [cta] = far.findings;
+  assert.match(cta.image_note, /^the box lies 3060–3106\.4 px down the page, below the 2400 px this picture shows/);
+  assert.equal(PNG.sync.read(await readFile(join(far.outDir, cta.image))).height, 2400);
+  assert.ok(far.report.includes(`Picture: ${cta.image_note}.`));
+  const near = await run("/first-view-bad", ["first-view"], { selectors: sel, viewports: [PHONE] });
+  assert.equal(near.findings[0].image_note, undefined);
+  assert.doesNotMatch(near.report, /Picture:/);
+});
+
+test("cli: run and explore take --geometry — with it the page's geometry findings are issues, without it there are none", async () => {
+  for (const command of ["explore", "run"]) {
+    const issues = async (...flags) => {
+      const out = await tmp("cx");
+      const result = await runCli(ROOT, command, "--url", `${app.url}/edges-bad`, "--out", out, "--format", "json", "--max-runtime-ms", "60000", ...flags);
+      assert.equal(result.status, 1, `${command} ${flags}: ${result.stderr}`);
+      return JSON.parse(result.stdout).issues.filter((i) => i.type === "vqa-geometry");
+    };
+    const with_ = await issues("--geometry");
+    assert.deepEqual(with_.map((i) => [i.where, i.title.slice(0, 33)]), [["#second", "edges: #second left edge 3 px off"]], command);
+    assert.deepEqual(await issues(), [], command);
+  }
 });

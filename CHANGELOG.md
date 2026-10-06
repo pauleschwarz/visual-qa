@@ -12,6 +12,8 @@
 - `--state` measures named states (V1); routes are visited anonymously.
 - `run`/`explore --geometry` adds the checks that need no input to every scanned state as `vqa-geometry` issues. Off by default.
 - `src/geometry.mjs` exports `geometry`, `runGeometryChecks`, `geometryIssues`, `parseSweep`, `resolveChecks` …; `settle` of the baseline capture is exported and shared.
+- Nothing is cut silently: the worst 100 findings of each kind and page are kept and the rest is counted (`truncated` in `report.json`, "Cut short" in `report.md`); a page `covered` cannot walk to the end (> 10000 content elements) blocks the run (exit 2). `tap-size` and `row-align` measure the whole page.
+- Fixed in the first review round: `tap-size` overlap is compared at one scroll position among controls that scroll together (a spread-out list in a scrolling sheet is no overlap); the worst width of a tap area is the narrowest, severity the highest over the sweep; a link inside `<sup>`/`<em>` in a sentence is exempt; table rows are no boxes of `row-align`, a cell spanning rows has no baseline finding; a `stable` trigger that replaces the page is an error.
 - Fixture `fixture/geometry-app.mjs`: per check a page with the defect built in and a twin without; `test/geometry.test.mjs`, `test/geometry.e2e.mjs` (in `npm run selftest`).
 
 ### States, sign-in and journeys
