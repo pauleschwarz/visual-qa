@@ -43,8 +43,8 @@ function usage({ error = false, message = null } = {}) {
     "  visual-qa baseline diff DIR_A DIR_B [--out DIR] [--threshold-pct N] [--pixel-threshold N]\n" +
     "                                                         compare two folders, no browser; --out must be empty or an earlier compare\n" +
     "  visual-qa baseline-capture --url URL --out DIR [--changed-target URL ...]   alias of baseline capture\n" +
-    "  visual-qa agent-run --url URL [--baseline-url URL] [--out DIR] [--git-ref REF]\n" +
-    "                 [--design-contract FILE]                git UI-diff → routes → observe/compare only\n" +
+    "  visual-qa agent-run [--url URL] [--baseline-url URL] [--out DIR] [--base REF]\n" +
+    "                 [--design-contract FILE]                git change set → routes → observe/compare only\n" +
     "  visual-qa agent-gate <QA-DIR> <verity.json> [--json]     join independent Visual QA + Verity evidence\n" +
     "Output flags (run/explore): --format human|json|junit, --out-file FILE (junit)\n" +
     "Mode flags:   --changed-target URL (repeatable, required for --mode changed)\n" +
@@ -83,6 +83,7 @@ const VALUE_OPTIONS = new Set([
   "--path-prefix",
   "--design-contract",
   "--git-ref",
+  "--base",
   "--autofix",
   "--fix-dir",
   "--intent",
@@ -113,6 +114,24 @@ function validateOptionValues(tokens) {
       throw new Error(`visual-qa: ${token} requires a value`);
     index += 1;
   }
+}
+
+/** One line per route (or "whole app") and changed file: why it is part of the run. */
+function routeReasonLines(agent) {
+  const lines = [];
+  const because = ({ file, pattern, via = [] }) =>
+    `${[file, ...via].join(" → ")} (${pattern})`;
+  for (const [route, reasons] of Object.entries(agent?.route_reasons ?? {}))
+    for (const reason of reasons) lines.push(`  ${route} ← ${because(reason)}`);
+  for (const reason of agent?.full_reasons ?? []) lines.push(`  whole app ← ${because(reason)}`);
+  return lines;
+}
+
+/** What a "no UI diff" noop left out: every changed file is a non-UI one (a data file, an asset, an ignored one). */
+function notUiNote({ changed_files: changed }) {
+  if (!changed.length) return "";
+  const shown = changed.slice(0, 5).join(", ");
+  return ` — changed, not UI files (see trigger/ignore in .visual-qa.yml): ${shown}${changed.length > 5 ? `, … (${changed.length} in all)` : ""}`;
 }
 
 function reportWasBlocked(report) {
@@ -308,23 +327,19 @@ if (command === "agent-gate") {
   let url = null;
   let baselineUrl = null;
   let outDir = ".qa-agent";
-  let gitRef = "HEAD";
+  let base = null;
   let designContractPath = null;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--url") url = args[++i];
     else if (arg === "--baseline-url") baselineUrl = args[++i];
     else if (arg === "--out") outDir = args[++i];
-    else if (arg === "--git-ref") gitRef = args[++i];
+    else if (arg === "--base" || arg === "--git-ref") base = args[++i];
     else if (arg === "--design-contract") designContractPath = args[++i];
     else {
       usage({ error: true, message: `Unknown agent-run flag: ${arg}` });
       process.exit(2);
     }
-  }
-  if (!url) {
-    usage({ error: true, message: "agent-run requires --url" });
-    process.exit(2);
   }
   try {
     const result = await agentRun({
@@ -332,13 +347,28 @@ if (command === "agent-gate") {
       baselineUrl,
       outDir: resolve(outDir),
       projectRoot: process.cwd(),
-      gitRef,
+      base,
       designContractPath,
     });
     for (const warning of result.agent?.config_warnings ?? [])
       console.error(`visual-qa: warning: ${warning}`);
+    for (const file of result.agent?.unmapped_files ?? [])
+      console.error(`visual-qa: warning: no route_map entry reaches ${file}`);
+    for (const file of result.agent?.unrendered_files ?? [])
+      console.error(
+        `visual-qa: warning: nothing imports ${file}, so no route shows its change. An entry point (main.tsx, index.html) or a file loaded in a way the import scan cannot follow (import.meta.glob, a computed import)? Map it in route_map directly (GLOBAL for an entry point)`,
+      );
+    for (const file of result.agent?.depth_exhausted_files ?? [])
+      console.error(
+        `visual-qa: warning: ${file} is imported further up than import_depth ${result.agent.import_depth}; those importers were not followed (raise import_depth in .visual-qa.yml)`,
+      );
+    for (const line of routeReasonLines(result.agent)) console.log(line);
     if (result.noop) {
-      console.log("agent-run: no UI diff → PASS (noop)");
+      console.log(
+        result.agent.reason === "unrendered"
+          ? `agent-run: changed files are imported by nothing (${result.agent.unrendered_files.join(", ")}) → PASS (noop)`
+          : `agent-run: no UI diff → PASS (noop)${notUiNote(result.agent.git)}`,
+      );
       process.exitCode = 0;
     } else {
       console.log(

@@ -97,13 +97,18 @@ processes, calls models, or publishes. It cannot make a non-PASS report pass.
 visual-qa agent-run --url http://127.0.0.1:3000 \
   --baseline-url http://127.0.0.1:3001 \
   --out .qa-agent \
-  --git-ref HEAD
+  --base origin/main
 ```
 
 - `path@state` routes capture a state defined under `states:` (sign-in, injected
   API failure; see README "States, sign-in and journeys"); plain routes are walked.
   Unknown keys in the config are printed as warnings and listed in
   `agent-run.json` as `config_warnings`.
+- Changed files = merge-base with the base branch → working tree, plus untracked
+  (`--base`, `base:`, default `origin/HEAD` → `main` → `master`; none resolvable → exit 2).
+  `route_map` values: a route list, `GLOBAL`/`FULL`, `IMPORTERS`; `route_map_mode: first`,
+  `aliases`, `import_depth`, `server: {command, health}` — README "Check only what you changed".
+  The report lists why each route is there (`route_reasons`, `full_reasons`).
 - No UI-path git diff → exit 0 noop PASS (no browser).
 - UI diff without matching `route_map` → fail-closed.
 - Never applies fixers; evidence + compare only. Coding agents may loop
