@@ -337,14 +337,15 @@ test("reduced motion is requested, and a never-ending animation does not move th
   assert.deepEqual([...top.data.slice((10 * top.width + 10) * 4, (10 * top.width + 10) * 4 + 3)], [0x00, 0xcc, 0x00]);
 });
 
-test("a failure inside one part, or a page that never settles, is recorded — the run goes on", async () => {
-  const { dir, errors, entries } = await capture(["/vanishing", "/restless", "/short"], { viewports: [VIEWPORTS[0]] });
+test("a page that never settles is recorded, a scroller the page removes is named as not captured — the run goes on", async () => {
+  const { dir, errors, entries, skipped } = await capture(["/vanishing", "/restless", "/short"], { viewports: [VIEWPORTS[0]] });
   assert.deepEqual(
     errors.map((e) => `${e.route}${e.part ? ` ${e.part}` : ""}: ${e.message}`).sort(),
-    [
-      "/restless: page never settled (layout keeps changing)",
-      "/vanishing scroller-1: scroller-1: page.evaluate: Error: the scroller disappeared before it could be captured",
-    ],
+    ["/restless: page never settled (layout keeps changing)"],
+  );
+  assert.deepEqual(
+    skipped.map((s) => `${s.route} ${s.part}: ${s.reason}`),
+    ["/vanishing scroller-1: removed by the page before its picture"],
   );
   const taken = entries.map((e) => `${e.route_key}/${e.part}`);
   for (const k of ["restless/top", "short/top", "vanishing/top"]) assert.ok(taken.includes(k), `${k} still taken`);
