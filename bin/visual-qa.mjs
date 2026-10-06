@@ -185,6 +185,7 @@ async function baselineCommand(sub, rest) {
       });
       console.log(`baseline capture: ${result.entries.length} images, ${result.errors.length} load errors → ${result.outDir}`);
       for (const e of result.errors) console.log(`  ${e.route} · ${e.viewport}: ${e.message}`);
+      for (const e of result.skipped) console.log(`  not captured: ${e.route} · ${e.viewport} · ${e.part} — ${e.reason}`);
       console.log(`manifest: ${result.manifestPath}`);
       return result.errors.length ? 1 : 0;
     }

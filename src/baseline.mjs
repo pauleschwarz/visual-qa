@@ -168,9 +168,15 @@ export function compareImages(
  * reference screen, so a tall page does not tolerate more pixels than a short one.
  */
 export function isChange(result, thresholdPct = DEFAULT_THRESHOLD_PCT) {
-  const tolerated = (thresholdPct / 100) * Math.min(result.total, REFERENCE_PIXELS);
-  return result.sizeChanged || result.pixels > tolerated;
+  return result.sizeChanged || result.pixels > toleratedPixels(result.total, thresholdPct);
 }
+
+/** How many differing pixels an image of `total` pixels tolerates — the one formula for the decision and the report. */
+export const toleratedPixels = (total, thresholdPct) =>
+  (thresholdPct / 100) * Math.min(total, REFERENCE_PIXELS);
+
+/** A pixel count for people: whole numbers without decimals, else two places. */
+export const formatPixels = (px) => String(+px.toFixed(2));
 
 // ---------------------------------------------------------------- folder layout
 
@@ -339,6 +345,7 @@ export async function compareFolders(
       missing.push({ ...entry, route: routeLabel(entry.route_key, targets) });
   }
   const errors = newManifest?.errors ?? [];
+  const skipped = newManifest?.skipped ?? [];
   const below = same.filter((r) => r.pixels > 0);
   const result = {
     schema_version: COMPARE_SCHEMA,
@@ -354,6 +361,7 @@ export async function compareFolders(
     added,
     missing,
     errors,
+    skipped,
     conditions: { baseline: baseManifest?.conditions ?? null, current: newManifest?.conditions ?? null },
   };
   result.report = renderReport(result, out);
@@ -372,7 +380,7 @@ function renderReport(r, out) {
     "",
     `${r.ok ? "**PASS**" : "**FAIL**"} · ${r.compared} compared, ${r.changed.length} changed, ${r.same} same, ${r.added.length} new, ${r.missing.length} missing, ${r.errors.length} load errors`,
     "",
-    `Baseline \`${r.baseline}\` · Current \`${r.current}\` · Threshold ${r.threshold_pct} % of an image's pixels (at most of one ${REFERENCE_PIXELS.toLocaleString("en-US")}-pixel screen: more than ${+((r.threshold_pct / 100) * REFERENCE_PIXELS).toFixed(2)} px counts), colour distance ${r.pixel_threshold} (a size change always counts)`,
+    `Baseline \`${r.baseline}\` · Current \`${r.current}\` · Threshold ${r.threshold_pct} % of an image's pixels, counted on at most one ${REFERENCE_PIXELS.toLocaleString("en-US")}-pixel screen (so never more than ${formatPixels(toleratedPixels(REFERENCE_PIXELS, r.threshold_pct))} px; a smaller image tolerates fewer), colour distance ${r.pixel_threshold} (a size change always counts)`,
     "",
   ];
   if (r.tolerated.images)
@@ -423,6 +431,11 @@ function renderReport(r, out) {
     r.errors,
     (e) => `- ${e.route ?? "/"} · ${e.viewport ?? "-"}: ${e.message}`,
   );
+  list(
+    "Not captured (a part that cannot be photographed; not an error)",
+    r.skipped ?? [],
+    (e) => `- ${e.route ?? "/"} · ${e.viewport} · ${e.part}: ${e.reason}`,
+  );
   if (r.ok) lines.push("No difference above the threshold.", "");
   return lines.join("\n");
 }
@@ -431,6 +444,8 @@ function renderReport(r, out) {
 
 /** Motion off in every image (Playwright hides the caret by default); the context also asks for reduced motion. */
 const SHOT = { animations: "disabled" };
+/** A scroller that gives no picture in this time is skipped (named in the report), not a load error. */
+const SCROLLER_SHOT_MS = 5_000;
 const QUIET_POLL_MS = 100;
 const QUIET_EQUAL_PROBES = 3;
 const QUIET_MAX_PROBES = 50;
@@ -440,13 +455,15 @@ const QUIET_MAX_PROBES = 50;
  * no display:none or content-visibility:hidden up the tree, computed visibility visible; and a
  * box with a size) that scrolls vertically (not a form field), in DOM order,
  * with more than `slack` px still to scroll. A hidden menu or off-canvas drawer is none —
- * it cannot be photographed. <body> counts only when <html> does not take its overflow over
- * (otherwise the page scrolls and <body> would only double the page part); the page's own
+ * it cannot be photographed. <body> counts only when <html> is not `visible` in both axes —
+ * otherwise the viewport takes <body>'s overflow, the page scrolls and <body> would only double the page part; the page's own
  * scrolling is the page part. Capture, the settle check and the layout check all ask this;
  * a page function reaches it through inPage().
  */
 function innerScrollers(slack) {
-  const bodyOwnsScroll = getComputedStyle(document.documentElement).overflowY !== "visible";
+  // The viewport takes <body>'s overflow only while <html> is visible in both axes (CSS Overflow 3).
+  const root = getComputedStyle(document.documentElement);
+  const bodyOwnsScroll = root.overflowX !== "visible" || root.overflowY !== "visible";
   return [...document.querySelectorAll("body, body *")].filter((el) => {
     if (el === document.body && !bodyOwnsScroll) return false;
     if (["TEXTAREA", "SELECT", "INPUT"].includes(el.tagName)) return false;
@@ -603,23 +620,39 @@ async function captureRoute(page, { url, target, routeKey, viewport, dir, naviga
   const docHeight = await page.evaluate(() => document.documentElement.scrollHeight);
   if (docHeight > viewport.height + 1)
     await shoot("page", (path) => page.screenshot({ path, fullPage: true, ...SHOT }));
+  // Real sites hold scrollers that cannot be photographed whole (content outside the flow collapses the grown
+  // box; a script hides it again). Such a part is skipped and named, so one odd box never fails the capture.
+  const skipped = [];
   const scrollers = await inPage(page, markScrollers);
   for (let n = 1; n <= scrollers; n += 1) {
+    const part = `scroller-${n}`;
     try {
       await page.evaluate(stretchScroller, n);
       await page.evaluate(
         () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
       );
-      await shoot(`scroller-${n}`, (path) =>
-        page.locator(`[data-vqa-scroller="${n}"]`).screenshot({ path, ...SHOT }),
-      );
+      const box = await page.evaluate((k) => {
+        const r = document.querySelector(`[data-vqa-scroller="${k}"]`)?.getBoundingClientRect();
+        return r ? r.width * r.height : 0;
+      }, n);
+      if (!(box > 0)) {
+        skipped.push({ ...where, part, reason: "collapses when grown (its content sits outside the flow)" });
+        continue;
+      }
+      const file = join(dir, partFileName(viewport.name, part));
+      try {
+        await page.locator(`[data-vqa-scroller="${n}"]`).screenshot({ path: file, timeout: SCROLLER_SHOT_MS, ...SHOT });
+        entries.push({ ...where, part, url, file: relative(resolve(dir, ".."), file).split(sep).join("/") });
+      } catch (error) {
+        skipped.push({ ...where, part, reason: `no picture within ${SCROLLER_SHOT_MS / 1000} s (${firstLine(error)})` });
+      }
     } catch (error) {
-      errors.push({ ...where, part: `scroller-${n}`, message: `scroller-${n}: ${firstLine(error)}` });
+      errors.push({ ...where, part, message: `${part}: ${firstLine(error)}` });
     } finally {
       await page.evaluate(restoreStretch).catch(() => {});
     }
   }
-  return { entries, errors };
+  return { entries, errors, skipped };
 }
 
 /**
@@ -661,6 +694,7 @@ export async function captureBaselines({
   const browser = await chromium.launch({ headless: true });
   const entries = [];
   const errors = [];
+  const skipped = [];
   try {
     for (const viewport of viewports) {
       const context = await browser.newContext({
@@ -686,6 +720,7 @@ export async function captureBaselines({
           });
           entries.push(...result.entries);
           errors.push(...result.errors);
+          skipped.push(...(result.skipped ?? []));
           await page.close();
         }
       } finally {
@@ -708,12 +743,13 @@ export async function captureBaselines({
         viewports,
         entries,
         errors,
+        skipped,
       },
       null,
       2,
     )}\n`,
   );
-  return { outDir: root, manifestPath, entries, errors };
+  return { outDir: root, manifestPath, entries, errors, skipped };
 }
 
 /**

@@ -186,6 +186,26 @@ export function render(route, variant = "") {
       script: `let n = 0; setInterval(() => { const odd = n++ % 2; for (const e of document.querySelectorAll('.in')) e.style.height = ${route === "/roundrestless" ? "200" : "400"} + odd * ${route === "/roundrestless" ? 1 : 10} + 'px'; }, 40);`,
     });
   }
+  if (route === "/collapsing")
+    // Shape taken from theguardian.com (mobile): a visible scroller whose content is absolutely positioned. Grown to
+    // content height it collapses to 0 px — no picture is possible; the scroller beside it is still captured.
+    return page(
+      `<div style="height:200px;width:300px;overflow:auto;position:relative"><div style="position:absolute;top:0;left:0;width:100%;height:600px;background:#e8e8f4">absolute</div></div>
+       <div style="height:200px;width:300px;overflow:auto">${rows(20, "Line")}</div>`,
+    );
+  if (route === "/rehiding")
+    // A script hides the scroller again as soon as anything touches its style: it never becomes visible for a picture.
+    return page(`<div id="s" style="height:200px;width:300px;overflow:auto">${rows(20, "Line")}</div>`, {
+      script: `const s = document.getElementById('s'); let done = false;
+        new MutationObserver(() => { if (done) return; done = true; s.style.setProperty('visibility', 'hidden', 'important'); })
+          .observe(s, { attributes: true, attributeFilter: ['style'] });`,
+    });
+  if (route === "/clipx")
+    // <html> clips only x: it is not visible in both axes, so the body keeps its own overflow and is the scroller
+    // (checking overflow-y alone lost the body's content: neither a page nor a scroller).
+    return page(`<h1>Ordinary page</h1>${rows(60, "Row")}`, {
+      style: "html{overflow-x:clip}body{height:100vh;overflow-y:auto}",
+    });
   if (route === "/about-us") return page(`<h1>About us</h1><p>Hyphen route.</p>`);
   if (route === "/late")
     return page(`<div id="box"></div>`, {

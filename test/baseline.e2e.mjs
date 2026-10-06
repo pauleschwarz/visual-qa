@@ -119,9 +119,10 @@ test("a scrolling <body> under html{overflow:hidden} is a scroller: its whole co
   assert.ok(whole.height > 2500, `60 rows shown whole (${whole.height})`);
 });
 
-test("<body> is a scroller only when <html> does not take its overflow: an ordinary page with body{height:100%} is a page, not a scroller", async () => {
-  const { dir, errors } = await capture(["/bodypct", "/bodyscrollbar", "/bodyhtmlauto"], { viewports: [VIEWPORTS[0]] });
+test("<body> is a scroller only when <html> is not visible in both axes: an ordinary page with body{height:100%} is a page, not a scroller", async () => {
+  const { dir, errors } = await capture(["/bodypct", "/bodyscrollbar", "/bodyhtmlauto", "/clipx"], { viewports: [VIEWPORTS[0]] });
   assert.deepEqual(errors, []);
+  assert.deepEqual(await names(dir, "clipx"), ["desktop.png", "desktop.scroller-1.png"], "html clips x: the body keeps its overflow and is captured whole");
   assert.deepEqual(await names(dir, "bodypct"), ["desktop.page.png", "desktop.png"], "html visible: the page scrolls");
   assert.deepEqual(await names(dir, "bodyscrollbar"), ["desktop.page.png", "desktop.png"]);
   assert.deepEqual(await names(dir, "bodyhtmlauto"), ["desktop.png", "desktop.scroller-1.png"], "html has its own overflow: the body scrolls by itself");
@@ -625,4 +626,30 @@ test("explore --baseline-dir: one stray pixel passes at the default threshold, f
     baseUrl: url, outDir: await tmp("ex-d"), baselineDir, viewports, bounds, baseline: { threshold_pct: 0, pixel_threshold: 1 },
   });
   assert.equal(differs(blind), false, "colour distance 1 sees no colour difference: the flag reaches explore");
+});
+
+test("a scroller that cannot be photographed whole is skipped and named, never a load error (Guardian mobile)", async () => {
+  const started = Date.now();
+  const { dir, errors, skipped } = await capture(["/collapsing", "/rehiding"]);
+  assert.deepEqual(errors, [], "one odd box must not fail the whole capture");
+  assert.deepEqual(await names(dir, "collapsing"), ["desktop.png", "desktop.scroller-2.png", "mobile.png", "mobile.scroller-2.png"], "the scroller beside it is still captured");
+  assert.deepEqual(await names(dir, "rehiding"), ["desktop.png", "mobile.png"]);
+  const why = skipped.map((s) => `${s.route_key}/${s.viewport}/${s.part}: ${s.reason.split(" (")[0]}`).sort();
+  assert.deepEqual(why, [
+    "collapsing/desktop/scroller-1: collapses when grown",
+    "collapsing/mobile/scroller-1: collapses when grown",
+    "rehiding/desktop/scroller-1: no picture within 5 s",
+    "rehiding/mobile/scroller-1: no picture within 5 s",
+  ]);
+  assert.ok(Date.now() - started < 30_000, `bounded by the short scroller timeout (${Date.now() - started} ms)`);
+  const manifest = JSON.parse(await readFile(join(dir, "baseline-manifest.json"), "utf8"));
+  assert.equal(manifest.skipped.length, 4, "the manifest keeps them");
+  const again = await capture(["/collapsing"]);
+  const scope = { routeKeys: new Set(["collapsing"]), viewports: new Set(["desktop", "mobile"]) };
+  const result = await compareFolders(dir, again.dir, { outDir: await tmp("skip-out"), scope });
+  assert.equal(result.ok, true, "skipped the same way both times: no difference, no error");
+  assert.match(result.report, /## Not captured .*\n\n- \/collapsing · desktop · scroller-1: collapses when grown/s);
+  const run = await cli("baseline", "capture", "--url", app.url, "--route", "/collapsing", "--out", await tmp("skip-cli"));
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /not captured: \/collapsing · desktop · scroller-1 — collapses when grown/);
 });

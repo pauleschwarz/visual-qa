@@ -227,10 +227,13 @@ export function resolveBaselineConfig(input = {}) {
     if (!text) throw new Error("baseline routes must not contain an empty entry");
     routes.push(text);
   }
+  // Only a number or a numeric string: Number("") and Number([]) (an empty YAML value) would be a silent 0.
+  const asNumber = (v) =>
+    typeof v === "number" || (typeof v === "string" && v.trim() !== "") ? Number(v) : NaN;
   const thresholdPct =
     input.threshold_pct === undefined || input.threshold_pct === null
       ? DEFAULT_THRESHOLD_PCT
-      : Number(input.threshold_pct);
+      : asNumber(input.threshold_pct);
   if (!Number.isFinite(thresholdPct) || thresholdPct < 0)
     throw new Error(
       `baseline threshold_pct must be a number >= 0 (percent of an image's pixels); received ${input.threshold_pct}`,
@@ -238,7 +241,7 @@ export function resolveBaselineConfig(input = {}) {
   const pixelThreshold =
     input.pixel_threshold === undefined || input.pixel_threshold === null
       ? DEFAULT_PIXEL_THRESHOLD
-      : Number(input.pixel_threshold);
+      : asNumber(input.pixel_threshold);
   if (!Number.isFinite(pixelThreshold) || pixelThreshold < 0 || pixelThreshold > 1)
     throw new Error(
       `baseline pixel_threshold must be a number from 0 to 1 (colour distance); received ${input.pixel_threshold}`,

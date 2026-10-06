@@ -179,7 +179,7 @@ visual-qa baseline diff .qa-baseline .qa-baseline-compare --threshold-pct 0.001
 | --- | --- |
 | `top` | the first view, as a visitor sees it |
 | `page` | the whole document — only when the page scrolls |
-| `scroller-<n>` | every inner scroll area, shown whole (DOM order). The area and its parents are stretched, fixed/sticky chrome elsewhere (header, rail, composer, cookie banner) is hidden so it cannot cover content, and everything is put back afterwards. A scrolling `<body>` counts when `<html>` does not take its overflow (`html,body{height:100%}` is a `page`). Hidden menus and off-canvas drawers, textareas, selects and strips under 32 px are not parts. |
+| `scroller-<n>` | every inner scroll area, shown whole (DOM order). The area and its parents are stretched, fixed/sticky chrome elsewhere (header, rail, composer, cookie banner) is hidden so it cannot cover content, and everything is put back afterwards. A scrolling `<body>` counts only when `<html>` is not `visible` in both axes (the viewport then cannot take the body's overflow); with `html,body{height:100%}` the page scrolls and it is a `page`. Scrollers hidden by `visibility:hidden`, `display:none` or `content-visibility:hidden`, textareas, selects and strips under 32 px are not parts. A scroller that cannot be photographed whole — it collapses when grown (content outside the flow) or gives no picture within 5 s — is skipped and listed under «Not captured»; it never fails the capture. |
 
 **Calm capture, same for capture and compare:** reduced motion, CSS animations and caret off,
 network idle, `document.fonts.ready`, then layout unchanged for 300 ms; locale `en-US` and
@@ -192,7 +192,8 @@ subset of routes/viewports only has to match itself.
 **Threshold** (`--threshold-pct`, default `0.0005`; `--pixel-threshold`, default `0.05`). An
 image counts as changed when its size changed, or when more than `threshold-pct` percent of
 its pixels differ — measured against at most one 1440×900 screen (1,296,000 px), so a tall
-page never tolerates more than ≈6 px. A pixel differs when pixelmatch's colour distance
+page never tolerates more than ≈6 px and a phone screen (390×844) tolerates ≈1.6 px — the report
+names the cap. A pixel differs when pixelmatch's colour distance
 (0–1, anti-aliasing ignored) exceeds `--pixel-threshold`. Measured, not guessed: three
 captures at once next to busy processes differ by 0 px even at distance 0; one changed digit
 in a 16 px footer of a 1440×3726 page is 21–24 px; one Tailwind step of a label colour

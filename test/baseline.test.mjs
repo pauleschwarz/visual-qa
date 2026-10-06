@@ -13,7 +13,10 @@ import {
   cleanOwnFiles,
   compareFolders,
   compareImages,
+  formatPixels,
+  isChange,
   routeKeyFromTarget,
+  toleratedPixels,
 } from "../src/baseline.mjs";
 import { compareScreenshots, verdictFor } from "../src/checks.mjs";
 import { renderMarkdownReport, summarizeReport } from "../src/report.mjs";
@@ -233,7 +236,7 @@ test("a one-digit change on a tall page is found, and what stayed below the thre
   assert.equal(tolerated.ok, true);
   assert.deepEqual(tolerated.tolerated, { images: 1, max_pixels: 3 });
   assert.match(tolerated.report, /Below the threshold, not counted: 1 image differs by at most 3 px/);
-  assert.match(tolerated.report, /Threshold 0\.0005 % .*more than 6\.48 px counts/, "the px the decision is made on");
+  assert.match(tolerated.report, /Threshold 0\.0005 % .*never more than 6\.48 px; a smaller image tolerates fewer/, "the cap the decision is made on");
   const two = await tmp("tall-two");
   await put(two, "report", "desktop.page.png", png(1440, 4000, [[100, 3900, 3, 1, [0, 0, 0]]]));
   await put(two, "report", "mobile.page.png", png(1440, 4000, [[100, 3900, 2, 1, [0, 0, 0]]]));
@@ -386,6 +389,9 @@ test("baseline config: validated keys, viewports as text, defaults measured not 
   assert.equal(resolveBaselineConfig({ threshold_pct: null }).threshold_pct, DEFAULT_THRESHOLD_PCT);
   assert.equal(resolveBaselineConfig({ threshold_pct: 0 }).threshold_pct, 0);
   assert.throws(() => resolveBaselineConfig({ pixel_threshold: "x" }), /pixel_threshold/);
+  for (const empty of ["", "  ", [], {}, true])
+    for (const key of ["pixel_threshold", "threshold_pct"])
+      assert.throws(() => resolveBaselineConfig({ [key]: empty }), new RegExp(key), `${key}: ${JSON.stringify(empty)} is no number, not a silent 0`);
   assert.throws(() => resolveBaselineConfig({ clock: "yesterday" }), /clock/);
   assert.throws(() => resolveBaselineConfig({ timezone: "Mars/Base" }), /timezone/);
   assert.throws(() => resolveBaselineConfig({ locale: "not a locale" }), /locale/);
@@ -525,4 +531,16 @@ test("CLI baseline diff: exit 0 same, 1 changed; compare folder must differ", as
   assert.equal(cli("baseline", "diff", a, a).status, 2);
   assert.match(cli("baseline", "diff", a, a).stderr, /same folder/);
   assert.equal(cli("baseline", "diff", a, await tmp("cli-empty")).status, 1, "no images in the new folder = everything missing");
+});
+
+test("threshold: one formula for the decision and the report; a phone image tolerates fewer pixels than the cap", () => {
+  const phone = 390 * 844;
+  assert.equal(toleratedPixels(phone, 0.0005), (0.0005 / 100) * phone, "below the cap: share of the image");
+  assert.equal(toleratedPixels(10 * 1440 * 900, 0.0005), (0.0005 / 100) * 1440 * 900, "a tall page is capped at one screen");
+  const tol = toleratedPixels(phone, 0.0005);
+  assert.equal(isChange({ total: phone, pixels: Math.floor(tol), sizeChanged: false }, 0.0005), false);
+  assert.equal(isChange({ total: phone, pixels: Math.floor(tol) + 1, sizeChanged: false }, 0.0005), true);
+  assert.equal(formatPixels(6480), "6480", "a whole number without decimals");
+  assert.equal(formatPixels(6.48), "6.48");
+  assert.equal(formatPixels(toleratedPixels(1440 * 900, 0.5)), "6480");
 });
