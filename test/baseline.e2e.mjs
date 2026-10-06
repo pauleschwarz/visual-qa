@@ -119,11 +119,115 @@ test("a scrolling <body> under html{overflow:hidden} is a scroller: its whole co
   assert.ok(whole.height > 2500, `60 rows shown whole (${whole.height})`);
 });
 
-test("an inner scroller that is already scrolled is captured from its top, like its unscrolled twin", async () => {
-  const { dir } = await capture(["/prescrolled", "/unscrolled"], { viewports: [VIEWPORTS[0]] });
-  for (const part of ["desktop.png", "desktop.scroller-1.png"]) {
-    const [a, b] = await Promise.all([readFile(join(dir, "prescrolled", part)), readFile(join(dir, "unscrolled", part))]);
-    assert.equal(compareImages(a, b, { pixelThreshold: 0 }).pixels, 0, part);
+test("<body> is a scroller only when <html> does not take its overflow: an ordinary page with body{height:100%} is a page, not a scroller", async () => {
+  const { dir, errors } = await capture(["/bodypct", "/bodyscrollbar", "/bodyhtmlauto"], { viewports: [VIEWPORTS[0]] });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(await names(dir, "bodypct"), ["desktop.page.png", "desktop.png"], "html visible: the page scrolls");
+  assert.deepEqual(await names(dir, "bodyscrollbar"), ["desktop.page.png", "desktop.png"]);
+  assert.deepEqual(await names(dir, "bodyhtmlauto"), ["desktop.png", "desktop.scroller-1.png"], "html has its own overflow: the body scrolls by itself");
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    const title = "Tall content trapped in an internal scroller";
+    const trapped = async (route) => {
+      await page.goto(`${app.url}${route}`);
+      const issues = await runLayoutChecks(page, VIEWPORTS[0], { internalScrollers: "finding" });
+      return issues.find((i) => i.title === title)?.severity;
+    };
+    assert.equal(await trapped("/bodypct"), undefined, "the layout check takes the same definition");
+    assert.equal(await trapped("/bodyscrollbar"), undefined);
+    assert.equal(await trapped("/bodyhtmlauto"), "medium", "a body that really traps its content is still found");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("only a scroller you can see is a part: hidden dropdowns, off-canvas drawers (Wikipedia, BBC) and collapsed sections are not, and cost no timeout", async () => {
+  const started = Date.now();
+  const { dir, errors } = await capture(["/hiddenmenu"]);
+  assert.deepEqual(errors, [], "a hidden scroller used to wait 30 s for a screenshot it could never take");
+  assert.ok(Date.now() - started < 25_000, `no screenshot timeout (${Date.now() - started} ms)`);
+  assert.deepEqual(await names(dir, "hiddenmenu"), [
+    "desktop.png",
+    "desktop.scroller-1.png",
+    "mobile.png",
+    "mobile.scroller-1.png",
+  ]);
+  const real = await png(join(dir, "hiddenmenu", "mobile.scroller-1.png"));
+  assert.equal(real.width, 300, "scroller-1 is the visible one (300 px wide), not a drawer");
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await page.goto(`${app.url}/hiddenmenu`);
+    const issues = await runLayoutChecks(page, VIEWPORTS[1], { internalScrollers: "finding" });
+    assert.equal(issues.find((i) => /internal scroller/i.test(i.title)), undefined, "a hidden drawer traps nobody");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("what is no scroller part — hidden, no box (no height, no width), 1 px of rounding — cannot keep the page from settling either", async () => {
+  const { errors, entries } = await capture(["/hiddenrestless", "/zerorestless", "/roundrestless"], { viewports: [VIEWPORTS[0]] });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(
+    entries.map((e) => `${e.route_key}/${e.part}`).sort(),
+    ["hiddenrestless/top", "roundrestless/top", "zerorestless/top"],
+  );
+});
+
+test("form fields are never scrollers, however they are styled", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+    await page.setContent(`<!doctype html><body style="margin:0">
+      <textarea style="overflow-y:scroll;height:40px">${"x\n".repeat(30)}</textarea>
+      <select multiple style="overflow-y:scroll;height:40px"><option>1<option>2<option>3<option>4<option>5<option>6</select>
+      <input type="range" style="overflow-y:scroll;height:10px">
+      <div id="d" style="overflow-y:scroll;height:40px"><div style="height:200px"></div></div></body>`);
+    assert.deepEqual(
+      await inPage(page, () => innerScrollers(1).map((el) => el.id || el.tagName)),
+      ["d"],
+    );
+  } finally {
+    await browser.close();
+  }
+});
+
+test("a scroll area counts from 2 px of overflow on, 1 px is rounding; overflow-y:scroll counts like auto", async () => {
+  const { dir, errors } = await capture(["/slack", "/scrollclass"], { viewports: [VIEWPORTS[0]] });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(await names(dir, "slack"), ["desktop.png", "desktop.scroller-1.png"], "10 px yes (not 24), 1 px no");
+  assert.deepEqual(await names(dir, "scrollclass"), ["desktop.png", "desktop.scroller-1.png"]);
+  const whole = await png(join(dir, "slack", "desktop.scroller-1.png"));
+  assert.equal(whole.height, 210, "shown whole");
+});
+
+test("settle sees a scroller with only a few px to scroll: one that keeps changing is a page that never settles", async () => {
+  const { errors, entries } = await capture(["/slackrestless"], { viewports: [VIEWPORTS[0]] });
+  assert.deepEqual(errors.map((e) => e.message), ["page never settled (layout keeps changing)"]);
+  assert.deepEqual(entries.map((e) => e.part), ["top", "scroller-1"], "the run goes on and takes what it can");
+});
+
+test("whatever is already scrolled at load — an inner scroller, the <body>, the document — is captured from its top, like its unscrolled twin", async () => {
+  const { dir } = await capture(
+    ["/prescrolled", "/unscrolled", "/bodyprescrolled", "/bodyscroll", "/pagescrolled", "/pageunscrolled"],
+    { viewports: [VIEWPORTS[0]] },
+  );
+  const twins = [
+    ["prescrolled", "unscrolled", ["desktop.png", "desktop.scroller-1.png"]],
+    ["bodyprescrolled", "bodyscroll", ["desktop.png", "desktop.scroller-1.png"]],
+    ["pagescrolled", "pageunscrolled", ["desktop.page.png", "desktop.png"]],
+  ];
+  for (const [scrolled, twin, parts] of twins) {
+    assert.deepEqual(await names(dir, scrolled), parts, scrolled);
+    for (const part of parts) {
+      const [a, b] = await Promise.all([readFile(join(dir, scrolled, part)), readFile(join(dir, twin, part))]);
+      const r = compareImages(a, b, { pixelThreshold: 0 });
+      assert.deepEqual([r.pixels, r.sizeChanged], [0, false], `${scrolled} ${part}`);
+    }
   }
 });
 
@@ -405,6 +509,15 @@ test("compare against an old capture (no routes, no conditions in its manifest) 
   });
   assert.equal(r.compared, 2, "both routes, not just /");
   assert.equal(r.ok, true, r.report);
+});
+
+test("README step 1: --out may be a folder that does not exist yet", async () => {
+  const out = join(await tmp("fresh"), ".qa-baseline", "nested");
+  const r = await captureBaselines({ baseUrl: app.url, outDir: out, targets: ["/short"], viewports: [VIEWPORTS[0]], clock: CLOCK });
+  assert.equal(r.entries.length, 1);
+  assert.deepEqual(r.errors, []);
+  const cmp = await compareFolders(out, (await capture(["/short"], { viewports: [VIEWPORTS[0]] })).dir, { outDir: join(out, "..", "cmp") });
+  assert.equal(cmp.ok, true);
 });
 
 test("capture replaces an earlier capture; a different route set leaves no old image behind", async () => {

@@ -372,12 +372,12 @@ function renderReport(r, out) {
     "",
     `${r.ok ? "**PASS**" : "**FAIL**"} · ${r.compared} compared, ${r.changed.length} changed, ${r.same} same, ${r.added.length} new, ${r.missing.length} missing, ${r.errors.length} load errors`,
     "",
-    `Baseline \`${r.baseline}\` · Current \`${r.current}\` · Threshold ${r.threshold_pct} % of an image's pixels (at most of one ${REFERENCE_PIXELS.toLocaleString("en-US")}-pixel screen), colour distance ${r.pixel_threshold} (a size change always counts)`,
+    `Baseline \`${r.baseline}\` · Current \`${r.current}\` · Threshold ${r.threshold_pct} % of an image's pixels (at most of one ${REFERENCE_PIXELS.toLocaleString("en-US")}-pixel screen: more than ${+((r.threshold_pct / 100) * REFERENCE_PIXELS).toFixed(2)} px counts), colour distance ${r.pixel_threshold} (a size change always counts)`,
     "",
   ];
   if (r.tolerated.images)
     lines.push(
-      `Below the threshold, not counted: ${r.tolerated.images} image${r.tolerated.images === 1 ? "" : "s"} differ by at most ${r.tolerated.max_pixels} px`,
+      `Below the threshold, not counted: ${r.tolerated.images} image${r.tolerated.images === 1 ? " differs" : "s differ"} by at most ${r.tolerated.max_pixels} px`,
       "",
     );
   const cond = r.conditions.current ?? r.conditions.baseline;
@@ -401,7 +401,7 @@ function renderReport(r, out) {
     );
     for (const e of order)
       lines.push(
-        `| ${e.route} | ${e.viewport} | ${e.part} | ${e.pct.toFixed(4)} % (${e.pixels} px)${e.size_changed ? " · size changed" : ""} | ${sizeText(e)} | ${rel(e.diff_path)} |`,
+        `| ${e.route} | ${e.viewport} | ${e.part} | ${e.pixels} px (${e.pct.toFixed(4)} %)${e.size_changed ? " · size changed" : ""} | ${sizeText(e)} | ${rel(e.diff_path)} |`,
       );
     lines.push("");
   }
@@ -436,25 +436,35 @@ const QUIET_EQUAL_PROBES = 3;
 const QUIET_MAX_PROBES = 50;
 
 /**
- * In-page, the one definition of an inner scroller: <body> and everything in it that scrolls
- * vertically (not a form field), in DOM order, with more than `slack` px still to scroll.
- * The page's own scrolling (<html>) is the page part, not a scroller. Capture, the settle
- * check and the layout check all ask this; a page function reaches it through inPage().
+ * In-page, the one definition of an inner scroller: an element you can see (checkVisibility:
+ * no display:none or content-visibility:hidden up the tree, computed visibility visible; and a
+ * box with a size) that scrolls vertically (not a form field), in DOM order,
+ * with more than `slack` px still to scroll. A hidden menu or off-canvas drawer is none —
+ * it cannot be photographed. <body> counts only when <html> does not take its overflow over
+ * (otherwise the page scrolls and <body> would only double the page part); the page's own
+ * scrolling is the page part. Capture, the settle check and the layout check all ask this;
+ * a page function reaches it through inPage().
  */
 function innerScrollers(slack) {
-  return [...document.querySelectorAll("body, body *")].filter(
-    (el) =>
-      !["TEXTAREA", "SELECT", "INPUT"].includes(el.tagName) &&
-      /(auto|scroll)/.test(getComputedStyle(el).overflowY) &&
-      el.scrollHeight > el.clientHeight + slack,
-  );
+  const bodyOwnsScroll = getComputedStyle(document.documentElement).overflowY !== "visible";
+  return [...document.querySelectorAll("body, body *")].filter((el) => {
+    if (el === document.body && !bodyOwnsScroll) return false;
+    if (["TEXTAREA", "SELECT", "INPUT"].includes(el.tagName)) return false;
+    const style = getComputedStyle(el);
+    const box = el.getBoundingClientRect(); // display:none or an empty box: zero
+    return (
+      /(auto|scroll)/.test(style.overflowY) &&
+      el.checkVisibility({ visibilityProperty: true }) &&
+      box.width > 0 &&
+      box.height > 0 &&
+      el.scrollHeight > el.clientHeight + slack
+    );
+  });
 }
 
 /** page.evaluate for a function that may call innerScrollers(slack). Built as text, so a page CSP cannot block it. */
-export function inPage(page, fn, arg) {
-  return page.evaluate(
-    `(() => { ${innerScrollers}; return (${fn})(${JSON.stringify(arg ?? null)}); })()`,
-  );
+export function inPage(page, fn) {
+  return page.evaluate(`(() => { ${innerScrollers}; return (${fn})(); })()`);
 }
 
 /** In-page: every inner scroller worth a picture gets data-vqa-scroller="<n>". Returns the count. */

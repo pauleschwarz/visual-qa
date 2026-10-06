@@ -155,7 +155,7 @@ test("compareFolders: changed, tiny, resized, new, missing, load error — each 
   assert.notDeepEqual([...diffImage.data.slice(outside, outside + 3)], [255, 0, 0]);
 
   const md = await readFile(join(next, "report.md"), "utf8");
-  assert.match(md, /\| \/ \| desktop \| scroller-1 \| 3\.0000 % \(1200 px\) \| 200×200 \| diff\/root__desktop__scroller-1\.png \|/);
+  assert.match(md, /\| \/ \| desktop \| scroller-1 \| 1200 px \(3\.0000 %\) \| 200×200 \| diff\/root__desktop__scroller-1\.png \|/);
   assert.match(md, /200×300 → 200×320/);
   assert.match(md, /## Missing[\s\S]*short · mobile · top/);
   assert.match(md, /## New[\s\S]*scroller-2/);
@@ -232,7 +232,15 @@ test("a one-digit change on a tall page is found, and what stayed below the thre
   const tolerated = await compareFolders(base, next, { outDir: out });
   assert.equal(tolerated.ok, true);
   assert.deepEqual(tolerated.tolerated, { images: 1, max_pixels: 3 });
-  assert.match(tolerated.report, /Below the threshold, not counted: 1 image differ by at most 3 px/);
+  assert.match(tolerated.report, /Below the threshold, not counted: 1 image differs by at most 3 px/);
+  assert.match(tolerated.report, /Threshold 0\.0005 % .*more than 6\.48 px counts/, "the px the decision is made on");
+  const two = await tmp("tall-two");
+  await put(two, "report", "desktop.page.png", png(1440, 4000, [[100, 3900, 3, 1, [0, 0, 0]]]));
+  await put(two, "report", "mobile.page.png", png(1440, 4000, [[100, 3900, 2, 1, [0, 0, 0]]]));
+  const base2 = await tmp("tall-two-base");
+  await put(base2, "report", "desktop.page.png", png(1440, 4000));
+  await put(base2, "report", "mobile.page.png", png(1440, 4000));
+  assert.match((await compareFolders(base2, two, { outDir: await tmp("tall-two-out") })).report, /2 images differ by at most 3 px/);
   assert.equal(JSON.parse(await readFile(join(out, "report.json"), "utf8")).tolerated.max_pixels, 3);
 });
 
@@ -248,6 +256,32 @@ test("a one-step text colour change is found at the default colour distance; the
   assert.equal((await compareScreenshots(join(dir, "a.png"), join(dir, "b.png"))).changed, true);
   assert.equal((await compareScreenshots(join(dir, "a.png"), join(dir, "b.png"), { pixelThreshold: 0.5 })).changed, false);
   assert.equal((await compareScreenshots(join(dir, "a.png"), join(dir, "b.png"), { threshold: 0.5 })).changed, false, "`threshold` is the older name of pixelThreshold");
+});
+
+test("compareFolders states the colour distance it compared at — in the result, report.json and the report header", async () => {
+  const base = await tmp("pt-a");
+  const next = await tmp("pt-b");
+  await put(base, "root", "desktop.png", png(40, 40));
+  await put(next, "root", "desktop.png", png(40, 40));
+  const out = await tmp("pt-out");
+  const r = await compareFolders(base, next, { pixelThreshold: 0.3, outDir: out });
+  assert.equal(r.pixel_threshold, 0.3);
+  assert.equal(JSON.parse(await readFile(join(out, "report.json"), "utf8")).pixel_threshold, 0.3);
+  assert.match(r.report, /colour distance 0\.3 /);
+  assert.equal((await compareFolders(base, next, { outDir: await tmp("pt-out2") })).pixel_threshold, DEFAULT_PIXEL_THRESHOLD);
+});
+
+test("a folder that does not exist yet is a fine --out (README step 1): cleaned, compared into, created", async () => {
+  const parent = await tmp("missing");
+  await cleanOwnFiles(join(parent, "never-made"));
+  const base = await tmp("missing-a");
+  const next = await tmp("missing-b");
+  await put(base, "root", "desktop.png", png(40, 40));
+  await put(next, "root", "desktop.png", png(40, 40, [[0, 0, 20, 20, [0, 0, 0]]]));
+  const out = join(parent, "deep", "report");
+  const r = await compareFolders(base, next, { outDir: out });
+  assert.equal(r.changed.length, 1);
+  assert.deepEqual((await readdir(out)).sort(), ["diff", "report.json", "report.md"]);
 });
 
 test("compareFolders --out: a foreign folder is refused untouched, an earlier compare's folder is reused, diff/ is never read as a route", async () => {
@@ -342,6 +376,15 @@ test("baseline config: validated keys, viewports as text, defaults measured not 
   assert.throws(() => resolveBaselineConfig({ threshold_pct: "abc" }), /threshold_pct/);
   assert.equal(resolveBaselineConfig({ pixel_threshold: "0.2" }).pixel_threshold, 0.2);
   assert.throws(() => resolveBaselineConfig({ pixel_threshold: 2 }), /pixel_threshold/);
+  assert.throws(() => resolveBaselineConfig({ pixel_threshold: -1 }), /pixel_threshold/, "pixelmatch squares it: -1 would act like 1");
+  assert.throws(() => resolveBaselineConfig({ pixel_threshold: -0.01 }), /pixel_threshold/);
+  assert.equal(resolveBaselineConfig({ pixel_threshold: 0 }).pixel_threshold, 0, "0 is the documented way to see the blind spot");
+  assert.equal(resolveBaselineConfig({ pixel_threshold: "0" }).pixel_threshold, 0);
+  assert.equal(resolveBaselineConfig({ pixel_threshold: 1 }).pixel_threshold, 1);
+  assert.throws(() => resolveBaselineConfig({ pixel_threshold: 1.01 }), /pixel_threshold/);
+  assert.equal(resolveBaselineConfig({ pixel_threshold: null }).pixel_threshold, DEFAULT_PIXEL_THRESHOLD, "null (JSON, YAML ~) is unset, not 0");
+  assert.equal(resolveBaselineConfig({ threshold_pct: null }).threshold_pct, DEFAULT_THRESHOLD_PCT);
+  assert.equal(resolveBaselineConfig({ threshold_pct: 0 }).threshold_pct, 0);
   assert.throws(() => resolveBaselineConfig({ pixel_threshold: "x" }), /pixel_threshold/);
   assert.throws(() => resolveBaselineConfig({ clock: "yesterday" }), /clock/);
   assert.throws(() => resolveBaselineConfig({ timezone: "Mars/Base" }), /timezone/);
@@ -428,6 +471,8 @@ test("CLI baseline: wrong calls exit 2 with a reason, nothing touched", async ()
     [["baseline", "diff", "only-one"], /exactly two folders/],
     [["baseline", "diff", "--url", "http://x", "a", "b"], /does not apply/],
     [["baseline", "capture", "--url"], /requires a value/],
+    [["baseline", "diff", "a", "b", "--pixel-threshold"], /--pixel-threshold requires a value/],
+    [["baseline", "diff", "a", "b", "--threshold-pct"], /--threshold-pct requires a value/],
     [["baseline", "capture", "--url", "http://x", "--viewport", "wide"], /name=390x844/],
     [["baseline", "capture", "--url", "http://x", "--clock", "yesterday"], /clock/],
     [["baseline-capture"], /requires --url/],
@@ -470,7 +515,7 @@ test("CLI baseline diff: exit 0 same, 1 changed; compare folder must differ", as
   // The colour distance is a flag too: at colour distance 1 black against white no longer differs.
   assert.equal(cli("baseline", "diff", a, b, "--pixel-threshold", "1").status, 0);
   assert.equal(cli("baseline", "diff", a, b, "--pixel-threshold", "2").status, 2);
-  assert.match(changed.stdout, /\| \/ \| desktop \| top \| 9\.0000 %/);
+  assert.match(changed.stdout, /\| \/ \| desktop \| top \| 900 px \(9\.0000 %\)/);
   const foreign = await tmp("cli-foreign");
   await put(foreign, "diff", "keep.txt", Buffer.from("user file"));
   const refused = cli("baseline", "diff", a, b, "--out", foreign);

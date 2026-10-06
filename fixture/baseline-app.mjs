@@ -40,8 +40,8 @@ html:has(.bodyscroll){overflow:hidden;height:100%}
 const rows = (n, label, hot = -1) =>
   Array.from({ length: n }, (_, i) => `<div class="row${i === hot ? " row-hot" : ""}">${label} ${i + 1}</div>`).join("");
 
-const page = (body, { bodyClass = "", script = "" } = {}) =>
-  `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Fixture</title><style>${css}</style></head><body class="${bodyClass}">${body}${script ? `<script>${script}</script>` : ""}</body></html>`;
+const page = (body, { bodyClass = "", script = "", style = "" } = {}) =>
+  `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Fixture</title><style>${css}${style}</style></head><body class="${bodyClass}">${body}${script ? `<script>${script}</script>` : ""}</body></html>`;
 
 const clockScript = `
 const t = document.getElementById('now');
@@ -119,6 +119,73 @@ export function render(route, variant = "") {
   if (route === "/bodyscroll")
     // The body is the scroll container (html cannot scroll): the content must still be captured.
     return page(`<h1>Body scrolls</h1>${rows(60, "Row")}`, { bodyClass: "bodyscroll" });
+  if (route === "/bodyprescrolled")
+    // /bodyscroll, but the body is already scrolled at load: it must be captured from its top, like /bodyscroll.
+    return page(`<h1>Body scrolls</h1>${rows(60, "Row")}`, { bodyClass: "bodyscroll", script: "document.body.scrollTop = 400;" });
+  if (route === "/bodyhtmlauto")
+    // <html> keeps its own overflow, so the body's overflow stays the body's: the body is a scroller.
+    return page(`<h1>Body scrolls inside a scrolling html</h1>${rows(60, "Row")}`, {
+      style: "html{overflow:auto;height:100%}body{height:100vh;overflow:auto}",
+    });
+  if (route === "/bodypct")
+    // Common reset CSS: html and body 100 % high, body overflow-x hidden. <html> is not set, so the overflow
+    // moves to the viewport and the page scrolls: a page part, and no scroller.
+    return page(`<h1>Ordinary page</h1>${rows(60, "Row")}`, {
+      style: "html{height:100%}body{height:100%;overflow-x:hidden}",
+    });
+  if (route === "/bodyscrollbar")
+    // body{overflow-y:scroll} (forced scrollbar) on an ordinary page: same propagation, no scroller.
+    return page(`<h1>Ordinary page</h1>${rows(60, "Row")}`, { style: "body{overflow-y:scroll}" });
+  if (route === "/pagescrolled" || route === "/pageunscrolled")
+    // The document itself is scrolled at load (/pagescrolled): top and page parts must match its twin.
+    return page(`<h1>Document</h1>${'<div class="block"></div>'.repeat(10)}`, {
+      script: route === "/pagescrolled" ? "window.scrollTo(0, 600);" : "",
+    });
+  if (route === "/scrollclass")
+    // overflow-y:scroll (not auto) is a scroller too.
+    return page(`<div style="height:200px;width:300px;overflow-y:scroll">${rows(20, "Line")}</div>`);
+  if (route === "/slack")
+    // Overflow of 10 px is a scroller (captured from 2 px on); 1 px is rounding, not a scroller.
+    return page(`<div style="height:200px;width:300px;overflow:auto"><div style="height:210px">ten px</div></div>
+      <div style="height:200px;width:300px;overflow:auto"><div style="height:201px">one px</div></div>`);
+  if (route === "/slackrestless")
+    // A scroller with only ~10 px to scroll keeps changing its content (no network, the document does not move):
+    // the settle check must see it, as it sees /restless.
+    return page(`<div style="height:200px;width:300px;overflow:auto"><div id="box" style="height:210px;background:#e8e8f4"></div></div>`, {
+      script: `let n = 0; setInterval(() => { document.getElementById('box').style.height = 210 + (n++ % 2) * 5 + 'px'; }, 40);`,
+    });
+  if (route === "/hiddenmenu")
+    // Shapes taken from en.wikipedia.org (Vector dropdowns: visibility:hidden, opacity:0, absolute, a few px high,
+    // content taller) and bbc.com (off-canvas navigation drawer: visibility:hidden, fixed, full height), plus a collapsed
+    // section (content-visibility:hidden: its scroller keeps visibility:visible but has no rendered box).
+    // Neither is visible, so neither is a scroller; the visible one beside them is the only part.
+    return page(
+      `<header class="wiki"><div class="vector-dropdown"><label>Languages</label>
+         <div class="vector-dropdown-content">${rows(12, "Language")}</div></div></header>
+       <div class="DrawerContentStyled" role="dialog" aria-hidden="true">${rows(60, "Menu entry")}</div>
+       <section class="collapsed"><div class="inner-list">${rows(20, "Collapsed entry")}</div></section>
+       <main><h1>Article</h1><div style="height:200px;width:300px;overflow:auto" id="real">${rows(20, "Line")}</div></main>`,
+      {
+        style: `.wiki{position:relative;height:40px}
+          .vector-dropdown-content{visibility:hidden;opacity:0;position:absolute;top:36px;right:0;width:218px;max-height:32px;overflow-y:auto;background:#fff}
+          .collapsed{content-visibility:hidden;contain-intrinsic-size:300px 200px}
+          .inner-list{height:200px;width:300px;overflow:auto}
+          .DrawerContentStyled{visibility:hidden;position:fixed;top:0;bottom:0;left:0;width:min(320px,100vw);overflow-y:auto;background:#fff;z-index:9}`,
+      },
+    );
+  if (route === "/hiddenrestless" || route === "/zerorestless" || route === "/roundrestless") {
+    // Scrollers that are not parts — hidden, no box (no height, no width), or 1 px of rounding — whose content keeps changing
+    // must not keep the page from settling.
+    const scroller = {
+      "/hiddenrestless": [`visibility:hidden;height:100px;width:300px`],
+      "/zerorestless": [`height:0;width:300px`, `height:100px;width:0`],
+      "/roundrestless": [`height:200px;width:300px`],
+    }[route];
+    const boxes = scroller.map((style, i) => `<div style="${style};overflow:auto"><div class="in" style="width:50px;height:${route === "/roundrestless" ? 200 : 400}px"></div></div>`);
+    return page(`<h1>Calm page</h1>${boxes.join("")}`, {
+      script: `let n = 0; setInterval(() => { const odd = n++ % 2; for (const e of document.querySelectorAll('.in')) e.style.height = ${route === "/roundrestless" ? "200" : "400"} + odd * ${route === "/roundrestless" ? 1 : 10} + 'px'; }, 40);`,
+    });
+  }
   if (route === "/about-us") return page(`<h1>About us</h1><p>Hyphen route.</p>`);
   if (route === "/late")
     return page(`<div id="box"></div>`, {

@@ -179,7 +179,7 @@ visual-qa baseline diff .qa-baseline .qa-baseline-compare --threshold-pct 0.001
 | --- | --- |
 | `top` | the first view, as a visitor sees it |
 | `page` | the whole document — only when the page scrolls |
-| `scroller-<n>` | every inner scroll area, shown whole (DOM order). The area and its parents are stretched, fixed/sticky chrome elsewhere (header, rail, composer, cookie banner) is hidden so it cannot cover content, and everything is put back afterwards. A scrolling `<body>` counts. Textareas, selects and strips under 32 px are not parts. |
+| `scroller-<n>` | every inner scroll area, shown whole (DOM order). The area and its parents are stretched, fixed/sticky chrome elsewhere (header, rail, composer, cookie banner) is hidden so it cannot cover content, and everything is put back afterwards. A scrolling `<body>` counts when `<html>` does not take its overflow (`html,body{height:100%}` is a `page`). Hidden menus and off-canvas drawers, textareas, selects and strips under 32 px are not parts. |
 
 **Calm capture, same for capture and compare:** reduced motion, CSS animations and caret off,
 network idle, `document.fonts.ready`, then layout unchanged for 300 ms; locale `en-US` and
@@ -198,8 +198,8 @@ captures at once next to busy processes differ by 0 px even at distance 0; one c
 in a 16 px footer of a 1440×3726 page is 21–24 px; one Tailwind step of a label colour
 (`#374151` → `#4b5563`) is 148 px. **Blind spot:** a colour change below distance 0.05
 (`#333` → `#3a3a3a`) is not seen — lower `--pixel-threshold` to see it. What stayed below
-the threshold is listed in the report: «Below the threshold, not counted: n images differ by
-at most m px».
+the threshold is listed in the report: «Below the threshold, not counted: 1 image differs / n images differ
+by at most m px». The threshold in px is named in the report header.
 
 **Result:** `report.md` + `report.json` list route · viewport · part · share changed · size
 old → new · diff path. Diff images show differing pixels in red (differences that are only anti-aliasing: yellow) over a faded copy. A new
