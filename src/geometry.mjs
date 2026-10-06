@@ -1053,7 +1053,7 @@ function renderReport(r) {
     "",
   ];
   if (r.findings.length) {
-    // The first MAX_ROWS of each kind are listed (worst first); the rest is in report.json.
+    // The first MAX_ROWS of each kind are listed (worst first); the rest is in report.json (the worst `maxPerKind` of each kind).
     const seen = new Map();
     const shown = r.findings.map((f, i) => ({ f, n: i + 1 })).filter(({ f }) => {
       const key = `${f.check}/${f.kind}`;
@@ -1064,7 +1064,7 @@ function renderReport(r) {
     for (const { f, n } of shown)
       lines.push(`| ${n} | ${f.severity} | ${f.check} | ${f.state ?? f.route} · \`${f.selector}\` | ${f.widths} | ${f.measure.value} ${f.measure.unit} | ${f.image ? `[${f.image}](${f.image})` : "—"} |`);
     const hidden = [...seen].filter(([, n]) => n > MAX_ROWS).map(([key, n]) => `${n - MAX_ROWS} more ${key}`);
-    if (hidden.length) lines.push("", `Not listed here, all in report.json: ${hidden.join(", ")}.`);
+    if (hidden.length) lines.push("", `Not listed here, see report.json: ${hidden.join(", ")}.`);
     lines.push("", "## Details", "");
     for (const { f, n } of shown)
       lines.push(`${n}. **${f.check}** (${f.kind}) \`${f.selector}\`${f.text ? ` «${f.text}»` : ""} — ${f.message}. Worst at ${f.worst.width} × ${f.worst.height}; found at ${f.widths}.${f.trigger ? ` Trigger \`${f.trigger}\`.` : ""}${f.image_note ? ` Picture: ${f.image_note}.` : ""}`);

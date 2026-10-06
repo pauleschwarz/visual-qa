@@ -300,7 +300,7 @@ test("report: more than ten of a kind list ten and name the rest; the rare kinds
   for (const kind of ["overlap", "baseline"]) assert.ok(result.findings.find((f) => f.kind === kind).image, `no picture for ${kind}`);
   assert.equal(result.findings.filter((f) => f.image).length, 40);
   assert.deepEqual(result.warnings, ["images: only the first 40 of 47 findings are photographed"]);
-  assert.match(result.report, /Not listed here, all in report\.json: 35 more tap-size\/small\./);
+  assert.match(result.report, /Not listed here, see report\.json: 35 more tap-size\/small\./);
   assert.equal(result.report.split("\n").filter((l) => /^\| \d+ \|/.test(l)).length, 12);
 });
 
