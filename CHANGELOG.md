@@ -11,6 +11,40 @@
 - The README no longer says authenticated areas are out of reach. Bundled example app: `fixture/app-server.mjs`, `fixture/example/`.
 - Existing configs and commands behave as before; `coverage.viewports_covered` lists each viewport once.
 
+### Baseline v2
+- `baseline capture|compare|diff` (`baseline-capture` stays as an alias). Per route × viewport:
+  `top`, `page` (only if the document scrolls) and `scroller-<n>` — every inner scroll area shown
+  whole, fixed/sticky chrome elsewhere hidden, everything restored afterwards.
+- Calm capture: reduced motion, animations and caret off, network idle, `fonts.ready`, layout
+  unchanged for 300 ms; `--clock`, `--locale`, `--timezone`; compare reuses the baseline's own
+  conditions and refuses different ones.
+- `compare` writes `report.md` + `report.json` and red diff images to `<out>/diff/`; exit 1 on
+  change, missing image or load error; new images are `new`; load failures never crash.
+  `diff DIR_A DIR_B` compares two folders without a browser. `--out` only removes earlier
+  baseline files, never a foreign folder.
+- Threshold (`--threshold-pct`, default 0.0005, measured; `--pixel-threshold`, default 0.05): a
+  single stray pixel is no longer a finding, a size change always is. The percentage is
+  measured against at most one 1440×900 screen, so a changed footer digit on a tall page and a
+  one-step label colour are found; the report lists what stayed below the threshold. Applies
+  to `--baseline-dir` in `run`/`explore`.
+- Only what you can see is a scroll area: scrollers hidden by `visibility:hidden`, `display:none`
+  or `content-visibility:hidden` are not parts, and `<body>` counts only when `<html>` is not
+  `visible` in both axes (`html,body{height:100%}` pages are a `page`, not a scroller). The
+  report names the threshold cap in px and lists the changed pixels first.
+- A scroller that cannot be photographed whole — no box when grown, a grown box shorter than nine
+  tenths of its content, removed by the page, or no picture within 5 s — is skipped and listed
+  under «Not captured» (manifest, compare report, CLI); it never fails the capture.
+- `threshold_pct` and `pixel_threshold` accept numbers only: an empty YAML value is an error,
+  not a silent 0.
+- `.visual-qa.yml` `baseline:` block (`routes`, `viewports`, `threshold_pct`, `clock`, `locale`,
+  `timezone`, `pixel_threshold`).
+- Behaviour change: `baseline-capture` (the alias) now replaces what an earlier capture left in `--out`
+  instead of adding to it, and refuses a folder that holds foreign files. `compareScreenshots` no
+  longer counts every differing pixel: it takes `thresholdPct` (default 0) and `pixelThreshold`
+  (default 0.05, was pixelmatch's 0.1; `threshold` still works as its older name).
+- Behaviour change: a tall inner scroll area is now severity `info` (new, last in report order,
+  never lowers a `PASS`); `--internal-scrollers-as-finding` keeps the old `medium` finding.
+
 ## 0.2.13 — 2026-09-20
 
 ### OmniRoute vision bus default

@@ -7,7 +7,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { redact } from "./config.mjs";
 
-const SEVERITIES = ["critical", "high", "medium", "low"];
+const SEVERITIES = ["critical", "high", "medium", "low", "info"];
 const SEVERITY_RANK = new Map(
   SEVERITIES.map((severity, index) => [severity, index]),
 );

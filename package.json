@@ -41,7 +41,7 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "fixture": "node fixture/server.mjs",
-    "selftest": "node --test --test-concurrency=1 test/e2e-fixture.mjs test/states-journeys.e2e.mjs test/run-pipeline.e2e.mjs test/demo-report.test.mjs",
+    "selftest": "node --test --test-concurrency=1 test/e2e-fixture.mjs test/states-journeys.e2e.mjs test/baseline.e2e.mjs test/run-pipeline.e2e.mjs test/demo-report.test.mjs",
     "verify": "npm run test && npm run selftest",
     "prepublishOnly": "npm run verify",
     "verity": "pi-verity"

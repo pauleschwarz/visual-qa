@@ -2,8 +2,10 @@ export { BrowserRuntime, probeValueFor } from "./browser.mjs";
 export {
   classifyRisk,
   DEFAULT_BOUNDS,
+  DEFAULT_THRESHOLD_PCT,
   MODES,
   redact,
+  resolveBaselineConfig,
   resolveConfig,
 } from "./config.mjs";
 export {
@@ -41,6 +43,9 @@ export {
 export { resolveSessionInput, SetupError } from "./session.mjs";
 export {
   captureBaselines,
+  compareFolders,
+  compareImages,
+  compareToBaseline,
   resolveBaselinePath,
   routeKeyFromTarget,
 } from "./baseline.mjs";

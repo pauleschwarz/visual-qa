@@ -674,7 +674,10 @@ async function compareEntryBaseline(
     return { complete: true };
   }
   try {
-    const comparison = await compareScreenshots(baselineInfo.path, initialShot);
+    const comparison = await compareScreenshots(baselineInfo.path, initialShot, {
+      thresholdPct: config.baseline.threshold_pct,
+      pixelThreshold: config.baseline.pixel_threshold,
+    });
     if (comparison.changed)
       issues.push(
         explorerIssue(
@@ -781,7 +784,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
         config,
       );
       issues.push(...(await runA11y(runtime.page)));
-      issues.push(...(await runLayoutChecks(runtime.page, viewport)));
+      issues.push(...(await runLayoutChecks(runtime.page, viewport, config)));
       issues.push(...(await runScrollChecks(runtime.page, viewport)));
       // Slop heuristics describe a state like the other static checks.
       if (config.slopChecks !== false)
@@ -1330,7 +1333,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
               // before restoring, so a field cannot look clean only because
               // its overflow occurs outside the normal state graph.
               if (edge.kind === "overlong")
-                issues.push(...(await runLayoutChecks(runtime.page, viewport)));
+                issues.push(...(await runLayoutChecks(runtime.page, viewport, config)));
               evidence.push(
                 redact({
                   kind: "edge_input",
@@ -1377,7 +1380,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
             config,
           );
           issues.push(...(await runA11y(runtime.page)));
-          issues.push(...(await runLayoutChecks(runtime.page, viewport)));
+          issues.push(...(await runLayoutChecks(runtime.page, viewport, config)));
           issues.push(...(await runScrollChecks(runtime.page, viewport)));
           if (config.slopChecks !== false)
             issues.push(...(await runSlopChecks(runtime.page, { viewport })));

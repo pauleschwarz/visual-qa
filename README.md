@@ -130,7 +130,7 @@ visual-qa report <DIR> [--json]                      # agent-friendly summary
 visual-qa intent --intent "…" --fix-dir DIR [--json]  # catalog dry-run, no browser
 visual-qa review-prepare <DIR> [--max-pairs N]       # export vision tasks for your model
 visual-qa review-apply <DIR> <findings.json>         # apply findings (fail-closed full-ID coverage)
-visual-qa baseline-capture --url URL --out DIR [--path-prefix PATH · --changed-target …]
+visual-qa baseline capture|compare|diff …            # see "Baselines" below
 visual-qa agent-run --url URL [--baseline-url URL] [--out DIR] [--git-ref REF]
 visual-qa agent-gate <QA-DIR> <verity.json> [--json] # fail-closed Visual QA + Verity receipt
 ```
@@ -140,7 +140,9 @@ visual-qa agent-gate <QA-DIR> <verity.json> [--json] # fail-closed Visual QA + V
 **Mode:** `--mode off|changed|full` · `--changed-target URL` (repeatable;
 required for `changed`) · `--baseline-dir DIR` (`<route>/<viewport>.png` or
 legacy flat) · `--design-contract FILE` (or auto `DESIGN.md`) ·
-`--allow-destructive` (only with `--isolated`).
+`--allow-destructive` (only with `--isolated`) · `--threshold-pct N` ·
+`--pixel-threshold N` (baseline tolerance, see "Baselines") ·
+`--internal-scrollers-as-finding`.
 
 **Review defaults (`run`):** auto-exports harness vision tasks after the walk
 (`--no-prepare-review` to skip) · edge input probes on text fields
@@ -280,6 +282,93 @@ visual-qa journeys --url http://127.0.0.1:4174          # every journey in the c
   `storage_state` file, an unknown state, or a journey file with a syntax error
   stops the run with exit `2` and the file named. Unknown keys in
   `.visual-qa.yml` are printed as warnings.
+
+## Baselines
+
+Catch every unintended shift when you rework a UI — including app shells with their own
+scroll areas — without false alarms. Capture a baseline of the current state, change code,
+compare.
+
+```bash
+# 1. before the change: calm screenshots of every route at every viewport
+visual-qa baseline capture --url http://127.0.0.1:3000 --out .qa-baseline \
+  --route / --route /pricing --viewport mobile=390x844 --viewport desktop=1440x900
+
+# 2. after the change: capture again under the same conditions, diff, report
+visual-qa baseline compare --url http://127.0.0.1:3000 --baseline .qa-baseline
+#   → .qa-baseline-compare/report.md, report.json, diff/*.png   (exit 1 on any change)
+
+# two folders you already have (CI, tests) — no browser
+visual-qa baseline diff .qa-baseline .qa-baseline-compare --threshold-pct 0.001
+```
+
+**What is captured** per route × viewport (`<out>/<route>/<viewport>[.part].png`):
+
+| Part | Image |
+| --- | --- |
+| `top` | the first view, as a visitor sees it |
+| `page` | the whole document — only when the page scrolls |
+| `scroller-<n>` | every inner scroll area, shown whole (DOM order). The area and its parents are stretched, fixed/sticky chrome elsewhere (header, rail, composer, cookie banner) is hidden so it cannot cover content, and everything is put back afterwards. A scrolling `<body>` counts only when `<html>` is not `visible` in both axes (the viewport then cannot take the body's overflow); with `html,body{height:100%}` the page scrolls and it is a `page`. Scrollers hidden by `visibility:hidden`, `display:none` or `content-visibility:hidden`, textareas, selects and strips under 32 px are not parts. A scroller that cannot be photographed whole — no box when grown, a grown box shorter than nine tenths of its content (content outside the flow, or children sized in % of the box), removed by the page, or no picture within 5 s — is skipped and listed under «Not captured»; it never fails the capture. |
+
+**Calm capture, same for capture and compare:** reduced motion, CSS animations and caret off,
+network idle, `document.fonts.ready`, then layout unchanged for 300 ms; locale `en-US` and
+timezone `UTC` unless set. `--clock <ISO>` freezes `Date`
+(timers still run) — without it a page that prints the time can never match itself. `compare`
+reads clock, locale, timezone, routes and viewports from the baseline's
+`baseline-manifest.json`; passing a different clock/locale/timezone is refused (exit 2), a
+subset of routes/viewports only has to match itself.
+
+**Threshold** (`--threshold-pct`, default `0.0005`; `--pixel-threshold`, default `0.05`). An
+image counts as changed when its size changed, or when more than `threshold-pct` percent of
+its pixels differ — measured against at most one 1440×900 screen (1,296,000 px), so a tall
+page never tolerates more than ≈6 px and a phone screen (390×844) tolerates ≈1.6 px — the report
+names the cap. A pixel differs when pixelmatch's colour distance
+(0–1, anti-aliasing ignored) exceeds `--pixel-threshold`. Measured, not guessed: three
+captures at once next to busy processes differ by 0 px even at distance 0; one changed digit
+in a 16 px footer of a 1440×3726 page is 21–24 px; one Tailwind step of a label colour
+(`#374151` → `#4b5563`) is 148 px. **Blind spot:** a colour change below distance 0.05
+(`#333` → `#3a3a3a`) is not seen — lower `--pixel-threshold` to see it. What stayed below
+the threshold is listed in the report: «Below the threshold, not counted: 1 image differs / n images differ
+by at most m px». The threshold in px is named in the report header.
+
+**Result:** `report.md` + `report.json` list route · viewport · part · share changed · size
+old → new · diff path. Diff images show differing pixels in red (differences that are only anti-aliasing: yellow) over a faded copy. A new
+image without baseline is `new` (not an error); a baseline image the new capture lacks is
+missing (error); HTTP ≥ 400 and navigation failures are listed as load errors and make the run
+fail, they never crash it.
+
+**Exit codes:** `0` no change · `1` change, missing image or load error · `2` wrong call,
+unreachable server (checked before anything on disk is touched), invalid config.
+`--out` is emptied of earlier baseline files first, but only those files — a folder that
+holds other things and no `baseline-manifest.json` is refused. `baseline diff --out DIR`
+follows the same rule: DIR must be empty or hold an earlier compare (manifest or compare
+`report.json`); without `--out` the report goes into the second folder.
+
+**Config** (`.visual-qa.yml` in the working directory, read by `baseline capture|compare|diff`;
+flags win. `run` and `explore` do not read it — they take the flags):
+
+```yaml
+baseline:
+  routes: [/, /pricing, /about-us]
+  viewports:
+    - mobile: 390x844
+    - desktop: 1440x900
+  threshold_pct: 0.0005
+  pixel_threshold: 0.05
+  clock: 2026-10-05T10:00:00+02:00
+  locale: en-US
+  timezone: UTC
+```
+
+`baseline-capture --url URL --out DIR [--changed-target …]` stays as an alias of
+`baseline capture` (`--changed-target` = `--route`). `top` keeps the historic
+`<route>/<viewport>.png` path, so `--baseline-dir` for `run`/`explore` keeps working;
+`--threshold-pct` applies there too.
+
+**Inner scrollers are not defects.** The layout check reports a tall inner scroll area as
+`info` (an app shell is a design choice) and `info` never turns a `PASS` into `UNPROVEN`.
+`--internal-scrollers-as-finding` restores the `medium` finding (through the API:
+`internalScrollers: "finding"` in `resolveConfig`; `.visual-qa.yml` has no such key).
 
 ## Agent loop (short)
 

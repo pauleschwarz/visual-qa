@@ -48,6 +48,7 @@ function emptyConfig() {
     trigger: [],
     ignore: [],
     route_map: {},
+    baseline: {},
     max_review_fix_loops: 2,
     setup: null,
     storage_state: null,
@@ -203,6 +204,7 @@ export function parseVisualQaYaml(source) {
   const result = emptyConfig();
   let section = null;
   let currentGlob = null;
+  let baselineKey = null;
 
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.replace(/#.*$/, "");
@@ -231,6 +233,30 @@ export function parseVisualQaYaml(source) {
         }
         continue;
       }
+    }
+
+    if (section === "baseline") {
+      // baseline: routes / viewports as lists (viewport "name: 390x844"), the rest scalars.
+      const unquote = (v) => v.trim().replace(/^["']|["']$/g, "");
+      if (trimmed.startsWith("-") && baselineKey) {
+        const item = unquote(trimmed.replace(/^-+\s*/, ""));
+        const named = /^([^:\s]+):\s*(\d+x\d+)$/i.exec(item);
+        if (item) result.baseline[baselineKey].push(named ? `${named[1]}=${named[2]}` : item);
+        continue;
+      }
+      const pair = trimmed.match(/^([^:]+):\s*(.*)$/);
+      if (!pair) continue;
+      baselineKey = pair[1].trim();
+      const rest = pair[2].trim();
+      if (!rest) result.baseline[baselineKey] = [];
+      else if (rest.startsWith("["))
+        result.baseline[baselineKey] = rest
+          .replace(/^\[|\]$/g, "")
+          .split(",")
+          .map(unquote)
+          .filter(Boolean);
+      else result.baseline[baselineKey] = unquote(rest);
+      continue;
     }
 
     if (section === "trigger" || section === "ignore") {
