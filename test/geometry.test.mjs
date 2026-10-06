@@ -95,3 +95,12 @@ test("cli: usage names the command and the explore flag", () => {
   assert.match(stdout, /visual-qa geometry --url URL/);
   assert.match(stdout, /--geometry \(run\/explore\)/);
 });
+
+test("cli: run and explore accept --geometry (a call that fails later says why, not usage)", () => {
+  for (const command of ["run", "explore"]) {
+    const result = cli(command, "--geometry", "--mode", "changed", "--url", "http://x");
+    assert.equal(result.status, 2, command);
+    assert.match(result.stderr, /--mode changed requires at least one --changed-target/, command);
+    assert.doesNotMatch(result.stderr, /Usage:/, command);
+  }
+});
