@@ -44,12 +44,33 @@
 //   /row-align-many   30 boxes in one wrapping row, 2 px apart
 //   /row-align-table  a table row with a cell 3 px off its neighbours
 //   /row-align-rowspan, /row-align-span-cell, /row-align-lines  cells that span rows or are centred beside taller ones: nothing to find
+//   /tap-size-fixed-pair, /tap-size-fixed-apart  a fixed chat button 56 px over a button of a fixed bar (apart: 80 px higher, no overlap)
+//   /tap-size-bar     a fixed bar with two links over page links: the bar is over the page by design (`covered`), no overlap of tap areas
+//   /tap-size-clip-<auto|scroll|hidden|clip>  a 120 px box of three 48 px links over four more: what the box cuts off overlaps nothing
+//   /tap-size-clip-border  four boxes with a 10 px border, a button poking 10 px into the border, a link over that strip: the box cuts at its padding box
+//   /tap-size-clip-edge  a box cuts the overlap with the link under it down to 1 px (no overlap) and, further down, to 2 px (one)
+//   /tap-size-nested  a link around a role=button span, a role=button label over its checkbox: no overlap
+//   /tap-size-cards   two overflow:hidden cards 40 px over each other, a button in each; /tap-size-own-clip  two buttons 10 px over each other, one with a 6 px border and its own overflow:hidden
+//   /tap-size-containing, /tap-size-fixed-clip  boxes that overflow:hidden does not clip (absolute outside it, fixed, in a fixed sheet): their overlaps are found
+//   /tap-size-edge    four pairs of buttons: 1 px and 2 px over each other and side by side
+//   /tap-size-100     exactly 100 small buttons
+//   /first-view-edge  the CTA ends at 2360 px: the picture just fits 2400 px
+//   /stable-many, /text-fit-many, /edges-many, /row-align-forty, /row-align-tall, /first-view-many  more than any earlier cap: 13 movers of 2000 boxes, 60 cut texts, 55 pairs, 40 boxes in a row, a 10-line box, 8 CTAs
+//   /covered-100, /covered-101, /covered-controls-40, /covered-controls-30, /covered-views  content and controls at the limits of `covered`; views: 150 paragraphs on a phone, 400 on a wide screen
 import { createServer } from "node:http";
 
 const page = (body, style = "") =>
   `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Geometry fixture</title><style>*{box-sizing:border-box}body{margin:0;font:16px/1.4 Arial,sans-serif;color:#111;background:#fff}${style}</style></head><body>${body}</body></html>`;
 
 const filler = (n, text = "A line of ordinary content.") => Array.from({ length: n }, () => `<p>${text}</p>`).join("");
+
+/** `n` links of 48 px, each a block of the page (ids `${id}0`…). */
+const links = (n, id = "p") => Array.from({ length: n }, (_, i) => `<a href="#${id}${i}" style="display:block;height:48px;line-height:48px">Link ${id}${i}</a>`).join("");
+const chatOver = (bottom) => `<div style="position:fixed;right:16px;bottom:${bottom}px"><button id="chatbtn" style="width:56px;height:56px">Chat</button></div>`;
+const bar = `<div style="position:fixed;left:0;right:0;bottom:0;height:72px;background:#222;padding:12px"><button id="buy" style="position:absolute;right:40px;top:12px;width:120px;height:48px">Buy</button></div>`;
+const coveredBar = `<div style="position:fixed;bottom:0;left:0;right:0;height:72px;background:#222"></div>`;
+const coveredPage = (paragraphs, anchors) =>
+  page(`<main>${filler(paragraphs - 1)}<p id="last">The last paragraph.</p>${Array.from({ length: anchors }, (_, i) => `<a id="l${i}" href="#e${i}">Link ${i}</a>`).join("")}</main>${coveredBar}`);
 
 const PAGES = {
   "/first-view-bad": page(
@@ -258,6 +279,112 @@ const PAGES = {
   // A two-line cell next to a one-line cell centred in the row: not the same number of lines, placed by its centring.
   "/row-align-lines": page(
     `<table style="border-collapse:collapse;width:300px;font-size:14px;line-height:1.2"><tr><td style="width:70px;padding:4px 4px 0;vertical-align:middle">Other<br>Religion</td><td style="padding:4px;vertical-align:middle">Swiss</td></tr></table>`,
+  ),
+  // ---- tap-size overlap: the screen at one scroll position, rects cut at what clips them
+  "/tap-size-fixed-pair": page(`<main>${links(10)}</main>${chatOver(16)}${bar}`),
+  "/tap-size-fixed-apart": page(`<main>${links(10)}</main>${chatOver(96)}${bar}`),
+  "/tap-size-bar": page(
+    `<main>${links(14)}</main>
+     <div style="position:fixed;left:0;right:0;bottom:0;height:80px;background:#222;padding:8px"><a id="x1" href="#x1" style="display:inline-block;width:150px;height:48px;line-height:48px;background:#fff">Bar one</a> <a id="x2" href="#x2" style="display:inline-block;width:150px;height:48px;line-height:48px;background:#fff">Bar two</a></div>`,
+  ),
+  ...Object.fromEntries(
+    ["auto", "scroll", "hidden", "clip"].map((overflow) => [
+      `/tap-size-clip-${overflow}`,
+      page(`<div id="box" style="height:120px;overflow:${overflow}">${links(3)}</div>${links(4, "next")}`),
+    ]),
+  ),
+  // A box clips at its padding box: a button poking 10 px into the border of its 10 px border box shows no more than the
+  // padding box, so a link lying over that border strip is not under it. One box per side.
+  "/tap-size-clip-border": page(
+    [
+      ["left", "left:-10px;top:20px", "left:0;top:90px", false],
+      ["right", "right:-10px;top:20px", "left:210px;top:90px", true],
+      ["top", "left:30px;top:-10px", "left:70px;top:20px", false],
+      ["bottom", "left:30px;bottom:-10px", "left:70px;top:150px", true],
+    ]
+      .map(([side, button, link, linkFirst]) => {
+        const box = `<div style="position:absolute;left:40px;top:60px;width:180px;height:100px;border:10px solid #888;overflow:hidden"><button id="in-${side}" style="position:absolute;${button};width:100px;height:48px">In ${side}</button></div>`;
+        const over = `<a id="over-${side}" href="#${side}" style="position:absolute;${link};width:50px;height:50px;background:#fee">${side}</a>`;
+        return `<div style="position:relative;width:260px;height:220px">${linkFirst ? over + box : box + over}</div>`;
+      })
+      .join(""),
+  ),
+  // A box that cuts the overlap down to 1 px (the link under it starts 1 px inside) and one down to 2 px.
+  "/tap-size-clip-edge": page(
+    `<div style="height:120px;overflow:hidden">${links(3, "a")}</div><a id="one" href="#one" style="display:block;height:48px;margin-top:-1px">One</a>
+     <div style="height:120px;overflow:hidden">${links(3, "b")}</div><a id="two" href="#two" style="display:block;height:48px;margin-top:-2px">Two</a>`,
+  ),
+  // A target in a target (a link around a button) and a label that is a target of its own over its field: one tap area each.
+  "/tap-size-nested": page(
+    `<a id="outer" href="#outer" style="display:block;height:48px"><span id="inner" role="button" style="display:block;height:48px">Inside</span></a>
+     <div style="position:relative;height:60px"><input id="check" type="checkbox" style="position:absolute;left:0;top:0;width:48px;height:48px"><label id="lbl" for="check" role="button" style="position:absolute;left:0;top:0;width:120px;height:48px">Label</label></div>`,
+  ),
+  "/tap-size-cards": page(
+    `<div class="card" style="overflow:hidden;height:80px;position:relative;background:#eef"><button id="b1" style="width:100%;height:80px">First card</button></div>
+     <div class="card" style="overflow:hidden;height:80px;position:relative;margin-top:-40px;background:#fee"><button id="b2" style="width:100%;height:80px">Second card</button></div>`,
+  ),
+  // A button that clips its own content: its own border is not a clip box for itself.
+  "/tap-size-own-clip": page(
+    `<div style="position:relative;height:60px"><button id="e1" style="position:absolute;left:0;top:0;width:140px;height:48px;border:6px solid #888;overflow:hidden;white-space:nowrap">A very long label that is cut</button><button id="e2" style="position:absolute;left:130px;top:0;width:140px;height:48px">Two</button></div>`,
+  ),
+  // #far sits in an absolute box whose containing block is `.outer`: the overflow:hidden box between does not clip it.
+  "/tap-size-containing": page(
+    `<div class="outer" style="position:relative;height:130px"><div style="overflow:hidden;width:200px;height:40px"><div style="position:absolute;left:0;top:60px"><button id="far" style="width:120px;height:48px">Far</button></div></div>
+     <button id="near" style="position:absolute;left:100px;top:50px;width:120px;height:48px">Near</button></div>`,
+  ),
+  // A fixed box is not clipped by what it sits in (#fx), nor is what sits in a fixed sheet (#s1, #s2).
+  "/tap-size-fixed-clip": page(
+    `<div style="overflow:hidden;width:100px;height:20px"><button id="fx" style="position:fixed;left:0;top:100px;width:120px;height:48px">One</button></div>
+     <button id="fy" style="position:fixed;left:100px;top:120px;width:120px;height:48px">Two</button>
+     <div style="overflow:hidden;width:100px;height:20px"><div style="position:fixed;left:0;top:300px;width:300px;height:200px"><button id="s1" style="display:block;width:120px;height:48px">A</button><button id="s2" style="display:block;width:120px;height:48px;margin:-20px 0 0 60px">B</button></div></div>`,
+  ),
+  // Four pairs of 48 px buttons: 1 px and 2 px over each other, 1 px and 2 px side by side. From 2 px it is an overlap.
+  "/tap-size-edge": page(
+    `<div style="position:relative;height:300px">${[
+      ["a1", 0, 0],
+      ["a2", 0, 47],
+      ["c1", 0, 100],
+      ["c2", 0, 146],
+      ["e1", 100, 0],
+      ["e2", 179, 0],
+      ["g1", 100, 100],
+      ["g2", 178, 100],
+    ]
+      .map(([id, left, top]) => `<button id="${id}" style="position:absolute;left:${left}px;top:${top}px;width:80px;height:48px">${id}</button>`)
+      .join("")}</div>`,
+  ),
+  "/tap-size-100": page(Array.from({ length: 100 }, (_, i) => `<button aria-label="Item ${i}" style="display:block;width:28px;height:28px;margin:4px 0"></button>`).join("")),
+  // ---- what a page can hold before a check would have to stop: nothing is cut off silently
+  "/stable-many": page(
+    `<button id="go" style="height:48px;padding:0 16px">Go</button>${Array.from({ length: 2000 }, (_, i) => `<div id="m${i}" style="height:20px;font-size:12px">row ${i}</div>`).join("")}
+     <script>document.getElementById('go').onclick = () => { for (const i of [100,101,102,103,104,105,106,107,108,109,110,111,1800]) document.getElementById('m' + i).style.transform = 'translateX(14px)'; };</script>`,
+  ),
+  "/text-fit-many": page(Array.from({ length: 60 }, (_, i) => `<div id="t${i}" style="width:60px;overflow:hidden;white-space:nowrap;font-size:14px">Text number ${i} is cut</div>`).join("")),
+  "/edges-many": page(
+    Array.from({ length: 56 }, (_, i) => `<div id="e${i}" style="height:24px;margin-left:${i % 2 ? 2 : 0}px;background:#eef;border:1px solid #99a;margin-bottom:6px">block ${i}</div>`).join(""),
+    "body{padding:16px 40px}",
+  ),
+  "/row-align-forty": page(
+    `<div style="display:flex;white-space:nowrap;font-size:11px">${Array.from({ length: 40 }, (_, i) => `<span id="k${i}" style="margin-right:${i === 35 ? 1 : 12}px">k${String(i).padStart(2, "0")}</span>`).join("")}</div>`,
+  ),
+  // The right text sits beside the tenth line of the left one, 2 px away (second row: beside its first line): only a check that reads every line sees it.
+  "/row-align-tall": page(
+    `<div style="display:flex;align-items:flex-end;font-size:14px;line-height:20px"><div id="tall">${Array.from({ length: 10 }, () => "Word").join("<br>")}</div><div id="side" style="margin-left:2px">Aside</div></div>
+     <div style="display:flex;align-items:flex-start;font-size:14px;line-height:20px;margin-top:24px"><div id="tall2">${Array.from({ length: 10 }, () => "Word").join("<br>")}</div><div id="side2" style="margin-left:2px">Aside</div></div>`,
+  ),
+  // The CTA ends at 2360 px: with the 40 px below it the picture is exactly the 2400 px it can show, nothing to say.
+  "/first-view-edge": page(`<div style="height:2312px"></div><a class="cta" href="#buy" style="display:block;height:48px">Buy now</a><div style="height:200px"></div>`),
+  "/first-view-many": page(
+    `${Array.from({ length: 6 }, (_, i) => `<a class="cta" id="c${i + 1}" href="#c${i}" style="display:block;height:30px">cta ${i + 1}</a>`).join("")}<div style="height:1400px"></div><a class="cta" id="c7" href="#c7" style="display:block;height:30px">cta 7</a><a class="cta" id="c8" href="#c8" style="display:block;height:30px">cta 8</a>`,
+  ),
+  // `covered` walks content elements and, of those, controls (a third as many): `n` paragraphs + `m` links under a fixed bar
+  "/covered-100": coveredPage(100, 0),
+  "/covered-101": coveredPage(101, 0),
+  "/covered-controls-40": coveredPage(20, 40),
+  "/covered-controls-30": coveredPage(20, 30),
+  "/covered-views": page(
+    `<main>${filler(150)}${Array.from({ length: 250 }, () => `<p class="more">More on a wide screen.</p>`).join("")}</main>${coveredBar}`,
+    "@media (max-width:600px){.more{display:none}}",
   ),
 };
 

@@ -550,6 +550,10 @@ test("first-view: a box lying beyond the picture says where it is; one inside th
   assert.match(cta.image_note, /^the box lies 3060–3106\.4 px down the page, below the 2400 px this picture shows/);
   assert.equal(PNG.sync.read(await readFile(join(far.outDir, cta.image))).height, 2400);
   assert.ok(far.report.includes(`Picture: ${cta.image_note}.`));
+  const edge = await run("/first-view-edge", ["first-view"], { selectors: sel, viewports: [PHONE] });
+  assert.equal(edge.findings.length, 1);
+  assert.equal(edge.findings[0].image_note, undefined, "a box that ends 40 px above the picture's last row needs no note");
+  assert.equal(PNG.sync.read(await readFile(join(edge.outDir, edge.findings[0].image))).height, 2400);
   const near = await run("/first-view-bad", ["first-view"], { selectors: sel, viewports: [PHONE] });
   assert.equal(near.findings[0].image_note, undefined);
   assert.doesNotMatch(near.report, /Picture:/);
@@ -567,4 +571,102 @@ test("cli: run and explore take --geometry — with it the page's geometry findi
     assert.deepEqual(with_.map((i) => [i.where, i.title.slice(0, 33)]), [["#second", "edges: #second left edge 3 px off"]], command);
     assert.deepEqual(await issues(), [], command);
   }
+});
+
+// ---------------------------------------------------------------- tap-size overlap: what is compared with what, and where a box is cut
+
+const overlaps = (result) =>
+  result.findings.filter((f) => f.kind === "overlap").map((f) => [f.selector, f.selector2, f.measure.width, f.measure.height]).sort((a, b) => a[0].localeCompare(b[0]));
+const tapSize = (route) => run(route, ["tap-size"], { viewports: [PHONE] });
+
+test("tap-size: a fixed button over a button of another fixed element is an overlap; a fixed bar over page links is not (that is covered's)", async () => {
+  assert.deepEqual(overlaps(await tapSize("/tap-size-fixed-pair")), [["#buy", "#chatbtn", 32, 44]]);
+  assert.deepEqual((await tapSize("/tap-size-fixed-apart")).findings, []);
+  assert.deepEqual((await tapSize("/tap-size-bar")).findings, []);
+});
+
+test("tap-size: what a box cuts off — auto, scroll, hidden or clip — overlaps nothing beyond its edge", async () => {
+  for (const overflow of ["auto", "scroll", "hidden", "clip"]) {
+    const result = await tapSize(`/tap-size-clip-${overflow}`);
+    assert.deepEqual([overflow, result.findings, result.errors], [overflow, [], []]);
+  }
+});
+
+test("tap-size: a box cuts at its padding box on every side (whichever of the two controls is cut), and an overlap the cut leaves 1 px of is none, 2 px is one; targets in targets are one area", async () => {
+  const border = await tapSize("/tap-size-clip-border");
+  assert.deepEqual([border.findings, border.errors], [[], []]);
+  const nested = await tapSize("/tap-size-nested");
+  assert.deepEqual([nested.findings, nested.errors], [[], []], "a target in a target, a label over its own field: one tap area");
+  const edge = await tapSize("/tap-size-clip-edge");
+  assert.deepEqual(overlaps(edge).map(([selector, , width, height]) => [selector, width, height]), [["#two", 390, 2]]);
+});
+
+test("tap-size: an overlap is found when the cut only takes away what lies beside it: two cards, a button's own border, an absolute box outside the clip, fixed boxes", async () => {
+  assert.deepEqual(overlaps(await tapSize("/tap-size-cards")), [["#b2", "#b1", 390, 40]]);
+  assert.deepEqual(overlaps(await tapSize("/tap-size-own-clip")), [["#e2", "#e1", 10, 48]], "a button's own border is not a clip box for itself");
+  assert.deepEqual(overlaps(await tapSize("/tap-size-containing")), [["#near", "#far", 20, 38]], "an absolute box is cut by its containing block, not by the box between");
+  assert.deepEqual(overlaps(await tapSize("/tap-size-fixed-clip")), [["#fy", "#fx", 20, 28], ["#s2", "#s1", 60, 20]], "fixed boxes are not cut by what they sit in");
+});
+
+test("tap-size: tap areas that touch by 1 px do not overlap, by 2 px they do — above each other and side by side", async () => {
+  assert.deepEqual(overlaps(await tapSize("/tap-size-edge")), [["#c2", "#c1", 80, 2], ["#g2", "#g1", 2, 48]]);
+});
+
+// ---------------------------------------------------------------- no cap in the checks: what a page holds is what is measured
+
+test("stable: 13 movers among 2000 boxes are all found, the one at box 1800 too", async () => {
+  const result = await run("/stable-many", ["stable"], { selectors: { stable: ["#go"] }, viewports: [DESKTOP] });
+  assert.equal(result.findings.length, 13);
+  assert.ok(result.findings.some((f) => f.selector === "#m1800"));
+  assert.deepEqual([result.errors, result.truncated, result.blocked], [[], [], false]);
+  // The same page with room for 5 findings of a kind: five stay, the cut is named.
+  const few = await run("/stable-many", ["stable"], { selectors: { stable: ["#go"] }, viewports: [DESKTOP], maxPerKind: 5 });
+  assert.equal(few.findings.length, 5);
+  assert.deepEqual(few.truncated.map((t) => [t.check, t.cut, t.label, t.seen, t.kept]), [["stable", "findings", "moves", 13, 5]]);
+});
+
+test("text-fit: 60 cut texts are 60 findings; edges: 55 offset pairs are 55", async () => {
+  assert.equal((await run("/text-fit-many", ["text-fit"], { viewports: [DESKTOP] })).findings.length, 60);
+  const edges = await run("/edges-many", ["edges"], { viewports: [DESKTOP] });
+  assert.deepEqual([edges.findings.length, edges.truncated], [55, []]);
+});
+
+test("row-align: the gap of 1 px between box 35 and 36 of 40 in a row is found; the 2 px gap beside the tenth line of a tall box too", async () => {
+  const row = await run("/row-align-forty", ["row-align"], { viewports: [DESKTOP] });
+  assert.deepEqual(row.findings.filter((f) => f.kind === "gap").map((f) => [f.selector, f.measure.value]), [["#k36", 1]]);
+  const tall = await run("/row-align-tall", ["row-align"], { viewports: [DESKTOP] });
+  assert.deepEqual(
+    tall.findings.map((f) => [f.kind, f.selector, f.selector2, f.measure.value]).sort((a, b) => a[1].localeCompare(b[1])),
+    [["gap", "#side", "#tall", 2], ["gap", "#side2", "#tall2", 2]],
+  );
+});
+
+test("first-view: every target below the fold is found, not the first five", async () => {
+  const result = await run("/first-view-many", ["first-view"], { selectors: { "first-view": [".cta"] }, viewports: [PHONE] });
+  assert.deepEqual(result.findings.map((f) => f.selector).sort(), ["#c7", "#c8"]);
+});
+
+// ---------------------------------------------------------------- the limits themselves: at the limit is measured, one over is said
+
+test("a kind with exactly maxPerKind findings is whole; covered at exactly coveredMax content elements is measured, one more is blocked", async () => {
+  const hundred = await tapSize("/tap-size-100");
+  assert.deepEqual([hundred.findings.length, hundred.truncated], [100, []]);
+  const at = await run("/covered-100", ["covered"], { viewports: [PHONE], coveredMax: 100 });
+  assert.deepEqual([at.truncated, at.blocked, at.coverage.covered], [[], false, { ran: 1, of: 1 }]);
+  assert.ok(at.findings.some((f) => f.selector === "#last" && f.kind === "covers-content"), "the last paragraph is the 100th: measured, and under the bar");
+  const over = await run("/covered-101", ["covered"], { viewports: [PHONE], coveredMax: 100 });
+  assert.deepEqual(over.truncated.map((t) => [t.check, t.cut, t.label, t.seen, t.kept]), [["covered", "targets", "content elements", 101, 100]]);
+  assert.equal(over.blocked, true);
+  assert.ok(!over.findings.some((f) => f.selector === "#last"), "the 101st paragraph, under the bar, is not measured: said so, not found");
+  // Two pages cut in the same way are two lines, one per page.
+  const two = await geometry({ baseUrl: app.url, outDir: await tmp("out"), routes: ["/covered-101", "/covered-long"], viewports: [PHONE], checks: ["covered"], selectors: {}, coveredMax: 100 });
+  assert.deepEqual(two.truncated.map((t) => [t.route, t.seen]), [["/covered-101", 101], ["/covered-long", 401]]);
+});
+
+test("covered: controls are cut at a third of coveredMax — 40 links over 30 are named, 30 are not; the page's biggest width is the one named", async () => {
+  const many = await run("/covered-controls-40", ["covered"], { viewports: [PHONE], coveredMax: 90 });
+  assert.deepEqual(many.truncated.map((t) => [t.check, t.cut, t.label, t.seen, t.kept]), [["covered", "targets", "controls", 40, 30]]);
+  assert.deepEqual((await run("/covered-controls-30", ["covered"], { viewports: [PHONE], coveredMax: 90 })).truncated, []);
+  const views = await run("/covered-views", ["covered"], { viewports: [PHONE, DESKTOP], coveredMax: 100 });
+  assert.deepEqual(views.truncated.map((t) => [t.label, t.seen, t.kept, t.viewports]), [["content elements", 400, 100, ["phone", "desktop"]]], "150 paragraphs on the phone, 400 on the desktop: the larger is named");
 });

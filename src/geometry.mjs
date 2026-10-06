@@ -535,20 +535,61 @@ function inTapSize(kit, { min }) {
     };
     return { w: walk(-1, 0) + walk(1, 0) + 1, h: walk(0, -1) + walk(0, 1) + 1 };
   };
-  // Overlap is a question of where boxes are at one scroll position. Every box is taken before the first scroll below, and
-  // only boxes that scroll together are compared: the same fixed sheet, the same scroller. A box in a sheet and one on the
-  // page behind it are not on one surface.
-  const ids = new Map();
-  const idOf = (node) => (node ? ids.get(node) ?? ids.set(node, ids.size + 1).get(node) : 0);
-  const scrollerOf = (el) => {
-    for (let n = el.parentElement; n && n !== document.documentElement; n = n.parentElement)
-      if (/auto|scroll|overlay|hidden|clip/.test(getComputedStyle(n).overflowX + getComputedStyle(n).overflowY)) return n;
-    return null;
-  };
+  // Overlap is a question of the screen at one scroll position: every box is taken before the first scroll below.
   const boxes = targets.map((el, order) => {
     const r = el.getBoundingClientRect();
-    return { el, order, x: r.left, y: r.top, w: r.width, h: r.height, surface: `${idOf(kit.stuck(el))}|${idOf(scrollerOf(el))}` };
+    return { el, order, y: r.top, w: r.width, h: r.height, layer: !!kit.stuck(el) };
   });
+  /** What shows of a box: its rect cut by every ancestor that clips it, up to its containing block (a fixed box has no
+   * ancestor to clip it, an absolute one is not clipped by what is not its containing block). The clip boxes both boxes
+   * of a pair sit in (`shared`) are left out: both scroll in them, and what is scrolled away is still beside the other. */
+  const shown = (el, shared) => {
+    const r = el.getBoundingClientRect();
+    let [left, top, right, bottom] = [r.left, r.top, r.right, r.bottom];
+    let position = getComputedStyle(el).position;
+    for (let n = el.parentElement; n && n !== document.documentElement && position !== "fixed"; n = n.parentElement) {
+      const cs = getComputedStyle(n);
+      if (position === "absolute" && cs.position === "static") continue;
+      if (!shared.has(n) && /auto|scroll|hidden|clip/.test(cs.overflowX + cs.overflowY)) {
+        const c = n.getBoundingClientRect();
+        left = Math.max(left, c.left + n.clientLeft);
+        top = Math.max(top, c.top + n.clientTop);
+        right = Math.min(right, c.left + n.clientLeft + n.clientWidth);
+        bottom = Math.min(bottom, c.top + n.clientTop + n.clientHeight);
+      }
+      position = cs.position;
+    }
+    return { left, top, right, bottom };
+  };
+  const overlaps = [];
+  const sorted = [...boxes].sort((p, q) => p.y - q.y);
+  for (let i = 0; i < sorted.length; i += 1) {
+    for (let j = i + 1; j < sorted.length && sorted[j].y <= sorted[i].y + sorted[i].h - 2; j += 1) {
+      const [a, b] = sorted[i].order < sorted[j].order ? [sorted[i], sorted[j]] : [sorted[j], sorted[i]];
+      // A fixed or sticky box lies over the page by design (`covered` looks at that); boxes of the page are compared with
+      // each other, boxes of fixed or sticky elements with each other.
+      if (a.layer !== b.layer) continue;
+      if (a.el.contains(b.el) || b.el.contains(a.el)) continue;
+      if ([...(a.el.labels ?? [])].includes(b.el) || [...(b.el.labels ?? [])].includes(a.el)) continue;
+      const shared = new Set();
+      for (let n = a.el.parentElement; n; n = n.parentElement) if (n.contains(b.el)) shared.add(n);
+      const [p, q] = [shown(a.el, shared), shown(b.el, shared)];
+      const ow = Math.min(p.right, q.right) - Math.max(p.left, q.left);
+      const oh = Math.min(p.bottom, q.bottom) - Math.max(p.top, q.top);
+      if (ow < 2 || oh < 2) continue;
+      overlaps.push({
+        kind: "overlap",
+        severity: "high",
+        selector: kit.selectorOf(b.el),
+        selector2: kit.selectorOf(a.el),
+        text: kit.snippet(b.el),
+        value: kit.round(Math.min(ow, oh)),
+        measure: { width: kit.round(ow), height: kit.round(oh) },
+        message: `tap area overlaps ${kit.selectorOf(a.el)} by ${kit.round(ow)} × ${kit.round(oh)} px`,
+        scroll: "center",
+      });
+    }
+  }
   for (const box of boxes) {
     const { el } = box;
     let { w, h } = box;
@@ -572,34 +613,8 @@ function inTapSize(kit, { min }) {
       scroll: "center",
     });
   }
-  const bySurface = new Map();
-  for (const box of boxes) bySurface.set(box.surface, [...(bySurface.get(box.surface) ?? []), box]);
-  for (const surface of bySurface.values()) {
-    surface.sort((p, q) => p.y - q.y);
-    for (let i = 0; i < surface.length; i += 1) {
-      for (let j = i + 1; j < surface.length && surface[j].y < surface[i].y + surface[i].h - 2; j += 1) {
-        const [a, b] = surface[i].order < surface[j].order ? [surface[i], surface[j]] : [surface[j], surface[i]];
-        if (a.el.contains(b.el) || b.el.contains(a.el)) continue;
-        if ([...(a.el.labels ?? [])].includes(b.el) || [...(b.el.labels ?? [])].includes(a.el)) continue;
-        const ow = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
-        const oh = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
-        if (ow < 2 || oh < 2) continue;
-        out.push({
-          kind: "overlap",
-          severity: "high",
-          selector: kit.selectorOf(b.el),
-          selector2: kit.selectorOf(a.el),
-          text: kit.snippet(b.el),
-          value: kit.round(Math.min(ow, oh)),
-          measure: { width: kit.round(ow), height: kit.round(oh) },
-          message: `tap area overlaps ${kit.selectorOf(a.el)} by ${kit.round(ow)} × ${kit.round(oh)} px`,
-          scroll: "center",
-        });
-      }
-    }
-  }
   kit.toTop();
-  return out;
+  return [...out, ...overlaps];
 }
 
 /** Outline the finding in the page (fixed overlays), scroll as the check did, say which part of the viewport to photograph. */
