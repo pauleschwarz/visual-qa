@@ -647,7 +647,7 @@ async function captureRoute(page, { url, target, routeKey, viewport, dir, naviga
       // scrollbar may cost a line or two, never a tenth).
       const reason = !grown
         ? "removed by the page before its picture"
-        : !(grown.width > 0 && grown.height > 0)
+        : !(grown.height > 0)
           ? "has no box when grown (hidden, or all its content sits outside the flow)"
           : grown.height < 0.9 * before.content
             ? `shows ${Math.round(grown.height)} of ${before.content} px when grown (its content does not grow with it)`

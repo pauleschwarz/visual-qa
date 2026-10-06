@@ -280,6 +280,10 @@ test("stretching and restoring leaves the page exactly as it was", async () => {
       (await page.evaluate(() => document.documentElement.outerHTML)).replace(/ data-vqa-scroller="\d+"/g, ""),
       bodyBefore,
     );
+    // A scroller the page has removed in the meantime: growing it does nothing and throws nothing (the capture names it).
+    const untouched = await page.evaluate(() => document.documentElement.outerHTML);
+    await page.evaluate(stretchScroller, 99);
+    assert.equal(await page.evaluate(() => document.documentElement.outerHTML), untouched);
   } finally {
     await browser.close();
   }
