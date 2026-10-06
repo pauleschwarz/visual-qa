@@ -282,7 +282,7 @@ const PAGES = {
   ),
   // ---- tap-size overlap: the screen at one scroll position, rects cut at what clips them
   // the clip box cuts a relative button too; a fixed header or a sticky nav that comes before the page links in the DOM
-  // is covered's business, not a tap overlap (review 1006-2047 M1)
+  // is covered's business, not a tap overlap
   "/tap-size-relative-clip": page(
     `<div style="overflow:hidden;height:60px"><button id="r1" style="position:relative;display:block;width:100%;height:100px">First</button></div><button id="r2" style="display:block;width:100%;height:48px">Second</button>`,
   ),
