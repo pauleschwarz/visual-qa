@@ -9,19 +9,12 @@ import { captureBaselines } from "./baseline.mjs";
 import { resolveDesignContract, designContractMeta } from "./design-contract.mjs";
 import { run } from "./run.mjs";
 import { resolveSessionInput, splitStateRoutes } from "./session.mjs";
+import { exists } from "./files.mjs";
 
 function sha256Hex(text) {
   return createHash("sha256").update(String(text), "utf8").digest("hex");
 }
 
-async function exists(path) {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 const KNOWN_KEYS = new Set([
   "trigger",

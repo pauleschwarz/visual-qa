@@ -15,7 +15,6 @@ import {
   runRuntimeChecks,
 } from "./checks.mjs";
 import {
-  fileSafe,
   importProjectModule,
   newWalk,
   SetupError,
@@ -23,6 +22,7 @@ import {
   sessionRuntime,
   writeShot,
 } from "./session.mjs";
+import { safeName } from "./files.mjs";
 
 const firstLine = (error) => String(error?.message ?? error).split("\n")[0];
 
@@ -30,8 +30,8 @@ async function runOne({ config, viewport, journey, walk, budget }) {
   const dir = join(
     config.outDir,
     "journeys",
-    fileSafe(journey.name),
-    fileSafe(viewport.name),
+    safeName(journey.name),
+    safeName(viewport.name),
   );
   await mkdir(dir, { recursive: true });
   const ctx = {
@@ -54,7 +54,7 @@ async function runOne({ config, viewport, journey, walk, budget }) {
   const record = async (kind, name, run) => {
     if (failure) return;
     steps += 1;
-    const label = `${String(steps).padStart(2, "0")}-${fileSafe(name)}`;
+    const label = `${String(steps).padStart(2, "0")}-${safeName(name)}`;
     const end = runtime.markStep(`journey:${journey.name}:${name}`);
     let problem = null;
     try {

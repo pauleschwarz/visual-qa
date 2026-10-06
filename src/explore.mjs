@@ -35,6 +35,7 @@ import { runIntentChecks } from "./intent.mjs";
 import { runJourneys } from "./journeys.mjs";
 import { captureStates } from "./session.mjs";
 import { writeReportArtifacts } from "./report.mjs";
+import { safeName } from "./files.mjs";
 
 // Budgets that end the whole walk, as opposed to node-local truncations.
 const GLOBAL_LIMITS = new Set([
@@ -475,7 +476,7 @@ async function captureStateScreenshot(
   const shot = join(
     outDir,
     "screenshots",
-    `state-${safe(stateId)}-${safe(viewport?.name || "vp")}.png`,
+    `state-${safeName(stateId)}-${safeName(viewport?.name || "vp")}.png`,
   );
   const ok = await screenshotOrIssue(runtime, shot, issues, "state-scan", {
     fullPage: true,
@@ -516,7 +517,7 @@ async function captureStateScreenshot(
       const scrollShot = join(
         outDir,
         "screenshots",
-        `state-${safe(stateId)}-${safe(viewport?.name || "vp")}-scroll-${y}.png`,
+        `state-${safeName(stateId)}-${safeName(viewport?.name || "vp")}-scroll-${y}.png`,
       );
       const scrollOk = await screenshotOrIssue(
         runtime,
@@ -668,7 +669,7 @@ async function compareEntryBaseline(
   const initialShot = join(
     outDir,
     "screenshots",
-    `initial-${safe(viewport.name)}-${safe(routeKey)}.png`,
+    `initial-${safeName(viewport.name)}-${safeName(routeKey)}.png`,
   );
   if (!(await screenshotOrIssue(runtime, initialShot, issues, "initial"))) {
     return { complete: true };
@@ -1020,11 +1021,11 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
         const beforeShot = join(
           outDir,
           "screenshots",
-          `${safe(id)}-before.png`,
+          `${safeName(id)}-before.png`,
         );
-        const midShot = join(outDir, "screenshots", `${safe(id)}-mid.png`);
-        const afterShot = join(outDir, "screenshots", `${safe(id)}-after.png`);
-        const trace = join(outDir, "traces", `${safe(id)}.zip`);
+        const midShot = join(outDir, "screenshots", `${safeName(id)}-mid.png`);
+        const afterShot = join(outDir, "screenshots", `${safeName(id)}-after.png`);
+        const trace = join(outDir, "traces", `${safeName(id)}.zip`);
         const beforeCaptured = await screenshotOrIssue(
           runtime,
           beforeShot,
@@ -1217,7 +1218,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           );
         if (status === "error")
           issues.push({
-            issue_id: `vqa-functional-action-${safe(id)}`,
+            issue_id: `vqa-functional-action-${safeName(id)}`,
             type: "vqa-functional",
             title: "Interactive action failed",
             severity: "high",
@@ -1287,7 +1288,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
             );
             for (const edge of edges) {
               if (now() - started > config.bounds.max_runtime_ms) break;
-              const edgeId = `${safe(id)}-edge-${edge.kind}`;
+              const edgeId = `${safeName(id)}-edge-${edge.kind}`;
               const edgeBefore = join(
                 outDir,
                 "screenshots",
@@ -1393,7 +1394,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
               eventDelta.console.some((event) => event.type === "error")
               ? [
                   {
-                    issue_id: `vqa-runtime-step-${safe(id)}`,
+                    issue_id: `vqa-runtime-step-${safeName(id)}`,
                     type: "vqa-runtime",
                     title: "Runtime error during action",
                     severity: "high",
@@ -1521,7 +1522,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
     // Teardown failures are evidence too: a lost trace cannot back a finding.
     try {
       await runtime.stop(
-        join(outDir, "traces", `run-${safe(viewport.name)}.zip`),
+        join(outDir, "traces", `run-${safeName(viewport.name)}.zip`),
       );
     } catch (error) {
       const target = walkResult ?? {
@@ -1711,8 +1712,3 @@ export async function explore(input = {}) {
   return writeReport(result);
 }
 
-function safe(input) {
-  return String(input)
-    .replace(/[^a-zA-Z0-9._-]+/g, "_")
-    .slice(-100);
-}

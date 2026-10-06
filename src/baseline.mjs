@@ -20,6 +20,7 @@ import {
   DEFAULT_VIEWPORTS,
   REFERENCE_PIXELS,
 } from "./config.mjs";
+import { exists } from "./files.mjs";
 
 export const MANIFEST_NAME = "baseline-manifest.json";
 export const MANIFEST_SCHEMA = "vqa-baseline-capture-0.2";
@@ -44,14 +45,6 @@ export function routeKeyFromTarget(target, baseUrl) {
   return key || "root";
 }
 
-async function exists(path) {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Resolve baseline PNG for a viewport, optionally scoped to a route key.

@@ -19,6 +19,7 @@ import {
   runScrollChecks,
 } from "./checks.mjs";
 import { runSlopChecks } from "./slop.mjs";
+import { exists, safeName } from "./files.mjs";
 
 /** A project's own setup is wrong (missing file, throwing hook). Blocks the run (exit 2); never a product finding. */
 export class SetupError extends Error {
@@ -28,14 +29,6 @@ export class SetupError extends Error {
   }
 }
 
-async function exists(path) {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 export async function importProjectModule(file, label) {
   try {
@@ -47,11 +40,6 @@ export async function importProjectModule(file, label) {
   }
 }
 
-export function fileSafe(value) {
-  return String(value)
-    .replace(/[^a-zA-Z0-9._-]+/g, "_")
-    .slice(-80);
-}
 
 const ERROR_STATUS = (value) =>
   Number.isInteger(value) && value >= 400 && value <= 599;
@@ -405,7 +393,7 @@ async function captureOne({ config, viewport, name, def, walk }) {
   const base = join(
     config.outDir,
     "screenshots",
-    `appstate-${fileSafe(name)}-${fileSafe(viewport.name)}`,
+    `appstate-${safeName(name)}-${safeName(viewport.name)}`,
   );
   const ctx = {
     baseUrl: config.baseUrl,
