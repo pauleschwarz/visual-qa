@@ -1,20 +1,23 @@
 // visual-qa agent-run: observe git UI diff, map routes, capture baseline, run QA.
 // Observe/compare/evidence only — never apply fixers.
 
-import { createHash } from "node:crypto";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join, relative, resolve } from "node:path";
+import { withAppServer } from "./app-server.mjs";
 import { captureBaselines } from "./baseline.mjs";
+import {
+  collectGitState,
+  DEFAULT_IMPORT_DEPTH,
+  filterChangedUiFiles,
+  matchGlob,
+  projectImporters,
+  resolveRoutesFromMap,
+} from "./changes.mjs";
 import { resolveDesignContract, designContractMeta } from "./design-contract.mjs";
 import { run } from "./run.mjs";
 import { resolveSessionInput, splitStateRoutes } from "./session.mjs";
 import { exists } from "./files.mjs";
-
-function sha256Hex(text) {
-  return createHash("sha256").update(String(text), "utf8").digest("hex");
-}
-
 
 const KNOWN_KEYS = new Set([
   "trigger",
@@ -25,7 +28,14 @@ const KNOWN_KEYS = new Set([
   "storage_state",
   "states",
   "journeys",
+  "base",
+  "route_map_mode",
+  "import_depth",
+  "aliases",
+  "server",
 ]);
+const KNOWN_SERVER_KEYS = new Set(["command", "health", "startup_timeout_ms"]);
+const ROUTE_MAP_MODES = new Set(["all", "first"]);
 const KNOWN_STATE_KEYS = new Set([
   "path",
   "setup",
@@ -35,6 +45,13 @@ const KNOWN_STATE_KEYS = new Set([
   "fresh",
 ]);
 const KNOWN_JOURNEY_KEYS = new Set(["file", "fresh"]);
+
+/** route_map values that are not a route list: FULL (alias GLOBAL) walks the whole app, IMPORTERS follows the importers. */
+function routeMapKeyword(text) {
+  const upper = String(text).toUpperCase();
+  if (upper === "FULL" || upper === "GLOBAL") return "FULL";
+  return upper === "IMPORTERS" ? "IMPORTERS" : null;
+}
 
 function emptyConfig() {
   return {
@@ -47,6 +64,11 @@ function emptyConfig() {
     storage_state: null,
     states: {},
     journeys: {},
+    base: null,
+    route_map_mode: "all",
+    import_depth: DEFAULT_IMPORT_DEPTH,
+    aliases: {},
+    server: null,
     warnings: [],
   };
 }
@@ -122,6 +144,41 @@ function parseYamlBlock(lines, index, indent) {
   return [map, index];
 }
 
+function parseScalarKey(key, rest, lineNo, result) {
+  const value = rest.trim() ? yamlScalar(rest, lineNo) : null;
+  if (key === "base") {
+    result.base = value === null || value === "" ? null : String(value);
+  } else if (key === "route_map_mode") {
+    if (ROUTE_MAP_MODES.has(value)) result.route_map_mode = value;
+    else result.warnings.push(`route_map_mode "${value}" is not all or first (using all)`);
+  } else if (Number.isInteger(value) && value > 0) {
+    result.import_depth = value;
+  } else {
+    result.warnings.push(`import_depth "${value}" is not a positive integer (using ${DEFAULT_IMPORT_DEPTH})`);
+  }
+}
+
+function setAliases(block, result) {
+  for (const [prefix, target] of Object.entries(block)) {
+    if (typeof target === "string" && target) result.aliases[prefix] = target;
+    else result.warnings.push(`aliases.${prefix} is not a path (ignored)`);
+  }
+}
+
+function setServer(block, result) {
+  for (const field of Object.keys(block))
+    if (!KNOWN_SERVER_KEYS.has(field))
+      result.warnings.push(`unknown key "${field}" in server (ignored)`);
+  const text = (value) => (typeof value === "string" && value.trim() ? value : null);
+  if (!text(block.command) || !text(block.health))
+    throw new Error(".visual-qa.yml: server needs both command and health");
+  const timeout = block.startup_timeout_ms;
+  if (timeout !== undefined && !(Number.isInteger(timeout) && timeout > 0))
+    throw new Error(".visual-qa.yml: server.startup_timeout_ms must be a positive integer");
+  result.server = { command: block.command, health: block.health };
+  if (timeout !== undefined) result.server.startup_timeout_ms = timeout;
+}
+
 /** Top-level keys of the new session sections, parsed on their own so older files keep their exact behaviour. */
 function parseSessionSections(text, result) {
   const lines = [];
@@ -131,7 +188,7 @@ function parseSessionSections(text, result) {
     if (!stripped.trim()) return;
     if (/^\s*\t/.test(stripped)) {
       // Older sections (trigger, route_map, …) accepted tabs; only the new ones refuse them.
-      if (topKey === "states" || topKey === "journeys")
+      if (["states", "journeys", "aliases", "server"].includes(topKey))
         throw new Error(`.visual-qa.yml line ${i + 1}: tabs are not allowed`);
       return;
     }
@@ -159,6 +216,19 @@ function parseSessionSections(text, result) {
     }
     if (key === "setup" || key === "storage_state") {
       result[key] = rest.trim() ? String(yamlScalar(rest, line.no)) : null;
+    } else if (key === "base" || key === "route_map_mode" || key === "import_depth") {
+      parseScalarKey(key, rest, line.no, result);
+    } else if (key === "aliases" || key === "server") {
+      if (rest.trim())
+        throw new Error(
+          `.visual-qa.yml line ${line.no}: ${key} must be an indented block, not "${rest.trim()}"`,
+        );
+      if (i < lines.length && lines[i].indent > 0) {
+        let block;
+        [block, i] = parseYamlBlock(lines, i, lines[i].indent);
+        if (key === "aliases") setAliases(block, result);
+        else setServer(block, result);
+      }
     } else if (key === "states" || key === "journeys") {
       if (rest.trim()) {
         yamlScalar(rest, line.no);
@@ -265,7 +335,7 @@ export function parseVisualQaYaml(source) {
         currentGlob = mapMatch[1].trim().replace(/^["']|["']$/g, "");
         const rest = mapMatch[2].trim().replace(/^["']|["']$/g, "");
         if (rest) {
-          if (rest.toUpperCase() === "FULL") result.route_map[currentGlob] = "FULL";
+          if (routeMapKeyword(rest)) result.route_map[currentGlob] = routeMapKeyword(rest);
           else result.route_map[currentGlob] = [rest];
         } else {
           result.route_map[currentGlob] = [];
@@ -276,7 +346,7 @@ export function parseVisualQaYaml(source) {
         const item = trimmed.replace(/^-+\s*/, "").replace(/^["']|["']$/g, "");
         if (!Array.isArray(result.route_map[currentGlob]))
           result.route_map[currentGlob] = [];
-        if (item.toUpperCase() === "FULL") result.route_map[currentGlob] = "FULL";
+        if (routeMapKeyword(item)) result.route_map[currentGlob] = routeMapKeyword(item);
         else if (item) result.route_map[currentGlob].push(item);
       }
     }
@@ -285,104 +355,18 @@ export function parseVisualQaYaml(source) {
   return result;
 }
 
-/** Glob match with * and ** (path segments). */
-export function matchGlob(pattern, filePath) {
-  const norm = filePath.replaceAll("\\", "/");
-  const pat = String(pattern).replaceAll("\\", "/");
-  if (pat === norm) return true;
-  // ** spans directories; * within a segment
-  const escaped = pat
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*/g, "{{GLOBSTAR}}")
-    .replace(/\*/g, "[^/]*")
-    .replace(/{{GLOBSTAR}}/g, ".*");
-  return new RegExp(`^${escaped}$`).test(norm);
-}
+export { collectGitState, filterChangedUiFiles, matchGlob, resolveRoutesFromMap };
 
-export function filterChangedUiFiles(files, { trigger = [], ignore = [] } = {}) {
-  const list = files.map((f) => f.replaceAll("\\", "/"));
-  const ignored = (file) => ignore.some((g) => matchGlob(g, file));
-  const triggered = (file) =>
-    trigger.length === 0
-      ? /\.(tsx?|jsx?|css|scss|sass|less|vue|svelte|html)$/i.test(file) ||
-        /\/(components?|pages?|app|ui|views?|layouts?)\//i.test(file)
-      : trigger.some((g) => matchGlob(g, file));
-  return list.filter((f) => !ignored(f) && triggered(f));
-}
-
-export function resolveRoutesFromMap(uiFiles, routeMap = {}) {
-  const entries = Object.entries(routeMap);
-  if (!entries.length) {
-    return { mode: null, routes: [], reason: "no_route_map" };
-  }
-  const routes = new Set();
-  let full = false;
-  let matched = false;
-  for (const file of uiFiles) {
-    for (const [glob, mapping] of entries) {
-      if (!matchGlob(glob, file)) continue;
-      matched = true;
-      if (mapping === "FULL" || mapping === "full") {
-        full = true;
-      } else if (Array.isArray(mapping)) {
-        for (const route of mapping) routes.add(route);
-      } else if (typeof mapping === "string") {
-        routes.add(mapping);
-      }
-    }
-  }
-  if (!matched) return { mode: null, routes: [], reason: "no_matching_route_map" };
-  if (full) return { mode: "full", routes: [], reason: null };
-  if (!routes.size)
-    return { mode: null, routes: [], reason: "empty_route_map_match" };
-  return { mode: "changed", routes: [...routes], reason: null };
-}
-
-function git(cwd, args) {
-  const result = spawnSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    maxBuffer: 8 * 1024 * 1024,
+/** The config's route_map, route_map_mode, import_depth, aliases and ignore applied to the changed UI files. */
+export function resolveChangedRoutes(uiFiles, config, root) {
+  return resolveRoutesFromMap(uiFiles, config.route_map, {
+    mode: config.route_map_mode,
+    depth: config.import_depth,
+    ignore: config.ignore,
+    importersOf: Object.values(config.route_map).includes("IMPORTERS")
+      ? projectImporters(root, config.aliases)
+      : undefined,
   });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(
-      `git ${args.join(" ")} failed: ${(result.stderr || result.stdout || "").trim()}`,
-    );
-  }
-  return (result.stdout || "").trim();
-}
-
-export function collectGitState(cwd, gitRef = "HEAD") {
-  const head = git(cwd, ["rev-parse", "HEAD"]);
-  const refResolved = git(cwd, ["rev-parse", gitRef]);
-  const diffName = git(cwd, [
-    "diff",
-    "--name-only",
-    `${gitRef}`,
-    "--",
-  ]);
-  // Include unstaged + staged vs ref: diff ref + untracked is complex;
-  // agent-run uses working tree vs gitRef (diff + cached names against ref).
-  const vsRef = git(cwd, ["diff", "--name-only", gitRef]);
-  const cached = git(cwd, ["diff", "--name-only", "--cached", gitRef]);
-  const files = [
-    ...new Set(
-      [...vsRef.split("\n"), ...cached.split("\n"), ...diffName.split("\n")]
-        .map((l) => l.trim())
-        .filter(Boolean),
-    ),
-  ];
-  const fullDiff = git(cwd, ["diff", gitRef]);
-  const cachedDiff = git(cwd, ["diff", "--cached", gitRef]);
-  const diffSha = sha256Hex(`${fullDiff}\n---\n${cachedDiff}`);
-  return {
-    head,
-    git_ref: gitRef,
-    git_ref_resolved: refResolved,
-    diff_sha256: diffSha,
-    changed_files: files,
-  };
 }
 
 export async function loadVisualQaConfig(projectRoot, explicitFile = null) {
@@ -405,18 +389,26 @@ export async function agentRun({
   baselineUrl = null,
   outDir = ".qa-agent",
   projectRoot = process.cwd(),
-  gitRef = "HEAD",
+  base = null,
+  gitRef = null,
   designContractPath = null,
   bounds = undefined,
   viewports = undefined,
 } = {}) {
-  if (!url) throw new Error("agent-run requires --url");
   const root = resolve(projectRoot);
   const out = resolve(outDir);
+  const { path: configPath, config } = await loadVisualQaConfig(root);
+  // Without --url the app is the one `server.health` answers on.
+  url ??= config.server ? new URL(config.server.health).origin : null;
+  if (!url) throw new Error("agent-run requires --url (or a server: block in .visual-qa.yml)");
   await mkdir(out, { recursive: true });
 
-  const gitState = collectGitState(root, gitRef);
-  const { path: configPath, config } = await loadVisualQaConfig(root);
+  // --base beats base: in the config; --git-ref is the older name of --base.
+  const outRelative = relative(realpathSync(root), realpathSync(out)).replaceAll("\\", "/");
+  const gitState = collectGitState(root, {
+    base: base ?? gitRef ?? config.base ?? undefined,
+    exclude: outRelative && !outRelative.startsWith("..") ? [outRelative] : [],
+  });
   const uiFiles = filterChangedUiFiles(gitState.changed_files, config);
 
   const design = await resolveDesignContract({
@@ -431,9 +423,14 @@ export async function agentRun({
     config_warnings: config.warnings ?? [],
     git: {
       head: gitState.head,
-      ref: gitState.git_ref,
-      ref_resolved: gitState.git_ref_resolved,
+      ref: gitState.base_ref,
+      ref_resolved: gitState.base_resolved,
+      merge_base: gitState.merge_base,
       diff_sha256: gitState.diff_sha256,
+      committed_files: gitState.committed_files,
+      untracked_files: gitState.untracked_files,
+      deleted_files: gitState.deleted_files,
+      renamed_files: gitState.renamed_files,
       changed_files: gitState.changed_files,
       ui_files: uiFiles,
     },
@@ -451,9 +448,23 @@ export async function agentRun({
     fixer_applied: false,
   };
 
-  if (uiFiles.length === 0) {
+  const routeResolution = uiFiles.length ? resolveChangedRoutes(uiFiles, config, root) : null;
+  if (routeResolution) {
+    agentMeta.route_reasons = routeResolution.route_reasons ?? {};
+    agentMeta.full_reasons = routeResolution.full_reasons ?? [];
+    agentMeta.unmapped_files = routeResolution.unmapped ?? [];
+    agentMeta.unrendered_files = routeResolution.unrendered ?? [];
+  }
+  // Nothing to look at: no UI file changed, or the changed files are imported by nothing.
+  const noopReason = !routeResolution
+    ? "no_ui_diff"
+    : routeResolution.mode === "unrendered"
+      ? "unrendered"
+      : null;
+
+  if (noopReason) {
     agentMeta.noop = true;
-    agentMeta.reason = "no_ui_diff";
+    agentMeta.reason = noopReason;
     const report = {
       schema_version: "vqa-0.1",
       product: "Visual QA",
@@ -472,7 +483,7 @@ export async function agentRun({
       },
       issues: [],
       evidence: [],
-      phases: { agent_run: { status: "noop", reason: "no_ui_diff" } },
+      phases: { agent_run: { status: "noop", reason: noopReason } },
       agent_run: agentMeta,
       design_contract: designContractMeta(design),
     };
@@ -484,7 +495,6 @@ export async function agentRun({
     return { ok: true, noop: true, report, outDir: out, agent: agentMeta };
   }
 
-  const routeResolution = resolveRoutesFromMap(uiFiles, config.route_map);
   if (!routeResolution.mode) {
     agentMeta.reason = routeResolution.reason || "route_map_required";
     const report = {
@@ -585,7 +595,10 @@ export async function agentRun({
     runInput.changedTargets = split.plain;
   }
 
-  const report = await run(runInput);
+  // The project's own server runs only while the walk does, and is stopped on every way out.
+  const report = config.server
+    ? await withAppServer(config.server, () => run(runInput), { cwd: root })
+    : await run(runInput);
   // run() owns phase-level agent metadata; preserve it while binding the
   // durable git/design receipt captured before the walk.
   report.agent_run = { ...(report.agent_run || {}), ...agentMeta };

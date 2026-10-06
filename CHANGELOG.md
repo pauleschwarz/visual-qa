@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Diff scope (`agent-run`)
+- Changed files are now everything since the branch left its base — commits (`git merge-base`), staged, unstaged and untracked files (not ignored ones); a rename counts with both paths, a deleted file counts. Before, commits and new files were not seen. Base: `--base REF` (older name `--git-ref`), `base:` in `.visual-qa.yml`, default `origin/HEAD` → `main` → `master`; no repository, no commit, an unresolvable base or none at all stops with exit 2 and a sentence. The `--out` folder is never a change. `agent-run.json` gains `merge_base`, `committed_files`, `untracked_files`, `deleted_files`, `renamed_files`.
+- `route_map` accepts `GLOBAL` (same as `FULL`) and `IMPORTERS`: the files that import a changed file (up to `import_depth`, default 3; `aliases: {"@": src}` for alias imports; `ignore` applies) stand in for it, so a changed component reaches the routes that use it. `route_map_mode: first` is opt-in; the default still applies every matching entry. A changed file nothing imports is a noop PASS that names it; importers that no entry reaches fail closed. Files no entry reaches are now listed as warnings.
+- Why each route is there: `agent-run` prints one line per route and keeps `route_reasons` / `full_reasons` / `unmapped_files` / `unrendered_files` in the report.
+- `server: {command, health, startup_timeout_ms}` in `.visual-qa.yml`: visual-qa starts the app after the routes are known, waits for `health`, and always stops the process group it started (also on errors and SIGINT/SIGTERM). Without `--url`, the origin of `health` is the app. A server that exits or never answers stops the run with exit 2 and its last output.
+- Existing configs behave as before; without a base branch `agent-run` now stops (exit 2) where it used to diff against `HEAD`.
+
 ### States, sign-in and journeys
 - Check an app in a named state, not only as an anonymous visitor: `.visual-qa.yml` gains `setup` (`setup(page, ctx)` hook), `storage_state`, `states` and `journeys`. `run`/`explore` take `--state NAME` and `--journey NAME` (repeatable) and `--config FILE`; `path@state` works on the CLI and in `route_map` for `agent-run`.
 - Every state and journey step leaves an image and the visible text beside it (`.txt`). A state goes through the accessibility, layout, scroll, placeholder-copy and runtime checks; a green journey step through accessibility, layout and runtime checks. Journey pages resolve `page.goto("/path")` against `--url`.

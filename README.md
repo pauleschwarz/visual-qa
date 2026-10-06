@@ -131,7 +131,7 @@ visual-qa intent --intent "…" --fix-dir DIR [--json]  # catalog dry-run, no br
 visual-qa review-prepare <DIR> [--max-pairs N]       # export vision tasks for your model
 visual-qa review-apply <DIR> <findings.json>         # apply findings (fail-closed full-ID coverage)
 visual-qa baseline capture|compare|diff …            # see "Baselines" below
-visual-qa agent-run --url URL [--baseline-url URL] [--out DIR] [--git-ref REF]
+visual-qa agent-run [--url URL] [--baseline-url URL] [--out DIR] [--base REF]   # see "Check only what you changed"
 visual-qa agent-gate <QA-DIR> <verity.json> [--json] # fail-closed Visual QA + Verity receipt
 ```
 
@@ -369,6 +369,59 @@ baseline:
 `info` (an app shell is a design choice) and `info` never turns a `PASS` into `UNPROVEN`.
 `--internal-scrollers-as-finding` restores the `medium` finding (through the API:
 `internalScrollers: "finding"` in `resolveConfig`; `.visual-qa.yml` has no such key).
+
+## Check only what you changed
+
+`visual-qa agent-run` looks at what your branch changed, maps it to routes, and checks
+only those. Nothing to look at → it exits `0` without a browser.
+
+```yaml
+# .visual-qa.yml
+base: origin/main              # optional; --base REF wins. Default: origin/HEAD, main, master
+route_map_mode: all            # all (default): every matching entry counts; first: only the first
+import_depth: 3                # how far IMPORTERS climbs (default 3)
+aliases:
+  "@": src                     # so `import … from "@/components/Card"` is followed
+route_map:
+  "src/pages/Home.tsx":
+    - /
+  "src/pages/Pricing.tsx":
+    - /pricing
+  "src/styles/**": GLOBAL      # a change here can touch every page → the whole app is walked
+  "src/components/**": IMPORTERS   # the pages that import a changed component stand in for it
+ignore:
+  - "**/*.test.tsx"            # also skipped while following importers
+server:                        # optional: visual-qa starts and stops your app
+  command: npm run dev -- --port 5175
+  health: http://127.0.0.1:5175/   # must answer 2xx; without --url this origin is the app
+  startup_timeout_ms: 60000    # default 60000
+```
+
+- **Changed files** = everything since `HEAD` left the base branch (`git merge-base`),
+  plus staged, unstaged and untracked files (not ignored ones). A rename counts with both
+  paths, a deleted file counts. Paths are relative to where you run it. The output folder
+  (`--out`) is never a change. `--git-ref REF` is the older name of `--base REF`.
+- **Base.** An explicit `--base` / `base:` that does not resolve, no repository, no commit
+  yet, or no base branch at all → exit `2` with a sentence saying what to do. A shallow clone
+  needs `git fetch --unshallow` for the merge-base.
+- **Routes.** Each changed UI file (`trigger` / `ignore`, default: web source files) is
+  matched against `route_map`. A list gives its routes, `GLOBAL` (alias `FULL`) walks the
+  whole app, `IMPORTERS` follows the files that import it (`import`, `export … from`,
+  `import()`, `require()`, CSS `@import`/`@use`; type-only imports render nothing) up to
+  `import_depth` levels, passing through files no entry matches until one that does.
+  Nothing imports it → noop `PASS` naming the file (nothing can show the change). Importers
+  exist but none reaches a mapped file → fail-closed, like a file no entry matches while
+  nothing else does. Dynamic imports built from variables cannot be followed.
+- **Files no entry reaches** are named as warnings while other files resolve; alone they fail closed.
+- **Why.** The command prints one line per route — `/pricing ← src/components/Button.tsx →
+  src/pages/Pricing.tsx (src/pages/Pricing.tsx)` — and `agent-run.json` / `report.json`
+  keep it as `route_reasons`, `full_reasons`, `unmapped_files`, `unrendered_files`, next to
+  `git.committed_files`, `untracked_files`, `deleted_files`, `renamed_files`, `merge_base`.
+- **Server.** With `server:`, the app starts after the routes are known (never for a noop),
+  `health` is polled until it answers, and the process group visual-qa started is stopped
+  when the run ends, fails, or visual-qa gets `SIGINT`/`SIGTERM`. A command that exits early,
+  or a health URL that never answers, ends with exit `2` and the server's last output.
+  Nothing is stopped by name or port. `--baseline-url` stays yours to serve.
 
 ## Agent loop (short)
 
