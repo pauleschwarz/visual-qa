@@ -760,6 +760,10 @@ test("importSpecifiers: JSX text and tags — src/* in text is no comment, {/* �
     ["a < after a word is a comparison, not a tag", `if (a <b && c > d) {} /* import "./dead" */\nimport "./live";`, ["./live"]],
     ["a stray } at the top is no end of the file", '}\n/* import "./dead" */\nimport "./live";', ["./live"]],
     ["a < followed by a digit is no tag", `const a = <1>; /* import "./dead" */\nimport "./live";`, ["./live"]],
+    ["text after a {…} in a tag is still text", `const a = <p>{x} and src/*</p>;${LAZY}`, ["./Lazy"]],
+    ["text after two {…} in a tag is still text", `const a = <p>{x}{y} in src/* too</p>;${LAZY}`, ["./Lazy"]],
+    ["a closing tag of a nested element is no end of the outer text", `const a = <p>See <b>docs</b> in src/* and tests/*</p>;${LAZY}`, ["./Lazy"]],
+    ["an empty block comment /**/ ends where it closes", 'import/**/ x from "./live";', ["./live"]],
     ["a < that is no tag", `const lt = a < b; const c = 1 /* import "./dead" */;\nimport "./live";`, ["./live"]],
     ["a closing tag that never ends does not hang", "const a = <p>text</p", []],
   ]);
