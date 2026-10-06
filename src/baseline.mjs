@@ -454,7 +454,7 @@ const QUIET_MAX_PROBES = 50;
  * In-page, the one definition of an inner scroller: an element you can see (checkVisibility:
  * no display:none or content-visibility:hidden up the tree, computed visibility visible; and a
  * box with a size) that scrolls vertically (not a form field), in DOM order,
- * with more than `slack` px still to scroll. A hidden menu or off-canvas drawer is none —
+ * with more than `slack` px still to scroll. A menu hidden by visibility, display or content-visibility is none —
  * it cannot be photographed. <body> counts only when <html> is not `visible` in both axes —
  * otherwise the viewport takes <body>'s overflow, the page scrolls and <body> would only double the page part; the page's own
  * scrolling is the page part. Capture, the settle check and the layout check all ask this;
@@ -607,45 +607,58 @@ async function captureRoute(page, { url, target, routeKey, viewport, dir, naviga
     errors.push({ ...where, message: `load failed: ${firstLine(error)}` });
     return { entries, errors };
   }
-  const shoot = async (part, take) => {
+  // Real sites hold scrollers that cannot be photographed whole: content outside the flow collapses the grown box,
+  // a script hides or removes it. Such a part is skipped and named, so one odd box never fails the capture.
+  const skipped = [];
+  /** One picture and its manifest entry; with `skip`, a failure names the part as not captured instead of a load error. */
+  const shoot = async (part, take, skip = null) => {
     const file = join(dir, partFileName(viewport.name, part));
     try {
       await take(file);
       entries.push({ ...where, part, url, file: relative(resolve(dir, ".."), file).split(sep).join("/") });
     } catch (error) {
-      errors.push({ ...where, part, message: `${part}: ${firstLine(error)}` });
+      if (skip) skipped.push({ ...where, part, reason: `${skip} (${firstLine(error)})` });
+      else errors.push({ ...where, part, message: `${part}: ${firstLine(error)}` });
     }
   };
   await shoot("top", (path) => page.screenshot({ path, ...SHOT }));
   const docHeight = await page.evaluate(() => document.documentElement.scrollHeight);
   if (docHeight > viewport.height + 1)
     await shoot("page", (path) => page.screenshot({ path, fullPage: true, ...SHOT }));
-  // Real sites hold scrollers that cannot be photographed whole (content outside the flow collapses the grown
-  // box; a script hides it again). Such a part is skipped and named, so one odd box never fails the capture.
-  const skipped = [];
   const scrollers = await inPage(page, markScrollers);
+  const boxOf = (k) => {
+    const el = document.querySelector(`[data-vqa-scroller="${k}"]`);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { width: r.width, height: r.height, content: el.scrollHeight };
+  };
   for (let n = 1; n <= scrollers; n += 1) {
     const part = `scroller-${n}`;
     try {
-      await page.evaluate(stretchScroller, n);
-      await page.evaluate(
-        () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
-      );
-      const box = await page.evaluate((k) => {
-        const r = document.querySelector(`[data-vqa-scroller="${k}"]`)?.getBoundingClientRect();
-        return r ? r.width * r.height : 0;
-      }, n);
-      if (!(box > 0)) {
-        skipped.push({ ...where, part, reason: "collapses when grown (its content sits outside the flow)" });
-        continue;
+      const before = await page.evaluate(boxOf, n);
+      if (before) {
+        await page.evaluate(stretchScroller, n);
+        await page.evaluate(
+          () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+        );
       }
-      const file = join(dir, partFileName(viewport.name, part));
-      try {
-        await page.locator(`[data-vqa-scroller="${n}"]`).screenshot({ path: file, timeout: SCROLLER_SHOT_MS, ...SHOT });
-        entries.push({ ...where, part, url, file: relative(resolve(dir, ".."), file).split(sep).join("/") });
-      } catch (error) {
-        skipped.push({ ...where, part, reason: `no picture within ${SCROLLER_SHOT_MS / 1000} s (${firstLine(error)})` });
-      }
+      const grown = before && (await page.evaluate(boxOf, n));
+      // A picture shorter than nine tenths of the content would be a strip, not the scroller (a reflow without the
+      // scrollbar may cost a line or two, never a tenth).
+      const reason = !grown
+        ? "removed by the page before its picture"
+        : !(grown.width > 0 && grown.height > 0)
+          ? "has no box when grown (hidden, or all its content sits outside the flow)"
+          : grown.height < 0.9 * before.content
+            ? `shows ${Math.round(grown.height)} of ${before.content} px when grown (the rest sits outside the flow)`
+            : null;
+      if (reason) skipped.push({ ...where, part, reason });
+      else
+        await shoot(
+          part,
+          (path) => page.locator(`[data-vqa-scroller="${n}"]`).screenshot({ path, timeout: SCROLLER_SHOT_MS, ...SHOT }),
+          `no picture within ${SCROLLER_SHOT_MS / 1000} s`,
+        );
     } catch (error) {
       errors.push({ ...where, part, message: `${part}: ${firstLine(error)}` });
     } finally {

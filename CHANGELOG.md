@@ -18,10 +18,15 @@
   measured against at most one 1440×900 screen, so a changed footer digit on a tall page and a
   one-step label colour are found; the report lists what stayed below the threshold. Applies
   to `--baseline-dir` in `run`/`explore`.
-- Only what you can see is a scroll area: hidden dropdowns and off-canvas drawers (computed
-  `visibility`, no box) are not parts, and `<body>` counts only when `<html>` does not take its
-  overflow (`html,body{height:100%}` pages are a `page`, not a scroller). The report names the
-  threshold in px and lists the changed pixels first.
+- Only what you can see is a scroll area: scrollers hidden by `visibility:hidden`, `display:none`
+  or `content-visibility:hidden` are not parts, and `<body>` counts only when `<html>` is not
+  `visible` in both axes (`html,body{height:100%}` pages are a `page`, not a scroller). The
+  report names the threshold cap in px and lists the changed pixels first.
+- A scroller that cannot be photographed whole — no box when grown, only a strip of its content
+  in the flow, removed by the page, or no picture within 5 s — is skipped and listed under
+  «Not captured» (manifest, compare report, CLI); it never fails the capture.
+- `threshold_pct` and `pixel_threshold` accept numbers only: an empty YAML value is an error,
+  not a silent 0.
 - `.visual-qa.yml` `baseline:` block (`routes`, `viewports`, `threshold_pct`, `clock`, `locale`,
   `timezone`, `pixel_threshold`).
 - Behaviour change: `baseline-capture` (the alias) now replaces what an earlier capture left in `--out`

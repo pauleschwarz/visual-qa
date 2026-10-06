@@ -193,6 +193,22 @@ export function render(route, variant = "") {
       `<div style="height:200px;width:300px;overflow:auto;position:relative"><div style="position:absolute;top:0;left:0;width:100%;height:600px;background:#e8e8f4">absolute</div></div>
        <div style="height:200px;width:300px;overflow:auto">${rows(20, "Line")}</div>`,
     );
+  if (route === "/partial")
+    // A visible title stays in the flow, the long content does not: grown, the box is a 30 px strip of a 630 px scroller.
+    return page(
+      `<div style="height:200px;width:300px;overflow:auto;position:relative"><div style="height:30px">Title</div><div style="position:absolute;top:30px;left:0;width:100%;height:600px;background:#e8e8f4">absolute</div></div>`,
+    );
+  if (route === "/vanish")
+    // A script removes the scroller as soon as anything touches its style.
+    return page(`<div id="s" style="height:200px;width:300px;overflow:auto">${rows(20, "Line")}</div>`, {
+      script: `const s = document.getElementById('s');
+        new MutationObserver(() => s.remove()).observe(s, { attributes: true, attributeFilter: ['style'] });`,
+    });
+  if (route === "/clipy")
+    // <html> clips y: not visible in both axes, so the body keeps its own overflow and scrolls by itself.
+    return page(`<h1>Body scrolls</h1>${rows(60, "Row")}`, {
+      style: "html{overflow-y:clip}body{height:100vh;overflow-y:auto}",
+    });
   if (route === "/rehiding")
     // A script hides the scroller again as soon as anything touches its style: it never becomes visible for a picture.
     return page(`<div id="s" style="height:200px;width:300px;overflow:auto">${rows(20, "Line")}</div>`, {
