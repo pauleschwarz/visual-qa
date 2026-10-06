@@ -36,6 +36,13 @@ async function gone(pids, ms = 5_000) {
 }
 
 /**
+ * Every fixture process ends once this test process is gone. A run whose cleanup is broken on purpose (a mutant of the
+ * code under test) left stubborn servers behind for good: 47 of them, 1.8 GB, on 06.10. While the test runs, the
+ * switch changes nothing, so a leak is still seen.
+ */
+const DEADMAN = `setInterval(() => { try { process.kill(${process.pid}, 0); } catch { process.exit(0); } }, 1000);\n`;
+
+/**
  * A server the way `npm run dev` runs: a wrapper process starts the real server as its child.
  * Both write their pid, so a test can see whether the whole tree is gone.
  */
@@ -46,7 +53,7 @@ function appFiles(port, { listen = true } = {}) {
     `import { createServer } from "node:http";
 import { writeFileSync } from "node:fs";
 writeFileSync(${JSON.stringify(join(dir, "server.pid"))}, String(process.pid));
-${listen ? `createServer((req, res) => res.end("ok")).listen(${port}, "127.0.0.1");` : "setInterval(() => {}, 1000);"}
+${DEADMAN}${listen ? `createServer((req, res) => res.end("ok")).listen(${port}, "127.0.0.1");` : "setInterval(() => {}, 1000);"}
 `,
   );
   writeFileSync(
@@ -54,7 +61,7 @@ ${listen ? `createServer((req, res) => res.end("ok")).listen(${port}, "127.0.0.1
     `import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 writeFileSync(${JSON.stringify(join(dir, "wrapper.pid"))}, String(process.pid));
-spawn(process.execPath, [${JSON.stringify(join(dir, "server.mjs"))}], { stdio: "inherit" });
+${DEADMAN}spawn(process.execPath, [${JSON.stringify(join(dir, "server.mjs"))}], { stdio: "inherit" });
 setInterval(() => {}, 1000);
 `,
   );
@@ -69,7 +76,7 @@ function stubborn(app, port) {
     `import { createServer } from "node:http";
 import { writeFileSync } from "node:fs";
 writeFileSync(${JSON.stringify(join(app.dir, "server.pid"))}, String(process.pid));
-process.on("SIGTERM", () => {});
+${DEADMAN}process.on("SIGTERM", () => {});
 createServer((req, res) => res.end("ok")).listen(${port}, "127.0.0.1");
 `,
   );
@@ -78,7 +85,7 @@ createServer((req, res) => res.end("ok")).listen(${port}, "127.0.0.1");
     `import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 writeFileSync(${JSON.stringify(join(app.dir, "wrapper.pid"))}, String(process.pid));
-process.on("SIGTERM", () => {});
+${DEADMAN}process.on("SIGTERM", () => {});
 spawn(process.execPath, [${JSON.stringify(join(app.dir, "server.mjs"))}], { stdio: "inherit" });
 setInterval(() => {}, 1000);
 `,
@@ -145,7 +152,7 @@ test("server: the health URL must answer ok, a 500 keeps waiting", async () => {
     `import { createServer } from "node:http";
 import { writeFileSync } from "node:fs";
 writeFileSync(${JSON.stringify(join(app.dir, "server.pid"))}, String(process.pid));
-createServer((req, res) => { res.statusCode = 500; res.end("booting"); }).listen(${port}, "127.0.0.1");
+${DEADMAN}createServer((req, res) => { res.statusCode = 500; res.end("booting"); }).listen(${port}, "127.0.0.1");
 `,
   );
   await assert.rejects(
@@ -166,7 +173,7 @@ test("server: gets SIGTERM first and may shut down cleanly before anything is fo
     `import { createServer } from "node:http";
 import { writeFileSync } from "node:fs";
 writeFileSync(${JSON.stringify(join(app.dir, "server.pid"))}, String(process.pid));
-process.on("SIGTERM", () => { writeFileSync(${JSON.stringify(marker)}, "bye"); process.exit(0); });
+${DEADMAN}process.on("SIGTERM", () => { writeFileSync(${JSON.stringify(marker)}, "bye"); process.exit(0); });
 createServer((req, res) => res.end("ok")).listen(${port}, "127.0.0.1");
 `,
   );
@@ -318,7 +325,7 @@ test("server: a health connection that is accepted but never answered ends at st
     `import { createServer } from "node:http";
 import { writeFileSync } from "node:fs";
 writeFileSync(${JSON.stringify(join(app.dir, "server.pid"))}, String(process.pid));
-createServer(() => {}).listen(${port}, "127.0.0.1");
+${DEADMAN}createServer(() => {}).listen(${port}, "127.0.0.1");
 `,
   );
   const script = join(app.dir, "hang.mjs");
