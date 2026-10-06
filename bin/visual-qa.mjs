@@ -8,9 +8,16 @@ import {
   compareToBaseline,
 } from "../src/baseline.mjs";
 import { demo } from "../src/demo.mjs";
-import { resolveBaselineConfig } from "../src/config.mjs";
+import { parseViewport, resolveBaselineConfig } from "../src/config.mjs";
 import { resolveDesignContract } from "../src/design-contract.mjs";
 import { explore } from "../src/explore.mjs";
+import {
+  geometry,
+  geometryExitCode,
+  parseSelectorFlags,
+  parseSweep,
+  resolveChecks,
+} from "../src/geometry.mjs";
 import { dryRunIntent, parseIntent } from "../src/intent.mjs";
 import { renderJunitXml } from "../src/junit.mjs";
 import { renderSummaryLines, summarizeReport } from "../src/report.mjs";
@@ -43,6 +50,9 @@ function usage({ error = false, message = null } = {}) {
     "  visual-qa baseline diff DIR_A DIR_B [--out DIR] [--threshold-pct N] [--pixel-threshold N]\n" +
     "                                                         compare two folders, no browser; --out must be empty or an earlier compare\n" +
     "  visual-qa baseline-capture --url URL --out DIR [--changed-target URL ...]   alias of baseline capture\n" +
+    "  visual-qa geometry --url URL [--route PATH ...] [--viewport name=WxH ...] [--sweep FROM-TO[:STEP]] [--height N]\n" +
+    "                 [--checks a,b] [--selector first-view=CSS|stable=[hover:]CSS ...] [--state NAME ...] [--config FILE]\n" +
+    "                 [--min-gap N] [--touch-max N] [--out DIR]   first view, covered, stable, edges, text fit, rows, tap size; exit 1 on a finding\n" +
     "  visual-qa agent-run --url URL [--baseline-url URL] [--out DIR] [--git-ref REF]\n" +
     "                 [--design-contract FILE]                git UI-diff → routes → observe/compare only\n" +
     "  visual-qa agent-gate <QA-DIR> <verity.json> [--json]     join independent Visual QA + Verity evidence\n" +
@@ -55,6 +65,7 @@ function usage({ error = false, message = null } = {}) {
     "              --internal-scrollers-as-finding (inner scroll areas are info by default; opt in to report them)\n" +
     "              --design-contract FILE (DESIGN.md; auto-discover DESIGN.md in cwd when present)\n" +
     "              --allow-destructive (only with --isolated)\n" +
+    "Geometry:     --geometry (run/explore) adds the geometry checks to every state; off by default\n" +
     "Review flags (run): --no-prepare-review  skip auto vision task export\n" +
     "              --no-edge-input-probes     skip empty/hostile/overlong fills\n" +
     "Bounds flags: --max-states N --max-depth N --max-actions N --max-actions-per-state N --max-runtime-ms N\n" +
@@ -102,6 +113,12 @@ const VALUE_OPTIONS = new Set([
   "--journey",
   "--only",
   "--config",
+  "--sweep",
+  "--height",
+  "--checks",
+  "--selector",
+  "--min-gap",
+  "--touch-max",
 ]);
 
 function validateOptionValues(tokens) {
@@ -214,6 +231,67 @@ async function baselineCommand(sub, rest) {
   }
 }
 
+const GEOMETRY_FLAGS = [
+  "--url", "--out", "--route", "--viewport", "--sweep", "--height", "--checks", "--selector",
+  "--state", "--config", "--min-gap", "--touch-max",
+];
+
+/** `geometry`: measure first view, covered, stable, edges, text fit, rows and tap size across viewports. Returns the exit code. */
+async function geometryCommand(rest) {
+  const opts = {};
+  const lists = { "--route": [], "--viewport": [], "--selector": [], "--state": [] };
+  for (let i = 0; i < rest.length; i += 1) {
+    const arg = rest[i];
+    if (!GEOMETRY_FLAGS.includes(arg)) {
+      usage({ error: true, message: `geometry: ${arg.startsWith("--") ? `flag ${arg} does not apply` : `unexpected argument ${arg}`}` });
+      return 2;
+    }
+    if (arg in lists) lists[arg].push(rest[++i]);
+    else opts[arg.slice(2)] = rest[++i];
+  }
+  const number = (name, min) => {
+    if (opts[name] === undefined) return undefined;
+    const value = Number(opts[name]);
+    if (!Number.isFinite(value) || value < min) throw new Error(`--${name} must be a number >= ${min}`);
+    return value;
+  };
+  try {
+    if (!opts.url) throw new Error("geometry requires --url");
+    const selectors = parseSelectorFlags(lists["--selector"]);
+    const checks = resolveChecks(opts.checks, selectors);
+    const viewports = lists["--viewport"].map(parseViewport);
+    const sweep = opts.sweep === undefined ? null : parseSweep(opts.sweep);
+    // Left out when not given, so the defaults of src/geometry.mjs stay the one place they live.
+    const given = (key, value) => (value === undefined ? {} : { [key]: value });
+    const input = {
+      baseUrl: opts.url,
+      outDir: resolve(opts.out ?? ".qa-geometry"),
+      routes: lists["--route"],
+      viewports,
+      sweep,
+      checks,
+      selectors,
+      ...given("height", number("height", 200)),
+      ...given("minGap", number("min-gap", 0)),
+      ...given("touchMax", number("touch-max", 1)),
+    };
+    if (lists["--state"].length) {
+      const { path, config: project } = await loadVisualQaConfig(process.cwd(), opts.config);
+      if (!path) throw new Error("states come from .visual-qa.yml (or --config FILE); none found");
+      for (const warning of project.warnings) console.error(`visual-qa: warning: ${warning}`);
+      const { session, stateDefs } = await resolveSessionInput(project, { baseDir: dirname(path), states: lists["--state"] });
+      Object.assign(input, { session, stateDefs, states: lists["--state"] });
+    }
+    const result = await geometry(input);
+    console.log(result.report);
+    console.log(`report: ${join(result.outDir, "report.md")} · machine report: ${join(result.outDir, "report.json")}`);
+    return geometryExitCode(result);
+  } catch (error) {
+    console.error(`Visual QA BLOCKED: ${error.message}`);
+    return 2;
+  }
+}
+
 const args = process.argv.slice(2);
 if (args.includes("--help") || args.includes("-h") || args[0] === "help") {
   usage();
@@ -304,6 +382,8 @@ if (command === "agent-gate") {
     command === "baseline-capture" ? "capture" : args.shift(),
     args,
   );
+} else if (command === "geometry") {
+  process.exitCode = await geometryCommand(args);
 } else if (command === "agent-run") {
   let url = null;
   let baselineUrl = null;
@@ -546,6 +626,7 @@ if (command === "agent-gate") {
     outFile = null,
     prepareReview = true,
     edgeInputProbes = true,
+    geometryChecks = false,
     reviewMaxPairs = null,
     reviewMaxStatePairs = null,
     reviewBatchSize = null,
@@ -577,6 +658,7 @@ if (command === "agent-gate") {
     else if (arg === "--out-file") outFile = args[++i];
     else if (arg === "--no-prepare-review") prepareReview = false;
     else if (arg === "--no-edge-input-probes") edgeInputProbes = false;
+    else if (arg === "--geometry") geometryChecks = true;
     else if (arg === "--max-states") bounds.max_states = Number(args[++i]);
     else if (arg === "--max-depth") bounds.max_depth = Number(args[++i]);
     else if (arg === "--max-actions")
@@ -716,6 +798,7 @@ if (command === "agent-gate") {
       bounds,
       prepareReview,
       edgeInputProbes,
+      geometry: geometryChecks,
       reviewMaxPairs,
       reviewMaxStatePairs,
       reviewBatchSize,

@@ -369,6 +369,8 @@ export function resolveConfig(input = {}) {
     // Without a fixDir the fix stage only plans, never edits.
     fixDir: input.fixDir || null,
     slopChecks: input.slopChecks !== false,
+    // Geometry checks (first view aside) on every scanned state; opt in with --geometry.
+    geometry: input.geometry === true,
     securityChecks: input.securityChecks !== false,
     // Empty / hostile / overlong fills on text-like controls after the primary
     // probe. Opt out with edgeInputProbes: false when a surface is too fragile.

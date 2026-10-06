@@ -84,3 +84,16 @@ export {
   sameOrigin,
   scrubVolatile,
 } from "./state.mjs";
+export {
+  DEFAULT_GEOMETRY_CHECKS,
+  GEOMETRY_CHECKS,
+  geometry,
+  geometryExitCode,
+  geometryFindings,
+  geometryIssues,
+  parseSelectorFlags,
+  parseSweep,
+  resolveChecks,
+  runGeometryChecks,
+  sweepWidths,
+} from "./geometry.mjs";

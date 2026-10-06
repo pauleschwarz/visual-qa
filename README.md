@@ -131,6 +131,7 @@ visual-qa intent --intent "…" --fix-dir DIR [--json]  # catalog dry-run, no br
 visual-qa review-prepare <DIR> [--max-pairs N]       # export vision tasks for your model
 visual-qa review-apply <DIR> <findings.json>         # apply findings (fail-closed full-ID coverage)
 visual-qa baseline capture|compare|diff …            # see "Baselines" below
+visual-qa geometry --url URL [--sweep 320-1440:40] …  # see "Geometry" below
 visual-qa agent-run --url URL [--baseline-url URL] [--out DIR] [--git-ref REF]
 visual-qa agent-gate <QA-DIR> <verity.json> [--json] # fail-closed Visual QA + Verity receipt
 ```
@@ -369,6 +370,61 @@ baseline:
 `info` (an app shell is a design choice) and `info` never turns a `PASS` into `UNPROVEN`.
 `--internal-scrollers-as-finding` restores the `medium` finding (through the API:
 `internalScrollers: "finding"` in `resolveConfig`; `.visual-qa.yml` has no such key).
+
+## Geometry
+
+What people measure by hand when a page "looks off", as one command: is the call to action above the fold,
+does a fixed bar cover content, does a neighbour jump when something changes, are edges a few pixels off flush,
+does text fit its box, do the texts of a row keep their distance and baseline, is a tap target big enough.
+Each finding comes with a number in px and one image with the box outlined.
+
+```bash
+# every default check, widths 320–1440 in steps of 40 (each width a fresh page), 800 px high
+visual-qa geometry --url http://127.0.0.1:3000 --sweep 320-1440:40 --route / --route /pricing
+
+# named windows instead of (or besides) a sweep; the CTA must be above the fold of a laptop screen
+visual-qa geometry --url http://127.0.0.1:3000 --viewport laptop=1280x600 --viewport phone=390x844 \
+  --selector first-view=".hero .cta"
+
+# the Save button changes its label while saving: does anything next to it move?
+visual-qa geometry --url http://127.0.0.1:3000 --route /settings --selector stable="#save"
+```
+
+| Check | Finds | Measure |
+| --- | --- | --- |
+| `first-view` | an element matching `--selector first-view=CSS` that does not end above the fold (also: matches nothing, or nothing visible) | px below the fold |
+| `covered` | a fixed or sticky element over content that no scrolling clears (the browser's centred scroll-into-view is clamped at the page ends and never passes a side rail), or over a control once the browser has scrolled it into view as it does on focus (`scroll-padding` fixes the second). A bar over content that scrolls out from under it is not a finding; an open modal is skipped | % of the element under the bar |
+| `stable` | elements that move between two states of one page: `--selector stable=CSS` clicks that element (`stable=hover:CSS` hovers it) and compares every visible box before and after; the trigger, its parents and children do not count, only the topmost mover is reported | px moved |
+| `edges` | stacked blocks whose left edges (and, when both have a background or border, right edges) are 1–4 px apart: nearly flush, not flush. Centred parents are skipped | px |
+| `text-fit` | text cut off by its box (`overflow:hidden`), an ellipsis or line clamp without `title`/`aria-label`, text sticking out of its box | px cut / out |
+| `row-align` | texts of sibling boxes on one line closer than `--min-gap` (default 6 px; overlap is `high`), and equally sized texts on one line whose baselines are 1 px or more apart (under 2 px is `low`). Words inside one sentence (inline elements) are not boxes of a row | px gap / px off |
+| `tap-size` | tap area below 44 px in either direction, and tap areas of two controls that overlap. The area is measured with `elementFromPoint` (box, label and `::after` reach count); a link inside a sentence is exempt. Only at widths up to `--touch-max` (default 820); the report says how often it ran | px, smaller side |
+
+`first-view` and `stable` need to be told where to look and run only when their `--selector` is given;
+`--checks a,b` narrows the set (a check that lacks its selector is a call error).
+
+**Sweep and ranges.** `--sweep FROM-TO[:STEP]` (step defaults to 40, TO is always measured, `--height N` sets the height, default 800)
+and `--viewport name=WxH` (repeatable) add up; with neither, mobile 390×844 and desktop 1440×900. Every
+viewport opens a new page, so the page is what a visitor gets at that width. A finding that exists at 320–440 px is one
+finding with that range and its worst width, not one per width. Images are taken at the worst width, the worst of each kind first,
+at most 40; the rest is in `report.json`. A sweep of 29 widths on the bundled demo takes about 30 s.
+
+**States.** `--state NAME` (repeatable, `.visual-qa.yml` or `--config FILE`, see "States, sign-in and journeys")
+measures the page a state's setup leaves instead of `--route`; routes are visited as an anonymous visitor.
+
+**Result.** `<out>/report.md`, `report.json` (`schema_version: vqa-geometry-0.1`; per finding `check`, `kind`, `severity`,
+`selector`, `route`, `state`, `viewports`, `widths`, `measure`, `worst`, `image`) and `images/`. A finding's selector is a short
+CSS path (an id, `data-testid` or tag and classes with `:nth-of-type`). Exit `0` nothing found, `1` findings, `2` not
+everything could be measured: a call error, unreachable server, a page that does not load (HTTP ≥ 400 included), a trigger that
+matches nothing. Such a run lists its errors in the report and is never `PASS`.
+
+**What it is not.** Findings are measurements of a rendering, not verdicts on design: a deliberate overlay, a tooltip that opens in the
+flow, an indent of 3 px on purpose are all findings; look at the image. On a real page expect many small findings (tap targets of
+every inline link in a table); the report lists the worst ten of each kind and keeps all of them in `report.json`.
+
+**In `run`/`explore`:** `--geometry` adds the checks that need no input (`covered`, `edges`, `text-fit`, `row-align`, `tap-size`)
+to every scanned state at its viewport, as `vqa-geometry` issues. Off by default; `--state` captures are not part of it, use
+`visual-qa geometry --state`.
 
 ## Agent loop (short)
 

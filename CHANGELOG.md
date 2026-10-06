@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Geometry
+- New `visual-qa geometry --url URL [--route …] [--viewport name=WxH …] [--sweep FROM-TO[:STEP]] [--height N] [--checks a,b]
+  [--selector first-view=CSS|stable=[hover:]CSS …] [--state NAME …] [--min-gap N] [--touch-max N] [--out DIR]`: seven measured checks —
+  `first-view`, `covered`, `stable`, `edges`, `text-fit`, `row-align`, `tap-size` — across a width sweep (each width a fresh page).
+  A finding has severity, selector, viewport, a number in px and one image with the box outlined (worst width, worst of each kind first,
+  at most 40); a defect at 320–440 px is one finding with its range. `report.md` + `report.json` (`vqa-geometry-0.1`) + `images/`;
+  exit 0 clean, 1 findings, 2 not everything measured (call error, unreachable, page that does not load, trigger that matches nothing).
+- `--state` measures named states (V1); routes are visited anonymously.
+- `run`/`explore --geometry` adds the checks that need no input to every scanned state as `vqa-geometry` issues. Off by default.
+- `src/geometry.mjs` exports `geometry`, `runGeometryChecks`, `geometryIssues`, `parseSweep`, `resolveChecks` …; `settle` of the baseline capture is exported and shared.
+- Fixture `fixture/geometry-app.mjs`: per check a page with the defect built in and a twin without; `test/geometry.test.mjs`, `test/geometry.e2e.mjs` (in `npm run selftest`).
+
 ### States, sign-in and journeys
 - Check an app in a named state, not only as an anonymous visitor: `.visual-qa.yml` gains `setup` (`setup(page, ctx)` hook), `storage_state`, `states` and `journeys`. `run`/`explore` take `--state NAME` and `--journey NAME` (repeatable) and `--config FILE`; `path@state` works on the CLI and in `route_map` for `agent-run`.
 - Every state and journey step leaves an image and the visible text beside it (`.txt`). A state goes through the accessibility, layout, scroll, placeholder-copy and runtime checks; a green journey step through accessibility, layout and runtime checks. Journey pages resolve `page.goto("/path")` against `--url`.
