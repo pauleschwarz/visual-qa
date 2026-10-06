@@ -281,6 +281,17 @@ const PAGES = {
     `<table style="border-collapse:collapse;width:300px;font-size:14px;line-height:1.2"><tr><td style="width:70px;padding:4px 4px 0;vertical-align:middle">Other<br>Religion</td><td style="padding:4px;vertical-align:middle">Swiss</td></tr></table>`,
   ),
   // ---- tap-size overlap: the screen at one scroll position, rects cut at what clips them
+  // the clip box cuts a relative button too; a fixed header or a sticky nav that comes before the page links in the DOM
+  // is covered's business, not a tap overlap (review 1006-2047 M1)
+  "/tap-size-relative-clip": page(
+    `<div style="overflow:hidden;height:60px"><button id="r1" style="position:relative;display:block;width:100%;height:100px">First</button></div><button id="r2" style="display:block;width:100%;height:48px">Second</button>`,
+  ),
+  "/tap-size-header-first": page(
+    `<header style="position:fixed;left:0;right:0;top:0;height:60px;background:#222;padding:6px"><button id="hb" style="width:120px;height:48px">Menu</button></header><main>${links(8)}</main>`,
+  ),
+  "/tap-size-sticky-first": page(
+    `<nav style="position:sticky;top:0;height:60px;margin-bottom:-30px;background:#eee"><a id="s1" href="#s1" style="display:inline-block;width:120px;height:48px;line-height:48px">Nav</a></nav><main>${links(6)}</main>`,
+  ),
   "/tap-size-fixed-pair": page(`<main>${links(10)}</main>${chatOver(16)}${bar}`),
   "/tap-size-fixed-apart": page(`<main>${links(10)}</main>${chatOver(96)}${bar}`),
   "/tap-size-bar": page(

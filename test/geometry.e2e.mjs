@@ -608,6 +608,13 @@ test("tap-size: an overlap is found when the cut only takes away what lies besid
   assert.deepEqual(overlaps(await tapSize("/tap-size-fixed-clip")), [["#fy", "#fx", 20, 28], ["#s2", "#s1", 60, 20]], "fixed boxes are not cut by what they sit in");
 });
 
+test("tap-size: a relative button is cut by its static box; a fixed header or a sticky nav before the page links is no overlap", async () => {
+  for (const route of ["/tap-size-relative-clip", "/tap-size-header-first", "/tap-size-sticky-first"]) {
+    const result = await tapSize(route);
+    assert.deepEqual([route, overlaps(result), result.errors], [route, [], []]);
+  }
+});
+
 test("tap-size: tap areas that touch by 1 px do not overlap, by 2 px they do — above each other and side by side", async () => {
   assert.deepEqual(overlaps(await tapSize("/tap-size-edge")), [["#c2", "#c1", 80, 2], ["#g2", "#g1", 2, 48]]);
 });
