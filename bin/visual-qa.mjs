@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import { agentRun } from "../src/agent-run.mjs";
+import { dirname, join, resolve } from "node:path";
+import { agentRun, loadVisualQaConfig } from "../src/agent-run.mjs";
 import { captureBaselines } from "../src/baseline.mjs";
 import { demo } from "../src/demo.mjs";
 import { DEFAULT_VIEWPORTS } from "../src/config.mjs";
@@ -13,6 +13,7 @@ import { renderSummaryLines, summarizeReport } from "../src/report.mjs";
 import { applyHarnessReview, prepareHarnessReview } from "../src/review.mjs";
 import { writeAgentGate } from "../src/agent-gate.mjs";
 import { run } from "../src/run.mjs";
+import { resolveSessionInput } from "../src/session.mjs";
 
 function usage({ error = false, message = null } = {}) {
   const text =
@@ -22,6 +23,8 @@ function usage({ error = false, message = null } = {}) {
     '                 [--intent "instruction"] [--max-agent-calls N] [--mode off|changed|full] [bounds flags]\n' +
     "                 [--path-prefix PATH] [--no-prepare-review] [--no-edge-input-probes] [--design-contract FILE]\n" +
     "                 [--max-pairs N] [--max-state-pairs N] [--batch-size N] [--skills loop|all|list]\n" +
+    "                 [--state NAME ...] [--journey NAME ...] [--config FILE]   named states / journeys (see README)\n" +
+    "  visual-qa journeys --url URL [--only a,b | --journey NAME ...] [--out DIR] [--config FILE]   scripted journeys from the config\n" +
     "  visual-qa explore --url URL [--out DIR] [bounds flags]  deterministic core only\n" +
     "  visual-qa report <DIR> [--json]                         summarize an out-dir for agents\n" +
     '  visual-qa intent --intent "..." --fix-dir DIR [--json]   catalog dry-run, no browser\n' +
@@ -74,6 +77,10 @@ const VALUE_OPTIONS = new Set([
   "--max-state-pairs",
   "--skills",
   "--batch-size",
+  "--state",
+  "--journey",
+  "--only",
+  "--config",
 ]);
 
 function validateOptionValues(tokens) {
@@ -249,6 +256,8 @@ if (command === "agent-gate") {
       gitRef,
       designContractPath,
     });
+    for (const warning of result.agent?.config_warnings ?? [])
+      console.error(`visual-qa: warning: ${warning}`);
     if (result.noop) {
       console.log("agent-run: no UI diff → PASS (noop)");
       process.exitCode = 0;
@@ -439,7 +448,7 @@ if (command === "agent-gate") {
     console.error(`Visual QA BLOCKED: ${error.message}`);
     process.exitCode = 2;
   }
-} else if (command === "explore" || command === "run") {
+} else if (command === "explore" || command === "run" || command === "journeys") {
   let baseUrl,
     outDir = ".qa",
     mode = "full",
@@ -458,9 +467,13 @@ if (command === "agent-gate") {
     reviewMaxPairs = null,
     reviewMaxStatePairs = null,
     reviewBatchSize = null,
-    reviewSkills = null;
+    reviewSkills = null,
+    configFile = null,
+    only = null;
   const bounds = {};
   const changedTargets = [];
+  const stateNames = [];
+  const journeyNames = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--url") baseUrl = args[++i];
@@ -493,10 +506,18 @@ if (command === "agent-gate") {
     else if (arg === "--max-state-pairs") reviewMaxStatePairs = Number(args[++i]);
     else if (arg === "--batch-size") reviewBatchSize = Number(args[++i]);
     else if (arg === "--skills") reviewSkills = args[++i];
+    else if (arg === "--state") stateNames.push(args[++i]);
+    else if (arg === "--journey") journeyNames.push(args[++i]);
+    else if (arg === "--config") configFile = args[++i];
+    else if (arg === "--only") only = args[++i];
     else {
       usage();
       process.exit(2);
     }
+  }
+  if (only !== null && command !== "journeys") {
+    console.error("visual-qa: --only belongs to the journeys command");
+    process.exit(2);
   }
   if (!baseUrl && mode !== "off") {
     usage();
@@ -556,7 +577,42 @@ if (command === "agent-gate") {
         projectRoot: process.cwd(),
       });
     }
+    const sessionInput = {};
+    if (command === "journeys" || stateNames.length || journeyNames.length) {
+      const { path, config: project } = await loadVisualQaConfig(
+        process.cwd(),
+        configFile,
+      );
+      if (!path)
+        throw new Error(
+          "states and journeys come from .visual-qa.yml (or --config FILE); none found",
+        );
+      for (const warning of project.warnings)
+        console.error(`visual-qa: warning: ${warning}`);
+      // On `journeys`, --only a,b and --journey a --journey b both name journeys; naming none runs all.
+      const named = [
+        ...(only === null ? [] : only.split(",").map((name) => name.trim())),
+        ...journeyNames,
+      ].filter(Boolean);
+      const journeysToRun =
+        command === "journeys"
+          ? named.length
+            ? named
+            : Object.keys(project.journeys)
+          : journeyNames;
+      if (command === "journeys" && !journeysToRun.length)
+        throw new Error("no journeys defined in the config (journeys: …)");
+      Object.assign(
+        sessionInput,
+        await resolveSessionInput(project, {
+          baseDir: dirname(path),
+          states: stateNames,
+          journeys: journeysToRun,
+        }),
+      );
+    }
     const input = {
+      ...sessionInput,
       baseUrl,
       outDir: resolve(outDir),
       mode,

@@ -239,6 +239,21 @@ export function resolveConfig(input = {}) {
     designContractPath: input.designContractPath || null,
     agentRun: input.agentRun && typeof input.agentRun === "object" ? input.agentRun : null,
     changedTargets,
+    // Sign-in / state / journey input, already resolved by
+    // resolveSessionInput (session.mjs). Naming any state or journey narrows
+    // the run to exactly those, like declared change targets do.
+    session:
+      input.session && typeof input.session === "object"
+        ? {
+            setup: input.session.setup || null,
+            storageState: input.session.storageState || null,
+          }
+        : null,
+    stateDefs:
+      input.stateDefs && typeof input.stateDefs === "object"
+        ? input.stateDefs
+        : {},
+    journeys: Array.isArray(input.journeys) ? input.journeys : [],
     // Optional pathname gate for feature-scoped walks. Same origin only;
     // links outside the prefix are skipped (see explore pathAllowed).
     pathPrefix: normalizePathPrefix(input.pathPrefix),

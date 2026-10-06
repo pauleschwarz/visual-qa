@@ -8,7 +8,7 @@ import pixelmatch from "pixelmatch";
 import { redact } from "./config.mjs";
 import { sameOrigin } from "./state.mjs";
 
-function issue(type, title, severity, detail, evidence = {}) {
+export function issue(type, title, severity, detail, evidence = {}) {
   return {
     issue_id: `vqa-${type}-${slug(title)}`,
     type: `vqa-${type}`,
