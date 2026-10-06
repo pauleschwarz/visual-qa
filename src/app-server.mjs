@@ -23,18 +23,22 @@ function signalGroup(pid, signal) {
   }
 }
 
+/** One health request: the response, whatever its status, or null when nothing answers within 2 s. */
+async function ask(health) {
+  try {
+    return await fetch(health, { signal: AbortSignal.timeout(2_000) });
+  } catch {
+    return null;
+  }
+}
+
 async function waitForHealth(health, state, timeoutMs, output) {
   const deadline = Date.now() + timeoutMs;
   const tail = () => (output.text.trim() ? `\n--- server output (tail) ---\n${output.text.trim()}` : "");
   for (;;) {
     if (state.failed) throw new Error(`server could not start: ${state.failed.message}${tail()}`);
     if (state.exited) throw new Error(`server exited (${state.exited}) before ${health} answered${tail()}`);
-    try {
-      const response = await fetch(health, { signal: AbortSignal.timeout(2_000) });
-      if (response.ok) return;
-    } catch {
-      // not up yet
-    }
+    if ((await ask(health))?.ok) return;
     if (Date.now() >= deadline)
       throw new Error(`${health} did not answer within ${Math.round(timeoutMs / 1000)}s${tail()}`);
     await sleep(POLL_MS);
@@ -43,10 +47,16 @@ async function waitForHealth(health, state, timeoutMs, output) {
 
 /**
  * Run `fn` while `server.command` serves `server.health`. The server is stopped when `fn`
- * returns, throws, the health wait fails, or visual-qa itself gets SIGINT/SIGTERM.
+ * returns, throws, the health wait fails, or visual-qa itself gets SIGINT/SIGTERM/SIGHUP —
+ * also while it is being stopped. An address that answers before the start belongs to someone
+ * else: refused, never run against.
  */
 export async function withAppServer(server, fn, { cwd = process.cwd(), env = process.env } = {}) {
   const timeoutMs = server.startup_timeout_ms ?? DEFAULT_STARTUP_TIMEOUT_MS;
+  if (await ask(server.health))
+    throw new Error(
+      `${server.health} already answers before the server started: another process owns that address (stop it, or change the port in server.command and server.health)`,
+    );
   const output = { text: "" };
   const child = spawn(server.command, {
     cwd,
@@ -72,7 +82,7 @@ export async function withAppServer(server, fn, { cwd = process.cwd(), env = pro
     });
 
   const killNow = () => signalGroup(child.pid, "SIGKILL");
-  const handlers = ["SIGINT", "SIGTERM"].map((signal) => {
+  const handlers = ["SIGINT", "SIGTERM", "SIGHUP"].map((signal) => {
     const handler = () => {
       release();
       killNow();
@@ -91,10 +101,12 @@ export async function withAppServer(server, fn, { cwd = process.cwd(), env = pro
     await waitForHealth(server.health, state, timeoutMs, output);
     return await fn();
   } finally {
-    release();
+    // The handlers stay until the group is dead: a second Ctrl-C or a hang-up during the
+    // grace period must still take the server down, not leave it behind.
     signalGroup(child.pid, "SIGTERM");
     await Promise.race([exited, sleep(GRACE_MS)]);
     killNow();
+    release();
     child.stdout.destroy();
     child.stderr.destroy();
   }

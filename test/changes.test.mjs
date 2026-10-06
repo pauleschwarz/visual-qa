@@ -455,3 +455,211 @@ test("agentRun: gitRef is the older name of base", async () => {
   assert.equal(result.noop, true);
   assert.equal(result.agent.git.ref, "trunk");
 });
+
+// ── Nachbesserung: Kommentare, Einstiege, Tiefe, und die Klauseln, die zuvor kein Test hielt ──
+
+test("importSpecifiers: a comment inside an import is no reason to miss it, a commented-out import is none", () => {
+  const specs = importSpecifiers(
+    [
+      "import {",
+      "  A, // the big one",
+      "  /* x */ B,",
+      '} from "./list";',
+      '// import dead from "./line-dead";',
+      '/* import dead from "./block-dead"; */',
+      'const lazy = () => import(/* webpackChunkName: "x" */ "./lazy");',
+      'const url = "http://example.com/a"; import "./after-url";',
+      "const glob = `src/*/x`; import './after-template'; /* import './dead' */",
+      'import { Größe } from "./unicode";',
+      "export * as ns from './ns';",
+      "@import url(./plain.css) screen;",
+    ].join("\n"),
+  );
+  assert.deepEqual(specs.sort(), [
+    "./after-template",
+    "./after-url",
+    "./lazy",
+    "./list",
+    "./ns",
+    "./plain.css",
+    "./unicode",
+  ]);
+});
+
+test("IMPORTERS: a page importing the changed card with a comment in the import list is found (no silent noop)", () => {
+  const dir = repo({
+    "src/components/Card.tsx": "export const Card = 1;\nexport const Badge = 2;\n",
+    "src/pages/Home.tsx": 'import {\n  Card, // the big one\n  Badge,\n} from "../components/Card";\n',
+    ".visual-qa.yml": 'route_map:\n  "src/pages/**": /\n  "src/components/**": IMPORTERS\n',
+  });
+  put(dir, { "src/components/Card.tsx": "export const Card = 3;\nexport const Badge = 2;\n" });
+  const config = parseVisualQaYaml('route_map:\n  "src/pages/**": /\n  "src/components/**": IMPORTERS\n');
+  assert.deepEqual(resolveChangedRoutes(["src/components/Card.tsx"], config, dir).routes, ["/"]);
+});
+
+const ROUTES_YAML = 'route_map:\n  "src/pages/**": /\n  "src/**": IMPORTERS\n';
+
+test("agent-run: a changed entry point that nothing imports is a PASS with a warning that says why, also next to routed files", () => {
+  const dir = repo({
+    "index.html": '<script type="module" src="/src/main.tsx"></script>',
+    "src/main.tsx": 'import App from "./App";\n',
+    "src/App.tsx": "export default () => null;\n",
+    "src/pages/Home.tsx": "export const Home = 1;\n",
+    ".visual-qa.yml": ROUTES_YAML,
+  });
+  put(dir, { "src/main.tsx": 'import App from "./App";\nimport "./theme.css";\n' });
+  const alone = cli(dir, "agent-run", "--url", "http://127.0.0.1:1", "--out", join(dir, "out"));
+  assert.equal(alone.status, 0, alone.stderr);
+  assert.match(alone.stderr, /warning: nothing imports src\/main\.tsx.*entry point/);
+
+  put(dir, { "src/pages/Home.tsx": "export const Home = 2;\n" });
+  const mixed = cli(dir, "agent-run", "--url", "http://127.0.0.1:1", "--out", join(dir, "out2"));
+  assert.match(mixed.stderr, /warning: nothing imports src\/main\.tsx/, "dropped from a run that has other routes, still said");
+  assert.match(mixed.stdout, /mode=changed routes=\//);
+});
+
+test("IMPORTERS: a climb cut off by import_depth is named, whether or not another chain reached a route", () => {
+  const files = {
+    "src/Leaf.tsx": "export const Leaf = 1;\n",
+    "src/B.tsx": 'import { Leaf } from "./Leaf";\n',
+    "src/pages/Home.tsx": 'import { B } from "../B";\n',
+    "src/pages/Pricing.tsx": 'import { Leaf } from "../Leaf";\n',
+  };
+  const map = { "src/pages/**": ["/page"], "src/*.tsx": "IMPORTERS" };
+  const importersOf = importerIndex(Object.keys(files), (file) => files[file]);
+  const shallow = resolveRoutesFromMap(["src/Leaf.tsx"], map, { importersOf, depth: 1 });
+  assert.deepEqual(shallow.routes, ["/page"], "Pricing is reached, Home (one level further) is not");
+  assert.deepEqual(shallow.depth_exhausted, ["src/Leaf.tsx"]);
+  assert.equal(shallow.import_depth, 1);
+  const deep = resolveRoutesFromMap(["src/Leaf.tsx"], map, { importersOf, depth: 2 });
+  assert.deepEqual(deep.depth_exhausted, []);
+});
+
+test("agent-run: a chain longer than import_depth says so by name, as warning and in the fail-closed issue", async () => {
+  const dir = repo({
+    "src/Leaf.tsx": "export const Leaf = 1;\n",
+    "src/B.tsx": 'import { Leaf } from "./Leaf";\n',
+    "src/pages/Home.tsx": 'import { B } from "../B";\n',
+    ".visual-qa.yml": 'import_depth: 1\nroute_map:\n  "src/pages/**": /\n  "src/*.tsx": IMPORTERS\n',
+  });
+  put(dir, { "src/Leaf.tsx": "export const Leaf = 2;\n" });
+  const run = cli(dir, "agent-run", "--url", "http://127.0.0.1:1", "--out", join(dir, "out"));
+  assert.equal(run.status, 1, run.stderr + run.stdout);
+  assert.match(run.stderr, /no route_map entry reaches src\/Leaf\.tsx/);
+  assert.match(run.stderr, /src\/Leaf\.tsx is imported further up than import_depth 1.*raise import_depth/);
+  const result = await agentRun({ url: "http://127.0.0.1:1", outDir: join(dir, "out2"), projectRoot: dir });
+  assert.match(result.report.issues[0].detail, /src\/Leaf\.tsx is longer than import_depth 1: raise import_depth/);
+  put(dir, { ".visual-qa.yml": 'import_depth: 2\nroute_map:\n  "src/pages/**": /\n  "src/*.tsx": IMPORTERS\n' });
+  const enough = cli(dir, "agent-run", "--url", "http://127.0.0.1:1", "--out", join(dir, "out3"));
+  assert.doesNotMatch(enough.stderr, /import_depth/);
+});
+
+test("IMPORTERS: a hook between a component and its page needs no route_map entry of its own", () => {
+  const files = {
+    "src/components/Leaf.tsx": "export const L = 1;",
+    "src/hooks/useLeaf.ts": 'import { L } from "../components/Leaf"; export const useLeaf = () => L;',
+    "src/pages/Home.tsx": 'import { useLeaf } from "../hooks/useLeaf";',
+  };
+  const result = resolveRoutesFromMap(
+    ["src/components/Leaf.tsx"],
+    { "src/pages/**": "/", "src/components/**": "IMPORTERS" },
+    { importersOf: importerIndex(Object.keys(files), (file) => files[file]) },
+  );
+  assert.deepEqual(result.routes, ["/"]);
+  assert.deepEqual(result.route_reasons["/"][0].via, ["src/hooks/useLeaf.ts", "src/pages/Home.tsx"]);
+});
+
+test("IMPORTERS: a stylesheet chain tokens.css ← index.css (@import) ← page reaches the page's route", () => {
+  const dir = repo({
+    "src/styles/tokens.css": ":root{--a:1}",
+    "src/styles/index.css": '@import "./tokens.css";',
+    "src/pages/Home.tsx": 'import "../styles/index.css";',
+  });
+  const config = parseVisualQaYaml('route_map:\n  "src/pages/**": /\n  "src/styles/**": IMPORTERS\n');
+  assert.deepEqual(resolveChangedRoutes(["src/styles/tokens.css"], config, dir).routes, ["/"]);
+});
+
+test("aliases: a package @scope/x is never the alias @, and the bare alias is its target's index", () => {
+  const files = {
+    "src/scope/x.ts": "export const x = 1;",
+    "src/index.ts": "export const i = 1;",
+    "src/Page.tsx": 'import { x } from "@scope/x";\nimport { i } from "@";',
+  };
+  const importersOf = importerIndex(Object.keys(files), (file) => files[file], { "@": "src" });
+  assert.deepEqual(importersOf("src/scope/x.ts"), []);
+  assert.deepEqual(importersOf("src/index.ts"), ["src/Page.tsx"]);
+});
+
+test("change set: the rename stays a rename when the user's git has diff.renames=false", () => {
+  const dir = repo({ "src/Old.tsx": "export const a = 1;\nexport const b = 2;\nexport const c = 3;\n" });
+  sh(dir, "switch", "-qc", "feature");
+  sh(dir, "mv", "src/Old.tsx", "src/New.tsx");
+  const saved = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"].map((key) => process.env[key]);
+  Object.assign(process.env, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "diff.renames", GIT_CONFIG_VALUE_0: "false" });
+  try {
+    const state = collectGitState(dir);
+    assert.deepEqual(state.renamed_files, [{ from: "src/Old.tsx", to: "src/New.tsx" }]);
+    assert.deepEqual(state.deleted_files, ["src/Old.tsx"]);
+  } finally {
+    ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"].forEach((key, i) => {
+      if (saved[i] === undefined) delete process.env[key];
+      else process.env[key] = saved[i];
+    });
+  }
+});
+
+test("change set: committed_files are relative to the working folder, and never the tool's output folder", () => {
+  const dir = repo({ "web/src/App.tsx": "1\n", "api/x.ts": "1\n" });
+  sh(dir, "switch", "-qc", "feature");
+  put(dir, { "web/src/App.tsx": "2\n", "api/x.ts": "2\n", "web/out/report.json": "{}\n" });
+  commit(dir, "both");
+  assert.deepEqual(collectGitState(join(dir, "web")).committed_files, ["out/report.json", "src/App.tsx"]);
+  const state = collectGitState(join(dir, "web"), { exclude: ["out"] });
+  assert.deepEqual(state.committed_files, ["src/App.tsx"]);
+  assert.deepEqual(state.changed_files, ["src/App.tsx"]);
+});
+
+test("config: startup_timeout_ms 0 is no time, server.health needs a scheme", () => {
+  assert.throws(
+    () => parseVisualQaYaml("server:\n  command: x\n  health: http://h/\n  startup_timeout_ms: 0\n"),
+    /startup_timeout_ms must be a positive integer/,
+  );
+  for (const health of ["localhost:5173/health", "ftp://h/", "http://"])
+    assert.throws(
+      () => parseVisualQaYaml(`server:\n  command: x\n  health: ${health}\n`),
+      /server\.health must be an http\(s\) URL/,
+      health,
+    );
+  assert.equal(parseVisualQaYaml("server:\n  command: x\n  health: HTTPS://h:1/p\n").server.health, "HTTPS://h:1/p");
+});
+
+test("agent-run: the reason lines name route, changed file, the way through, and the pattern; whole app for GLOBAL", () => {
+  const dir = repo({
+    "src/Leaf.tsx": "export const L = 1;\n",
+    "src/pages/Home.tsx": 'import { L } from "../Leaf";\n',
+    "src/styles/tokens.css": ":root{--a:1}\n",
+    ".visual-qa.yml": 'route_map:\n  "src/pages/**": /\n  "src/Leaf.tsx": IMPORTERS\n  "src/styles/**": GLOBAL\n',
+  });
+  put(dir, { "src/Leaf.tsx": "export const L = 2;\n" });
+  const routed = cli(dir, "agent-run", "--url", "http://127.0.0.1:1", "--out", join(dir, "out"));
+  assert.match(routed.stdout, /^ {2}\/ ← src\/Leaf\.tsx → src\/pages\/Home\.tsx \(src\/pages\/\*\*\)$/m);
+  put(dir, { "src/styles/tokens.css": ":root{--a:2}\n" });
+  const full = cli(dir, "agent-run", "--url", "http://127.0.0.1:1", "--out", join(dir, "out2"));
+  assert.match(full.stdout, /^ {2}whole app ← src\/styles\/tokens\.css \(src\/styles\/\*\*\)$/m);
+});
+
+test("agent-run: a noop that left changed files out says which, so a data file or asset is not swallowed unseen", () => {
+  const dir = repo({ "src/data/listing.json": "{}\n", "src/pages/Home.tsx": "export const Home = 1;\n" });
+  put(dir, {
+    ".visual-qa.yml": 'route_map:\n  "src/pages/**": /\n',
+    "src/data/listing.json": '{"a":1}\n',
+    "public/logo.svg": "<svg/>\n",
+  });
+  const run = cli(dir, "agent-run", "--url", "http://127.0.0.1:1", "--out", join(dir, "out"));
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /no UI diff → PASS \(noop\) — changed, not UI files .*: .*public\/logo\.svg/);
+  assert.match(run.stdout, /src\/data\/listing\.json/);
+  const clean = repo();
+  const none = cli(clean, "agent-run", "--url", "http://127.0.0.1:1", "--out", join(clean, "out"));
+  assert.match(none.stdout, /^agent-run: no UI diff → PASS \(noop\)$/m, "nothing changed, nothing to add");
+});

@@ -172,6 +172,10 @@ function setServer(block, result) {
   const text = (value) => (typeof value === "string" && value.trim() ? value : null);
   if (!text(block.command) || !text(block.health))
     throw new Error(".visual-qa.yml: server needs both command and health");
+  if (!/^https?:\/\/[^\s/]+/i.test(block.health.trim()))
+    throw new Error(
+      `.visual-qa.yml: server.health must be an http(s) URL such as http://localhost:5173/ (got "${block.health}")`,
+    );
   const timeout = block.startup_timeout_ms;
   if (timeout !== undefined && !(Number.isInteger(timeout) && timeout > 0))
     throw new Error(".visual-qa.yml: server.startup_timeout_ms must be a positive integer");
@@ -454,6 +458,8 @@ export async function agentRun({
     agentMeta.full_reasons = routeResolution.full_reasons ?? [];
     agentMeta.unmapped_files = routeResolution.unmapped ?? [];
     agentMeta.unrendered_files = routeResolution.unrendered ?? [];
+    agentMeta.depth_exhausted_files = routeResolution.depth_exhausted ?? [];
+    agentMeta.import_depth = routeResolution.import_depth;
   }
   // Nothing to look at: no UI file changed, or the changed files are imported by nothing.
   const noopReason = !routeResolution
@@ -520,7 +526,10 @@ export async function agentRun({
           title: "UI diff without route map",
           severity: "high",
           detail:
-            "Changed UI files require .visual-qa.yml route_map entries; fail-closed.",
+            "Changed UI files require .visual-qa.yml route_map entries; fail-closed." +
+            (agentMeta.depth_exhausted_files.length
+              ? ` The import chain of ${agentMeta.depth_exhausted_files.join(", ")} is longer than import_depth ${agentMeta.import_depth}: raise import_depth.`
+              : ""),
           evidence: {
             ui_files: uiFiles,
             reason: routeResolution.reason,

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -59,6 +60,29 @@ setInterval(() => {}, 1000);
   );
   const pids = () => ["wrapper.pid", "server.pid"].map((name) => Number(readFileSync(join(dir, name), "utf8")));
   return { dir, command: `node wrapper.mjs`, pids };
+}
+
+/** The same app, but wrapper and server both ignore SIGTERM: only SIGKILL of the group stops them. */
+function stubborn(app, port) {
+  writeFileSync(
+    join(app.dir, "server.mjs"),
+    `import { createServer } from "node:http";
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(join(app.dir, "server.pid"))}, String(process.pid));
+process.on("SIGTERM", () => {});
+createServer((req, res) => res.end("ok")).listen(${port}, "127.0.0.1");
+`,
+  );
+  writeFileSync(
+    join(app.dir, "wrapper.mjs"),
+    `import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(join(app.dir, "wrapper.pid"))}, String(process.pid));
+process.on("SIGTERM", () => {});
+spawn(process.execPath, [${JSON.stringify(join(app.dir, "server.mjs"))}], { stdio: "inherit" });
+setInterval(() => {}, 1000);
+`,
+  );
 }
 
 test("server: waits for health, runs the work, then stops the whole process tree", async () => {
@@ -154,25 +178,7 @@ createServer((req, res) => res.end("ok")).listen(${port}, "127.0.0.1");
 test("server: one that ignores SIGTERM is killed after the grace period", async () => {
   const port = await freePort();
   const app = appFiles(port);
-  writeFileSync(
-    join(app.dir, "server.mjs"),
-    `import { createServer } from "node:http";
-import { writeFileSync } from "node:fs";
-writeFileSync(${JSON.stringify(join(app.dir, "server.pid"))}, String(process.pid));
-process.on("SIGTERM", () => {});
-createServer((req, res) => res.end("ok")).listen(${port}, "127.0.0.1");
-`,
-  );
-  writeFileSync(
-    join(app.dir, "wrapper.mjs"),
-    `import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
-writeFileSync(${JSON.stringify(join(app.dir, "wrapper.pid"))}, String(process.pid));
-process.on("SIGTERM", () => {});
-spawn(process.execPath, [${JSON.stringify(join(app.dir, "server.mjs"))}], { stdio: "inherit" });
-setInterval(() => {}, 1000);
-`,
-  );
+  stubborn(app, port);
   await withAppServer({ command: app.command, health: `http://127.0.0.1:${port}/` }, async () => {}, { cwd: app.dir });
   assert.ok(await gone(app.pids()), "killed although it ignored SIGTERM");
 });
@@ -236,4 +242,154 @@ test("agent-run: a server that does not start ends with exit 2, names why, and l
   assert.equal(result.status, 2, result.stdout + result.stderr);
   assert.match(result.stderr, /server exited \(code 3\) before http:\/\/127\.0\.0\.1:9\/ answered[\s\S]*boom/);
   assert.ok(!existsSync(join(dir, "out", "report.json")), "no report from a run that never started");
+});
+
+/** Run withAppServer in its own process, send `signal` once the work has started (plus `after` ms), report how it ended. */
+async function abortedBy(signal, { hold, after }) {
+  const port = await freePort();
+  const app = appFiles(port);
+  stubborn(app, port);
+  const script = join(app.dir, "abort.mjs");
+  writeFileSync(
+    script,
+    `import { withAppServer } from ${JSON.stringify(APP_SERVER)};
+await withAppServer({ command: "node wrapper.mjs", health: "http://127.0.0.1:${port}/" }, async () => {
+  console.log("work started");
+  ${hold ? "await new Promise((done) => setTimeout(done, 60_000));" : ""}
+}, { cwd: ${JSON.stringify(app.dir)} });
+`,
+  );
+  const child = spawn(process.execPath, [script], { stdio: ["ignore", "pipe", "ignore"] });
+  const ended = new Promise((done) => child.once("exit", (code, sig) => done(sig ?? code)));
+  await new Promise((started) => child.stdout.on("data", (chunk) => String(chunk).includes("work started") && started()));
+  await new Promise((wait) => setTimeout(wait, after));
+  child.kill(signal);
+  const how = await Promise.race([ended, new Promise((late) => setTimeout(() => late("no end"), 15_000))]);
+  const stopped = await gone(app.pids());
+  for (const pid of app.pids()) if (alive(pid)) process.kill(pid, "SIGKILL");
+  if (how === "no end") child.kill("SIGKILL");
+  return { how, stopped };
+}
+
+test("server: a second Ctrl-C, SIGTERM or SIGHUP while the server is being stopped still takes it down", async () => {
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    // the work is done, SIGTERM went to a server that ignores it, the grace period is running
+    const result = await abortedBy(signal, { hold: false, after: 600 });
+    assert.deepEqual(result, { how: signal, stopped: true }, `${signal} during the grace period`);
+  }
+});
+
+test("server: SIGHUP (terminal closed) in the middle of the work stops the server", async () => {
+  const result = await abortedBy("SIGHUP", { hold: true, after: 200 });
+  assert.deepEqual(result, { how: "SIGHUP", stopped: true });
+});
+
+test("server: an address that already answers is refused before anything is started, whatever it answers", async () => {
+  const port = await freePort();
+  const marker = join(mkdtempSync(join(tmpdir(), "vqa-busy-")), "started");
+  const foreign = createHttpServer((req, res) => {
+    res.statusCode = 404;
+    res.end("foreign app");
+  }).listen(port, "127.0.0.1");
+  await new Promise((listening) => foreign.once("listening", listening));
+  try {
+    let ran = false;
+    await assert.rejects(
+      withAppServer(
+        { command: `node -e "require('fs').writeFileSync('${marker}','1')"`, health: `http://127.0.0.1:${port}/` },
+        async () => {
+          ran = true;
+        },
+      ),
+      /already answers before the server started: another process owns that address/,
+    );
+    assert.equal(ran, false, "the work never ran against the foreign app");
+    assert.equal(existsSync(marker), false, "the command was not even started");
+  } finally {
+    foreign.close();
+  }
+});
+
+test("server: a health connection that is accepted but never answered ends at startup_timeout_ms", async () => {
+  const port = await freePort();
+  const app = appFiles(port);
+  writeFileSync(
+    join(app.dir, "server.mjs"),
+    `import { createServer } from "node:http";
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(join(app.dir, "server.pid"))}, String(process.pid));
+createServer(() => {}).listen(${port}, "127.0.0.1");
+`,
+  );
+  const script = join(app.dir, "hang.mjs");
+  writeFileSync(
+    script,
+    `import { withAppServer } from ${JSON.stringify(APP_SERVER)};
+try {
+  await withAppServer({ command: "node wrapper.mjs", health: "http://127.0.0.1:${port}/", startup_timeout_ms: 1_000 }, async () => {}, { cwd: ${JSON.stringify(app.dir)} });
+} catch (error) {
+  console.log(error.message.split("\\n")[0]);
+}
+`,
+  );
+  const child = spawn(process.execPath, [script], { stdio: ["ignore", "pipe", "ignore"] });
+  let printed = "";
+  child.stdout.on("data", (chunk) => (printed += chunk));
+  const started = Date.now();
+  const timer = setTimeout(() => child.kill("SIGTERM"), 15_000);
+  await new Promise((done) => child.once("exit", done));
+  clearTimeout(timer);
+  assert.match(printed, /did not answer within 1s/);
+  assert.ok(Date.now() - started < 12_000, "the hung request did not hold the wait past its limit");
+  assert.ok(await gone(app.pids()));
+});
+
+test("agent-run: a port someone else holds ends with exit 2 and a sentence, not a run against that app", async () => {
+  const port = await freePort();
+  const foreign = createHttpServer((req, res) => res.end("foreign app")).listen(port, "127.0.0.1");
+  await new Promise((listening) => foreign.once("listening", listening));
+  const dir = mkdtempSync(join(tmpdir(), "vqa-busy-cli-"));
+  const git = (...args) =>
+    spawnSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", ...args], { cwd: dir, encoding: "utf8" });
+  git("init", "-q", "-b", "main");
+  mkdirSync(join(dir, "src"));
+  writeFileSync(join(dir, "src", "App.tsx"), "export const a = 1;\n");
+  writeFileSync(
+    join(dir, ".visual-qa.yml"),
+    `route_map:\n  "src/**":\n    - /\nserver:\n  command: node -e "setInterval(() => {}, 1000)"\n  health: http://127.0.0.1:${port}/\n`,
+  );
+  git("add", ".");
+  git("commit", "-qm", "init");
+  writeFileSync(join(dir, "src", "App.tsx"), "export const a = 2;\n");
+  const child = spawn(process.execPath, [CLI, "agent-run", "--out", join(dir, "out")], { cwd: dir });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => (stderr += chunk));
+  const code = await new Promise((done) => child.once("exit", done));
+  foreign.close();
+  assert.equal(code, 2, stderr);
+  assert.match(stderr, /already answers before the server started/);
+  assert.ok(!existsSync(join(dir, "out", "report.json")), "nothing was walked");
+});
+
+test("agent-run: a server.health without http:// is a config error at once, the server is never started", () => {
+  const dir = mkdtempSync(join(tmpdir(), "vqa-health-"));
+  const git = (...args) =>
+    spawnSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", ...args], { cwd: dir, encoding: "utf8" });
+  git("init", "-q", "-b", "main");
+  mkdirSync(join(dir, "src"));
+  writeFileSync(join(dir, "src", "App.tsx"), "export const a = 1;\n");
+  const flag = join(dir, "started.flag");
+  writeFileSync(
+    join(dir, ".visual-qa.yml"),
+    `route_map:\n  "src/**":\n    - /\nserver:\n  command: node -e "require('fs').writeFileSync('${flag}','1');setInterval(()=>{},1e9)"\n  health: localhost:5173/health\n`,
+  );
+  git("add", ".");
+  git("commit", "-qm", "init");
+  writeFileSync(join(dir, "src", "App.tsx"), "export const a = 2;\n");
+  const started = Date.now();
+  const result = spawnSync(process.execPath, [CLI, "agent-run", "--out", join(dir, "out")], { cwd: dir, encoding: "utf8", timeout: 30_000 });
+  assert.equal(result.status, 2, result.stdout + result.stderr);
+  assert.match(result.stderr, /server\.health must be an http\(s\) URL/);
+  assert.equal(existsSync(flag), false);
+  assert.ok(Date.now() - started < 20_000, "no 60 s wait for a URL that cannot answer");
 });

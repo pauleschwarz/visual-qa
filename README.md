@@ -407,20 +407,26 @@ server:                        # optional: visual-qa starts and stops your app
 - **Routes.** Each changed UI file (`trigger` / `ignore`, default: web source files) is
   matched against `route_map`. A list gives its routes, `GLOBAL` (alias `FULL`) walks the
   whole app, `IMPORTERS` follows the files that import it (`import`, `export … from`,
-  `import()`, `require()`, CSS `@import`/`@use`; type-only imports render nothing) up to
-  `import_depth` levels, passing through files no entry matches until one that does.
-  Nothing imports it → noop `PASS` naming the file (nothing can show the change). Importers
-  exist but none reaches a mapped file → fail-closed, like a file no entry matches while
-  nothing else does. Dynamic imports built from variables cannot be followed.
+  `import()`, `require()`, CSS `@import`/`@use`, comments ignored; type-only imports render
+  nothing) up to `import_depth` levels, passing through files no entry matches until one
+  that does. A chain still going at `import_depth` is named in a warning.
+  Nothing imports it → noop `PASS` naming the file, with a warning: an entry point
+  (`main.tsx`) or a file loaded some way the scan cannot follow (`import.meta.glob`,
+  computed imports) shows up here too — map those directly (`GLOBAL` for an entry point).
+  Importers exist but none reaches a mapped file → fail-closed, like a file no entry
+  matches while nothing else does.
+  A "no UI diff" noop lists the changed files that are not UI files (adjust `trigger` / `ignore`).
 - **Files no entry reaches** are named as warnings while other files resolve; alone they fail closed.
 - **Why.** The command prints one line per route — `/pricing ← src/components/Button.tsx →
   src/pages/Pricing.tsx (src/pages/Pricing.tsx)` — and `agent-run.json` / `report.json`
-  keep it as `route_reasons`, `full_reasons`, `unmapped_files`, `unrendered_files`, next to
+  keep it as `route_reasons`, `full_reasons`, `unmapped_files`, `unrendered_files`, `depth_exhausted_files`, next to
   `git.committed_files`, `untracked_files`, `deleted_files`, `renamed_files`, `merge_base`.
 - **Server.** With `server:`, the app starts after the routes are known (never for a noop),
   `health` is polled until it answers, and the process group visual-qa started is stopped
-  when the run ends, fails, or visual-qa gets `SIGINT`/`SIGTERM`. A command that exits early,
-  or a health URL that never answers, ends with exit `2` and the server's last output.
+  when the run ends, fails, or visual-qa gets `SIGINT`/`SIGTERM`/`SIGHUP` (also while it is
+  stopping it). `health` must be an `http(s)` URL. A command that exits early, a health URL
+  that never answers, or one that already answers before the start (someone else owns the
+  address) ends with exit `2` and a sentence (the server's last output, where there is one).
   Nothing is stopped by name or port. `--baseline-url` stays yours to serve.
 
 ## Agent loop (short)

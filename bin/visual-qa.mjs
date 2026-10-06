@@ -127,6 +127,13 @@ function routeReasonLines(agent) {
   return lines;
 }
 
+/** What a "no UI diff" noop left out: every changed file is a non-UI one (a data file, an asset, an ignored one). */
+function notUiNote({ changed_files: changed = [] }) {
+  if (!changed.length) return "";
+  const shown = changed.slice(0, 5).join(", ");
+  return ` — changed, not UI files (see trigger/ignore in .visual-qa.yml): ${shown}${changed.length > 5 ? `, … (${changed.length} in all)` : ""}`;
+}
+
 function reportWasBlocked(report) {
   return (
     report.coverage?.states === 0 &&
@@ -347,12 +354,20 @@ if (command === "agent-gate") {
       console.error(`visual-qa: warning: ${warning}`);
     for (const file of result.agent?.unmapped_files ?? [])
       console.error(`visual-qa: warning: no route_map entry reaches ${file}`);
+    for (const file of result.agent?.unrendered_files ?? [])
+      console.error(
+        `visual-qa: warning: nothing imports ${file}, so no route shows its change. An entry point (main.tsx, index.html) or a file loaded in a way the import scan cannot follow (import.meta.glob, a computed import)? Map it in route_map directly (GLOBAL for an entry point)`,
+      );
+    for (const file of result.agent?.depth_exhausted_files ?? [])
+      console.error(
+        `visual-qa: warning: ${file} is imported further up than import_depth ${result.agent.import_depth}; those importers were not followed (raise import_depth in .visual-qa.yml)`,
+      );
     for (const line of routeReasonLines(result.agent)) console.log(line);
     if (result.noop) {
       console.log(
         result.agent.reason === "unrendered"
           ? `agent-run: changed files are imported by nothing (${result.agent.unrendered_files.join(", ")}) → PASS (noop)`
-          : "agent-run: no UI diff → PASS (noop)",
+          : `agent-run: no UI diff → PASS (noop)${notUiNote(result.agent.git)}`,
       );
       process.exitCode = 0;
     } else {

@@ -162,20 +162,25 @@ export function collectGitState(cwd, { base, candidates, exclude = [] } = {}) {
 const SOURCE_FILE = /\.(tsx?|jsx?|mjs|cjs|mts|cts|vue|svelte|css|scss|sass|less)$/i;
 const stripExt = (path) => path.replace(SOURCE_FILE, "");
 
+/** Comments out, strings kept (`"http://x"`, `"/*"`): a commented-out import is none, a comment inside one is no reason to miss it. */
+const COMMENTS = /("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`)|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
+const withoutComments = (text) => text.replace(COMMENTS, (_, kept) => kept ?? " ");
+
 /**
  * Runtime import specifiers of a module: static imports and re-exports, side-effect imports,
  * dynamic imports, require(), CSS @import/@use/@forward. `import type` / `export type` render
- * nothing, so they do not count. Template-literal dynamic imports cannot be followed.
+ * nothing, so they do not count. Comments are dropped first; template-literal dynamic imports
+ * cannot be followed.
  */
 export function importSpecifiers(source) {
-  const text = String(source);
+  const text = withoutComments(String(source));
   const specs = [];
   for (const m of text.matchAll(
-    /\b(?:import|export)\s+(type\s+)?(?:[\w*{}\s,$]+?\s+from\s*)?["']([^"']+)["']/g,
+    /\b(?:import|export)\s+(type\s+)?(?:[^"'`;()=]*?\s+from\s*)?["']([^"']+)["']/g,
   ))
     if (!m[1]) specs.push(m[2]);
   for (const m of text.matchAll(/\b(?:import|require)\s*\(\s*["']([^"']+)["']/g)) specs.push(m[1]);
-  for (const m of text.matchAll(/@(?:import|use|forward)\s+(?:url\(\s*)?["']([^"']+)["']/g)) specs.push(m[1]);
+  for (const m of text.matchAll(/@(?:import|use|forward)\s+(?:url\(\s*)?(["']?)([^"')\s;]+)\1/g)) specs.push(m[2]);
   return [...new Set(specs)];
 }
 
@@ -244,7 +249,8 @@ const keywordOf = (mapping) => (typeof mapping === "string" ? mapping.toUpperCas
  * - FULL (alias GLOBAL): the whole app is walked;
  * - IMPORTERS: the files that import the changed file stand in for it, up to `depth` levels
  *   (`importersOf(file)`); a stand-in that matches no entry is passed through. Nothing imports
- *   it → `unrendered`; importers exist but none reaches a mapped file → `unmapped`.
+ *   it → `unrendered`; importers exist but none reaches a mapped file → `unmapped`. A climb that
+ *   ends at `depth` with importers still unexplored is named in `depth_exhausted`.
  * `mode: "all"` (default) applies every matching entry per file, `"first"` only the first.
  * Files no entry matches are `unmapped`: tolerated while others resolve, else fail-closed.
  */
@@ -263,6 +269,7 @@ export function resolveRoutesFromMap(
   const fullReasons = [];
   const unmapped = [];
   const unrendered = [];
+  const depthExhausted = [];
   let matched = false;
   let deadEnd = false;
 
@@ -278,11 +285,12 @@ export function resolveRoutesFromMap(
     let frontier = [{ file: origin, chain: [] }];
     let reached = false;
     let any = false;
+    const followable = (importer) => !seen.has(importer) && !ignore.some((g) => matchGlob(g, importer));
     for (let level = 1; level <= depth && frontier.length; level++) {
       const next = [];
       for (const { file, chain } of frontier) {
         for (const importer of importersOf(file)) {
-          if (seen.has(importer) || ignore.some((g) => matchGlob(g, importer))) continue;
+          if (!followable(importer)) continue;
           seen.add(importer);
           any = true;
           const via = [...chain, importer];
@@ -299,6 +307,7 @@ export function resolveRoutesFromMap(
       }
       frontier = next;
     }
+    if (frontier.some(({ file }) => importersOf(file).some(followable))) depthExhausted.push(origin);
     if (!any) unrendered.push(origin);
     else if (!reached) {
       deadEnd = true;
@@ -319,7 +328,14 @@ export function resolveRoutesFromMap(
     }
   }
 
-  const detail = { route_reasons: routes, full_reasons: fullReasons, unmapped, unrendered };
+  const detail = {
+    route_reasons: routes,
+    full_reasons: fullReasons,
+    unmapped,
+    unrendered,
+    depth_exhausted: depthExhausted,
+    import_depth: depth,
+  };
   if (fullReasons.length) return { mode: "full", routes: [], reason: null, ...detail };
   if (Object.keys(routes).length)
     return { mode: "changed", routes: Object.keys(routes), reason: null, ...detail };
