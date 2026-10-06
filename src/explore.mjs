@@ -29,6 +29,7 @@ import {
   sameOrigin,
   scrubVolatile,
 } from "./state.mjs";
+import { geometryFindings } from "./geometry.mjs";
 import { runSlopChecks } from "./slop.mjs";
 import { runSecurityChecks } from "./security.mjs";
 import { runIntentChecks } from "./intent.mjs";
@@ -787,6 +788,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
       issues.push(...(await runA11y(runtime.page)));
       issues.push(...(await runLayoutChecks(runtime.page, viewport, config)));
       issues.push(...(await runScrollChecks(runtime.page, viewport)));
+      if (config.geometry) issues.push(...(await geometryFindings(runtime.page, viewport)));
       // Slop heuristics describe a state like the other static checks.
       if (config.slopChecks !== false)
         issues.push(...(await runSlopChecks(runtime.page, { viewport })));
@@ -1383,6 +1385,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           issues.push(...(await runA11y(runtime.page)));
           issues.push(...(await runLayoutChecks(runtime.page, viewport, config)));
           issues.push(...(await runScrollChecks(runtime.page, viewport)));
+          if (config.geometry) issues.push(...(await geometryFindings(runtime.page, viewport)));
           if (config.slopChecks !== false)
             issues.push(...(await runSlopChecks(runtime.page, { viewport })));
         }

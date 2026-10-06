@@ -545,7 +545,7 @@ function layoutSignature() {
 }
 
 /** Same calm for capture and compare: network idle, fonts ready, layout unchanged for 300 ms. */
-async function settle(page) {
+export async function settle(page) {
   await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
   await page.evaluate(() => document.fonts?.ready);
   await page.evaluate(toTop);
