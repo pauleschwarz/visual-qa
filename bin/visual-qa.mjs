@@ -1,18 +1,30 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import { agentRun } from "../src/agent-run.mjs";
-import { captureBaselines } from "../src/baseline.mjs";
+import { dirname, join, resolve } from "node:path";
+import { agentRun, loadVisualQaConfig } from "../src/agent-run.mjs";
+import {
+  captureBaselines,
+  compareFolders,
+  compareToBaseline,
+} from "../src/baseline.mjs";
 import { demo } from "../src/demo.mjs";
-import { DEFAULT_VIEWPORTS } from "../src/config.mjs";
+import { parseViewport, resolveBaselineConfig } from "../src/config.mjs";
 import { resolveDesignContract } from "../src/design-contract.mjs";
 import { explore } from "../src/explore.mjs";
+import {
+  geometry,
+  geometryExitCode,
+  parseSelectorFlags,
+  parseSweep,
+  resolveChecks,
+} from "../src/geometry.mjs";
 import { dryRunIntent, parseIntent } from "../src/intent.mjs";
 import { renderJunitXml } from "../src/junit.mjs";
 import { renderSummaryLines, summarizeReport } from "../src/report.mjs";
 import { applyHarnessReview, prepareHarnessReview } from "../src/review.mjs";
 import { writeAgentGate } from "../src/agent-gate.mjs";
 import { run } from "../src/run.mjs";
+import { resolveSessionInput } from "../src/session.mjs";
 
 function usage({ error = false, message = null } = {}) {
   const text =
@@ -22,23 +34,38 @@ function usage({ error = false, message = null } = {}) {
     '                 [--intent "instruction"] [--max-agent-calls N] [--mode off|changed|full] [bounds flags]\n' +
     "                 [--path-prefix PATH] [--no-prepare-review] [--no-edge-input-probes] [--design-contract FILE]\n" +
     "                 [--max-pairs N] [--max-state-pairs N] [--batch-size N] [--skills loop|all|list]\n" +
+    "                 [--state NAME ...] [--journey NAME ...] [--config FILE]   named states / journeys (see README)\n" +
+    "  visual-qa journeys --url URL [--only a,b | --journey NAME ...] [--out DIR] [--config FILE]   scripted journeys from the config\n" +
     "  visual-qa explore --url URL [--out DIR] [bounds flags]  deterministic core only\n" +
     "  visual-qa report <DIR> [--json]                         summarize an out-dir for agents\n" +
     '  visual-qa intent --intent "..." --fix-dir DIR [--json]   catalog dry-run, no browser\n' +
     "  visual-qa review-prepare <DIR> [--max-pairs N] [--max-state-pairs N] [--batch-size N] [--skills loop|all|list]\n" +
     "                                                         export subagent vision batches (default path)\n" +
     "  visual-qa review-apply <DIR> <findings.json>            apply harness findings (fail-closed coverage)\n" +
-    "  visual-qa baseline-capture --url URL --out DIR [--changed-target URL ...]\n" +
-    "                                                         capture hierarchical baselines from a live URL\n" +
-    "  visual-qa agent-run --url URL [--baseline-url URL] [--out DIR] [--git-ref REF]\n" +
-    "                 [--design-contract FILE]                git UI-diff → routes → observe/compare only\n" +
+    "  visual-qa baseline capture --url URL [--out DIR] [--route PATH ...] [--viewport name=WxH ...]\n" +
+    "                 [--clock ISO] [--locale TAG] [--timezone ZONE]   calm screenshots: top, page, every inner scroller\n" +
+    "  visual-qa baseline compare --url URL --baseline DIR [--out DIR] [--threshold-pct N] [--pixel-threshold N]\n" +
+    "                 [route/viewport flags]\n" +
+    "                                                         capture now under the baseline's conditions, diff, report.md; exit 1 on change\n" +
+    "  visual-qa baseline diff DIR_A DIR_B [--out DIR] [--threshold-pct N] [--pixel-threshold N]\n" +
+    "                                                         compare two folders, no browser; --out must be empty or an earlier compare\n" +
+    "  visual-qa baseline-capture --url URL --out DIR [--changed-target URL ...]   alias of baseline capture\n" +
+    "  visual-qa geometry --url URL [--route PATH ...] [--viewport name=WxH ...] [--sweep FROM-TO[:STEP]] [--height N]\n" +
+    "                 [--checks a,b] [--selector first-view=CSS|stable=[hover:]CSS ...] [--state NAME ...] [--config FILE]\n" +
+    "                 [--min-gap N] [--touch-max N] [--out DIR]   first view, covered, stable, edges, text fit, rows, tap size; exit 1 on a finding\n" +
+    "  visual-qa agent-run [--url URL] [--baseline-url URL] [--out DIR] [--base REF]\n" +
+    "                 [--design-contract FILE]                git change set → routes → observe/compare only\n" +
     "  visual-qa agent-gate <QA-DIR> <verity.json> [--json]     join independent Visual QA + Verity evidence\n" +
     "Output flags (run/explore): --format human|json|junit, --out-file FILE (junit)\n" +
     "Mode flags:   --changed-target URL (repeatable, required for --mode changed)\n" +
     "              --path-prefix PATH (skip same-origin links outside pathname prefix)\n" +
     "              --baseline-dir DIR (<route-key>/<viewport>.png or legacy <viewport>.png)\n" +
+    "              --threshold-pct N (share of pixels that may differ from the baseline, default 0.0005)\n" +
+    "              --pixel-threshold N (colour distance 0–1 for a pixel to differ, default 0.05)\n" +
+    "              --internal-scrollers-as-finding (inner scroll areas are info by default; opt in to report them)\n" +
     "              --design-contract FILE (DESIGN.md; auto-discover DESIGN.md in cwd when present)\n" +
     "              --allow-destructive (only with --isolated)\n" +
+    "Geometry:     --geometry (run/explore) adds the geometry checks to every state; off by default\n" +
     "Review flags (run): --no-prepare-review  skip auto vision task export\n" +
     "              --no-edge-input-probes     skip empty/hostile/overlong fills\n" +
     "Bounds flags: --max-states N --max-depth N --max-actions N --max-actions-per-state N --max-runtime-ms N\n" +
@@ -55,10 +82,19 @@ const VALUE_OPTIONS = new Set([
   "--mode",
   "--baseline-dir",
   "--baseline-url",
+  "--baseline",
+  "--route",
+  "--viewport",
+  "--clock",
+  "--locale",
+  "--timezone",
+  "--threshold-pct",
+  "--pixel-threshold",
   "--changed-target",
   "--path-prefix",
   "--design-contract",
   "--git-ref",
+  "--base",
   "--autofix",
   "--fix-dir",
   "--intent",
@@ -74,6 +110,16 @@ const VALUE_OPTIONS = new Set([
   "--max-state-pairs",
   "--skills",
   "--batch-size",
+  "--state",
+  "--journey",
+  "--only",
+  "--config",
+  "--sweep",
+  "--height",
+  "--checks",
+  "--selector",
+  "--min-gap",
+  "--touch-max",
 ]);
 
 function validateOptionValues(tokens) {
@@ -87,6 +133,24 @@ function validateOptionValues(tokens) {
   }
 }
 
+/** One line per route (or "whole app") and changed file: why it is part of the run. */
+function routeReasonLines(agent) {
+  const lines = [];
+  const because = ({ file, pattern, via = [] }) =>
+    `${[file, ...via].join(" → ")} (${pattern})`;
+  for (const [route, reasons] of Object.entries(agent?.route_reasons ?? {}))
+    for (const reason of reasons) lines.push(`  ${route} ← ${because(reason)}`);
+  for (const reason of agent?.full_reasons ?? []) lines.push(`  whole app ← ${because(reason)}`);
+  return lines;
+}
+
+/** What a "no UI diff" noop left out: every changed file is a non-UI one (a data file, an asset, an ignored one). */
+function notUiNote({ changed_files: changed }) {
+  if (!changed.length) return "";
+  const shown = changed.slice(0, 5).join(", ");
+  return ` — changed, not UI files (see trigger/ignore in .visual-qa.yml): ${shown}${changed.length > 5 ? `, … (${changed.length} in all)` : ""}`;
+}
+
 function reportWasBlocked(report) {
   return (
     report.coverage?.states === 0 &&
@@ -97,6 +161,154 @@ function reportWasBlocked(report) {
 function exitCodeForReport(report) {
   if (reportWasBlocked(report)) return 2;
   return report.verdict === "PASS" ? 0 : 1;
+}
+
+const BASELINE_FLAGS = {
+  capture: ["--url", "--out", "--route", "--changed-target", "--viewport", "--clock", "--locale", "--timezone"],
+  compare: ["--url", "--baseline", "--out", "--route", "--changed-target", "--viewport", "--clock", "--locale", "--timezone", "--threshold-pct", "--pixel-threshold"],
+  diff: ["--out", "--threshold-pct", "--pixel-threshold"],
+};
+
+/** `baseline capture|compare|diff` (and the alias `baseline-capture`). Returns the exit code. */
+async function baselineCommand(sub, rest) {
+  const allowed = BASELINE_FLAGS[sub];
+  if (!allowed) {
+    usage({ error: true, message: `visual-qa baseline: expected capture, compare or diff, got "${sub ?? ""}"` });
+    return 2;
+  }
+  const opts = {};
+  const routes = [];
+  const viewports = [];
+  const positional = [];
+  for (let i = 0; i < rest.length; i += 1) {
+    const arg = rest[i];
+    if (!arg.startsWith("--")) positional.push(arg);
+    else if (!allowed.includes(arg)) {
+      usage({ error: true, message: `baseline ${sub}: flag ${arg} does not apply` });
+      return 2;
+    } else if (arg === "--route" || arg === "--changed-target") routes.push(rest[++i]);
+    else if (arg === "--viewport") viewports.push(rest[++i]);
+    else opts[arg.slice(2)] = rest[++i];
+  }
+  const need = (ok, message) => {
+    if (ok) return false;
+    usage({ error: true, message: `baseline ${sub}: ${message}` });
+    return true;
+  };
+  if (sub === "diff" ? need(positional.length === 2, "needs exactly two folders: diff DIR_A DIR_B") : need(positional.length === 0, `unexpected argument ${positional[0]}`)) return 2;
+  if (sub !== "diff" && need(opts.url, "requires --url")) return 2;
+  if (sub === "compare" && need(opts.baseline, "requires --baseline DIR")) return 2;
+  try {
+    const { config } = await loadVisualQaConfig(process.cwd());
+    const given = { ...config.baseline };
+    if (routes.length) given.routes = routes;
+    if (viewports.length) given.viewports = viewports;
+    for (const key of ["clock", "locale", "timezone", "threshold-pct", "pixel-threshold"])
+      if (opts[key] !== undefined) given[key.replace("-", "_")] = opts[key];
+    const cfg = resolveBaselineConfig(given);
+    // Values the user did not set stay null so compare can inherit the baseline's own.
+    const common = { clock: cfg.clock ?? undefined, locale: cfg.locale ?? undefined, timezone: cfg.timezone ?? undefined };
+    if (sub === "diff") {
+      const [a, b] = positional.map((p) => resolve(p));
+      const result = await compareFolders(a, b, {
+        thresholdPct: cfg.threshold_pct,
+        pixelThreshold: cfg.pixel_threshold,
+        outDir: resolve(opts.out ?? b),
+      });
+      console.log(result.report);
+      return result.ok ? 0 : 1;
+    }
+    if (sub === "capture") {
+      const result = await captureBaselines({
+        baseUrl: opts.url,
+        outDir: resolve(opts.out ?? ".qa-baselines"),
+        targets: cfg.routes.length ? cfg.routes : ["/"],
+        ...(cfg.viewports ? { viewports: cfg.viewports } : {}),
+        ...common,
+      });
+      console.log(`baseline capture: ${result.entries.length} images, ${result.errors.length} load errors → ${result.outDir}`);
+      for (const e of result.errors) console.log(`  ${e.route} · ${e.viewport}: ${e.message}`);
+      for (const e of result.skipped) console.log(`  not captured: ${e.route} · ${e.viewport} · ${e.part} — ${e.reason}`);
+      console.log(`manifest: ${result.manifestPath}`);
+      return result.errors.length ? 1 : 0;
+    }
+    const result = await compareToBaseline({
+      baseUrl: opts.url,
+      baselineDir: resolve(opts.baseline),
+      outDir: resolve(opts.out ?? ".qa-baseline-compare"),
+      targets: cfg.routes,
+      viewports: cfg.viewports,
+      thresholdPct: cfg.threshold_pct,
+      pixelThreshold: cfg.pixel_threshold,
+      ...common,
+    });
+    console.log(result.report);
+    return result.ok ? 0 : 1;
+  } catch (error) {
+    console.error(`Visual QA BLOCKED: ${error.message}`);
+    return 2;
+  }
+}
+
+const GEOMETRY_FLAGS = [
+  "--url", "--out", "--route", "--viewport", "--sweep", "--height", "--checks", "--selector",
+  "--state", "--config", "--min-gap", "--touch-max",
+];
+
+/** `geometry`: measure first view, covered, stable, edges, text fit, rows and tap size across viewports. Returns the exit code. */
+async function geometryCommand(rest) {
+  const opts = {};
+  const lists = { "--route": [], "--viewport": [], "--selector": [], "--state": [] };
+  for (let i = 0; i < rest.length; i += 1) {
+    const arg = rest[i];
+    if (!GEOMETRY_FLAGS.includes(arg)) {
+      usage({ error: true, message: `geometry: ${arg.startsWith("--") ? `flag ${arg} does not apply` : `unexpected argument ${arg}`}` });
+      return 2;
+    }
+    if (arg in lists) lists[arg].push(rest[++i]);
+    else opts[arg.slice(2)] = rest[++i];
+  }
+  const number = (name, min) => {
+    if (opts[name] === undefined) return undefined;
+    const value = Number(opts[name]);
+    if (!Number.isFinite(value) || value < min) throw new Error(`--${name} must be a number >= ${min}`);
+    return value;
+  };
+  try {
+    if (!opts.url) throw new Error("geometry requires --url");
+    const selectors = parseSelectorFlags(lists["--selector"]);
+    const checks = resolveChecks(opts.checks, selectors);
+    const viewports = lists["--viewport"].map(parseViewport);
+    const sweep = opts.sweep === undefined ? null : parseSweep(opts.sweep);
+    // Left out when not given, so the defaults of src/geometry.mjs stay the one place they live.
+    const given = (key, value) => (value === undefined ? {} : { [key]: value });
+    const input = {
+      baseUrl: opts.url,
+      outDir: resolve(opts.out ?? ".qa-geometry"),
+      routes: lists["--route"],
+      viewports,
+      sweep,
+      checks,
+      selectors,
+      ...given("height", number("height", 200)),
+      ...given("minGap", number("min-gap", 0)),
+      ...given("touchMax", number("touch-max", 1)),
+    };
+    if (lists["--state"].length) {
+      const { path, config: project } = await loadVisualQaConfig(process.cwd(), opts.config);
+      if (!path) throw new Error("states come from .visual-qa.yml (or --config FILE); none found");
+      for (const warning of project.warnings) console.error(`visual-qa: warning: ${warning}`);
+      const { session, stateDefs } = await resolveSessionInput(project, { baseDir: dirname(path), states: lists["--state"] });
+      Object.assign(input, { session, stateDefs, states: lists["--state"] });
+    }
+    const result = await geometry(input);
+    console.log(result.report);
+    console.log(`report: ${join(result.outDir, "report.md")} · machine report: ${join(result.outDir, "report.json")}`);
+    return geometryExitCode(result);
+  } catch (error) {
+    console.error(`Visual QA BLOCKED: ${error.message}`);
+    return 2;
+  }
 }
 
 const args = process.argv.slice(2);
@@ -184,61 +396,30 @@ if (command === "agent-gate") {
     console.error(`Agent gate BLOCKED: ${error.message}`);
     process.exitCode = 2;
   }
-} else if (command === "baseline-capture") {
-  let baseUrl = null;
-  let outDir = ".qa-baselines";
-  const targets = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--url") baseUrl = args[++i];
-    else if (arg === "--out") outDir = args[++i];
-    else if (arg === "--changed-target") targets.push(args[++i]);
-    else {
-      usage({ error: true, message: `Unknown baseline-capture flag: ${arg}` });
-      process.exit(2);
-    }
-  }
-  if (!baseUrl) {
-    usage({ error: true, message: "baseline-capture requires --url" });
-    process.exit(2);
-  }
-  try {
-    const result = await captureBaselines({
-      baseUrl,
-      outDir: resolve(outDir),
-      targets: targets.length ? targets : ["/"],
-      viewports: DEFAULT_VIEWPORTS,
-    });
-    console.log(
-      `baseline-capture: ${result.entries.length} shots → ${result.outDir}`,
-    );
-    console.log(`manifest: ${result.manifestPath}`);
-    process.exitCode = 0;
-  } catch (error) {
-    console.error(`Visual QA BLOCKED: ${error.message}`);
-    process.exitCode = 2;
-  }
+} else if (command === "baseline" || command === "baseline-capture") {
+  process.exitCode = await baselineCommand(
+    command === "baseline-capture" ? "capture" : args.shift(),
+    args,
+  );
+} else if (command === "geometry") {
+  process.exitCode = await geometryCommand(args);
 } else if (command === "agent-run") {
   let url = null;
   let baselineUrl = null;
   let outDir = ".qa-agent";
-  let gitRef = "HEAD";
+  let base = null;
   let designContractPath = null;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--url") url = args[++i];
     else if (arg === "--baseline-url") baselineUrl = args[++i];
     else if (arg === "--out") outDir = args[++i];
-    else if (arg === "--git-ref") gitRef = args[++i];
+    else if (arg === "--base" || arg === "--git-ref") base = args[++i];
     else if (arg === "--design-contract") designContractPath = args[++i];
     else {
       usage({ error: true, message: `Unknown agent-run flag: ${arg}` });
       process.exit(2);
     }
-  }
-  if (!url) {
-    usage({ error: true, message: "agent-run requires --url" });
-    process.exit(2);
   }
   try {
     const result = await agentRun({
@@ -246,11 +427,28 @@ if (command === "agent-gate") {
       baselineUrl,
       outDir: resolve(outDir),
       projectRoot: process.cwd(),
-      gitRef,
+      base,
       designContractPath,
     });
+    for (const warning of result.agent?.config_warnings ?? [])
+      console.error(`visual-qa: warning: ${warning}`);
+    for (const file of result.agent?.unmapped_files ?? [])
+      console.error(`visual-qa: warning: no route_map entry reaches ${file}`);
+    for (const file of result.agent?.unrendered_files ?? [])
+      console.error(
+        `visual-qa: warning: nothing imports ${file}, so no route shows its change. An entry point (main.tsx, index.html) or a file loaded in a way the import scan cannot follow (import.meta.glob, a computed import)? Map it in route_map directly (GLOBAL for an entry point)`,
+      );
+    for (const file of result.agent?.depth_exhausted_files ?? [])
+      console.error(
+        `visual-qa: warning: ${file} is imported further up than import_depth ${result.agent.import_depth}; those importers were not followed (raise import_depth in .visual-qa.yml)`,
+      );
+    for (const line of routeReasonLines(result.agent)) console.log(line);
     if (result.noop) {
-      console.log("agent-run: no UI diff → PASS (noop)");
+      console.log(
+        result.agent.reason === "unrendered"
+          ? `agent-run: changed files are imported by nothing (${result.agent.unrendered_files.join(", ")}) → PASS (noop)`
+          : `agent-run: no UI diff → PASS (noop)${notUiNote(result.agent.git)}`,
+      );
       process.exitCode = 0;
     } else {
       console.log(
@@ -439,7 +637,7 @@ if (command === "agent-gate") {
     console.error(`Visual QA BLOCKED: ${error.message}`);
     process.exitCode = 2;
   }
-} else if (command === "explore" || command === "run") {
+} else if (command === "explore" || command === "run" || command === "journeys") {
   let baseUrl,
     outDir = ".qa",
     mode = "full",
@@ -449,18 +647,26 @@ if (command === "agent-gate") {
     fixDir = null,
     intent = null,
     baselineDir = null,
+    thresholdPct = undefined,
+    pixelThreshold = undefined,
+    internalScrollers = "info",
     designContractPath = null,
     pathPrefix = null,
     format = "human",
     outFile = null,
     prepareReview = true,
     edgeInputProbes = true,
+    geometryChecks = false,
     reviewMaxPairs = null,
     reviewMaxStatePairs = null,
     reviewBatchSize = null,
-    reviewSkills = null;
+    reviewSkills = null,
+    configFile = null,
+    only = null;
   const bounds = {};
   const changedTargets = [];
+  const stateNames = [];
+  const journeyNames = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--url") baseUrl = args[++i];
@@ -469,6 +675,9 @@ if (command === "agent-gate") {
     else if (arg === "--isolated") isolatedEnvironment = true;
     else if (arg === "--allow-destructive") allowDestructive = true;
     else if (arg === "--baseline-dir") baselineDir = resolve(args[++i]);
+    else if (arg === "--threshold-pct") thresholdPct = Number(args[++i]);
+    else if (arg === "--pixel-threshold") pixelThreshold = Number(args[++i]);
+    else if (arg === "--internal-scrollers-as-finding") internalScrollers = "finding";
     else if (arg === "--design-contract") designContractPath = args[++i];
     else if (arg === "--changed-target") changedTargets.push(args[++i]);
     else if (arg === "--path-prefix") pathPrefix = args[++i];
@@ -479,6 +688,7 @@ if (command === "agent-gate") {
     else if (arg === "--out-file") outFile = args[++i];
     else if (arg === "--no-prepare-review") prepareReview = false;
     else if (arg === "--no-edge-input-probes") edgeInputProbes = false;
+    else if (arg === "--geometry") geometryChecks = true;
     else if (arg === "--max-states") bounds.max_states = Number(args[++i]);
     else if (arg === "--max-depth") bounds.max_depth = Number(args[++i]);
     else if (arg === "--max-actions")
@@ -493,10 +703,18 @@ if (command === "agent-gate") {
     else if (arg === "--max-state-pairs") reviewMaxStatePairs = Number(args[++i]);
     else if (arg === "--batch-size") reviewBatchSize = Number(args[++i]);
     else if (arg === "--skills") reviewSkills = args[++i];
+    else if (arg === "--state") stateNames.push(args[++i]);
+    else if (arg === "--journey") journeyNames.push(args[++i]);
+    else if (arg === "--config") configFile = args[++i];
+    else if (arg === "--only") only = args[++i];
     else {
       usage();
       process.exit(2);
     }
+  }
+  if (only !== null && command !== "journeys") {
+    console.error("visual-qa: --only belongs to the journeys command");
+    process.exit(2);
   }
   if (!baseUrl && mode !== "off") {
     usage();
@@ -556,13 +774,50 @@ if (command === "agent-gate") {
         projectRoot: process.cwd(),
       });
     }
+    const sessionInput = {};
+    if (command === "journeys" || stateNames.length || journeyNames.length) {
+      const { path, config: project } = await loadVisualQaConfig(
+        process.cwd(),
+        configFile,
+      );
+      if (!path)
+        throw new Error(
+          "states and journeys come from .visual-qa.yml (or --config FILE); none found",
+        );
+      for (const warning of project.warnings)
+        console.error(`visual-qa: warning: ${warning}`);
+      // On `journeys`, --only a,b and --journey a --journey b both name journeys; naming none runs all.
+      const named = [
+        ...(only === null ? [] : only.split(",").map((name) => name.trim())),
+        ...journeyNames,
+      ].filter(Boolean);
+      const journeysToRun =
+        command === "journeys"
+          ? named.length
+            ? named
+            : Object.keys(project.journeys)
+          : journeyNames;
+      if (command === "journeys" && !journeysToRun.length)
+        throw new Error("no journeys defined in the config (journeys: …)");
+      Object.assign(
+        sessionInput,
+        await resolveSessionInput(project, {
+          baseDir: dirname(path),
+          states: stateNames,
+          journeys: journeysToRun,
+        }),
+      );
+    }
     const input = {
+      ...sessionInput,
       baseUrl,
       outDir: resolve(outDir),
       mode,
       isolatedEnvironment,
       allowDestructive,
       baselineDir,
+      baseline: { threshold_pct: thresholdPct, pixel_threshold: pixelThreshold },
+      internalScrollers,
       designContractPath,
       projectRoot: process.cwd(),
       changedTargets,
@@ -573,6 +828,7 @@ if (command === "agent-gate") {
       bounds,
       prepareReview,
       edgeInputProbes,
+      geometry: geometryChecks,
       reviewMaxPairs,
       reviewMaxStatePairs,
       reviewBatchSize,

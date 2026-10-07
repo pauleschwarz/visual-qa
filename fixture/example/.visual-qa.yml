@@ -1,0 +1,16 @@
+# Paths are relative to this file.
+setup: ./vqa.setup.mjs
+
+states:
+  orders:
+    path: /orders
+  orders-error:
+    path: /orders
+    expect_api:
+      "**/api/orders": 500
+  signed-out:
+    path: /login
+    fresh: true
+
+journeys:
+  checkout: ./checkout.journey.mjs

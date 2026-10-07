@@ -21,6 +21,24 @@ export const DEFAULT_VIEWPORTS = [
   { name: "desktop", width: 1440, height: 900 },
 ];
 
+/**
+ * Baseline compare, how much may differ before an image counts as changed. Measured, not
+ * guessed (test/baseline.e2e.mjs, 3 captures at once next to CPU burners: 0 px of noise, even
+ * at pixel threshold 0; a one-digit change in a 16 px footer is 21–24 px, a one-step label
+ * colour change 148 px).
+ *  - DEFAULT_THRESHOLD_PCT: share (percent) of the image's pixels that may differ — measured
+ *    against at most one 1440×900 screen (REFERENCE_PIXELS), so a tall page never tolerates
+ *    more than ≈6 px and a footer digit is found on a 5-million-pixel page too.
+ *  - DEFAULT_PIXEL_THRESHOLD: pixelmatch colour distance (0–1) two pixels need to count as
+ *    different. 0.1 hides a one-step Tailwind text colour (#374151 → #4b5563); 0.05 shows it.
+ *    Blind spot: a change smaller than that (#333 → #3a3a3a) stays invisible.
+ */
+export const DEFAULT_THRESHOLD_PCT = 0.0005;
+export const REFERENCE_PIXELS = 1440 * 900;
+export const DEFAULT_PIXEL_THRESHOLD = 0.05;
+export const DEFAULT_BASELINE_LOCALE = "en-US";
+export const DEFAULT_BASELINE_TIMEZONE = "UTC";
+
 // Side-effect policy. Destructive actions are refused unless the environment is
 // explicitly declared isolated in config - never inferred.
 export const RISK = {
@@ -175,6 +193,91 @@ function resolvedViewports(input) {
   });
 }
 
+const BASELINE_KEYS = [
+  "routes",
+  "viewports",
+  "threshold_pct",
+  "pixel_threshold",
+  "clock",
+  "locale",
+  "timezone",
+];
+
+/** "mobile=390x844" or "390x844" → { name, width, height }. */
+export function parseViewport(text) {
+  const match = /^(?:([^=\s]+)=)?(\d+)x(\d+)$/i.exec(String(text).trim());
+  if (!match)
+    throw new Error(`viewport "${text}" must look like name=390x844 or 390x844`);
+  const [, name, width, height] = match;
+  return { name: name ?? `${width}x${height}`, width: Number(width), height: Number(height) };
+}
+
+/**
+ * The `baseline:` block of .visual-qa.yml / the baseline flags. null means "not set": a
+ * capture then falls back to the defaults, a compare to what the baseline folder recorded.
+ */
+export function resolveBaselineConfig(input = {}) {
+  if (input === null || typeof input !== "object" || Array.isArray(input))
+    throw new Error("baseline must be an object");
+  const unknown = Object.keys(input).find((key) => !BASELINE_KEYS.includes(key));
+  if (unknown) throw new Error(`Unknown baseline key "${unknown}"`);
+  const routes = [];
+  for (const route of input.routes ?? []) {
+    const text = String(route).trim();
+    if (!text) throw new Error("baseline routes must not contain an empty entry");
+    routes.push(text);
+  }
+  // Only a number or a numeric string: Number("") and Number([]) (an empty YAML value) would be a silent 0.
+  const asNumber = (v) =>
+    typeof v === "number" || (typeof v === "string" && v.trim() !== "") ? Number(v) : NaN;
+  const thresholdPct =
+    input.threshold_pct === undefined || input.threshold_pct === null
+      ? DEFAULT_THRESHOLD_PCT
+      : asNumber(input.threshold_pct);
+  if (!Number.isFinite(thresholdPct) || thresholdPct < 0)
+    throw new Error(
+      `baseline threshold_pct must be a number >= 0 (percent of an image's pixels); received ${input.threshold_pct}`,
+    );
+  const pixelThreshold =
+    input.pixel_threshold === undefined || input.pixel_threshold === null
+      ? DEFAULT_PIXEL_THRESHOLD
+      : asNumber(input.pixel_threshold);
+  if (!Number.isFinite(pixelThreshold) || pixelThreshold < 0 || pixelThreshold > 1)
+    throw new Error(
+      `baseline pixel_threshold must be a number from 0 to 1 (colour distance); received ${input.pixel_threshold}`,
+    );
+  const clock = input.clock == null ? null : String(input.clock);
+  if (clock !== null && Number.isNaN(new Date(clock).getTime()))
+    throw new Error(`baseline clock "${clock}" is not an ISO date-time`);
+  const locale = input.locale == null ? null : String(input.locale);
+  if (locale !== null) {
+    try {
+      new Intl.DateTimeFormat(locale);
+    } catch {
+      throw new Error(`baseline locale "${locale}" is not a valid locale tag`);
+    }
+  }
+  const timezone = input.timezone == null ? null : String(input.timezone);
+  if (timezone !== null) {
+    try {
+      new Intl.DateTimeFormat("en", { timeZone: timezone });
+    } catch {
+      throw new Error(`baseline timezone "${timezone}" is not a valid IANA zone`);
+    }
+  }
+  return {
+    routes,
+    viewports: input.viewports?.length
+      ? resolvedViewports(input.viewports.map((v) => (typeof v === "string" ? parseViewport(v) : v)))
+      : null,
+    threshold_pct: thresholdPct,
+    pixel_threshold: pixelThreshold,
+    clock,
+    locale,
+    timezone,
+  };
+}
+
 export function resolveConfig(input = {}) {
   // The mode is a contract, not a hint: an unknown value must block the run
   // instead of silently degrading to a full walk.
@@ -231,6 +334,10 @@ export function resolveConfig(input = {}) {
       input.isolatedEnvironment === true && input.allowDestructive === true,
     intent: input.intent || null,
     baselineDir: input.baselineDir || null,
+    baseline: resolveBaselineConfig(input.baseline ?? {}),
+    // An app shell with its own scroll areas is a design choice, not a defect:
+    // reported as info unless the project opts in to treat it as a finding.
+    internalScrollers: input.internalScrollers === "finding" ? "finding" : "info",
     // Optional DESIGN.md contract (full object or path resolved by CLI/run).
     designContract:
       input.designContract && typeof input.designContract === "object"
@@ -239,6 +346,21 @@ export function resolveConfig(input = {}) {
     designContractPath: input.designContractPath || null,
     agentRun: input.agentRun && typeof input.agentRun === "object" ? input.agentRun : null,
     changedTargets,
+    // Sign-in / state / journey input, already resolved by
+    // resolveSessionInput (session.mjs). Naming any state or journey narrows
+    // the run to exactly those, like declared change targets do.
+    session:
+      input.session && typeof input.session === "object"
+        ? {
+            setup: input.session.setup || null,
+            storageState: input.session.storageState || null,
+          }
+        : null,
+    stateDefs:
+      input.stateDefs && typeof input.stateDefs === "object"
+        ? input.stateDefs
+        : {},
+    journeys: Array.isArray(input.journeys) ? input.journeys : [],
     // Optional pathname gate for feature-scoped walks. Same origin only;
     // links outside the prefix are skipped (see explore pathAllowed).
     pathPrefix: normalizePathPrefix(input.pathPrefix),
@@ -247,6 +369,8 @@ export function resolveConfig(input = {}) {
     // Without a fixDir the fix stage only plans, never edits.
     fixDir: input.fixDir || null,
     slopChecks: input.slopChecks !== false,
+    // Geometry checks (first view aside) on every scanned state; opt in with --geometry.
+    geometry: input.geometry === true,
     securityChecks: input.securityChecks !== false,
     // Empty / hostile / overlong fills on text-like controls after the primary
     // probe. Opt out with edgeInputProbes: false when a surface is too fragile.

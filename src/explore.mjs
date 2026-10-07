@@ -29,10 +29,14 @@ import {
   sameOrigin,
   scrubVolatile,
 } from "./state.mjs";
+import { geometryFindings } from "./geometry.mjs";
 import { runSlopChecks } from "./slop.mjs";
 import { runSecurityChecks } from "./security.mjs";
 import { runIntentChecks } from "./intent.mjs";
+import { runJourneys } from "./journeys.mjs";
+import { captureStates } from "./session.mjs";
 import { writeReportArtifacts } from "./report.mjs";
+import { safeName } from "./files.mjs";
 
 // Budgets that end the whole walk, as opposed to node-local truncations.
 const GLOBAL_LIMITS = new Set([
@@ -473,7 +477,7 @@ async function captureStateScreenshot(
   const shot = join(
     outDir,
     "screenshots",
-    `state-${safe(stateId)}-${safe(viewport?.name || "vp")}.png`,
+    `state-${safeName(stateId)}-${safeName(viewport?.name || "vp")}.png`,
   );
   const ok = await screenshotOrIssue(runtime, shot, issues, "state-scan", {
     fullPage: true,
@@ -514,7 +518,7 @@ async function captureStateScreenshot(
       const scrollShot = join(
         outDir,
         "screenshots",
-        `state-${safe(stateId)}-${safe(viewport?.name || "vp")}-scroll-${y}.png`,
+        `state-${safeName(stateId)}-${safeName(viewport?.name || "vp")}-scroll-${y}.png`,
       );
       const scrollOk = await screenshotOrIssue(
         runtime,
@@ -666,13 +670,16 @@ async function compareEntryBaseline(
   const initialShot = join(
     outDir,
     "screenshots",
-    `initial-${safe(viewport.name)}-${safe(routeKey)}.png`,
+    `initial-${safeName(viewport.name)}-${safeName(routeKey)}.png`,
   );
   if (!(await screenshotOrIssue(runtime, initialShot, issues, "initial"))) {
     return { complete: true };
   }
   try {
-    const comparison = await compareScreenshots(baselineInfo.path, initialShot);
+    const comparison = await compareScreenshots(baselineInfo.path, initialShot, {
+      thresholdPct: config.baseline.threshold_pct,
+      pixelThreshold: config.baseline.pixel_threshold,
+    });
     if (comparison.changed)
       issues.push(
         explorerIssue(
@@ -779,8 +786,9 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
         config,
       );
       issues.push(...(await runA11y(runtime.page)));
-      issues.push(...(await runLayoutChecks(runtime.page, viewport)));
+      issues.push(...(await runLayoutChecks(runtime.page, viewport, config)));
       issues.push(...(await runScrollChecks(runtime.page, viewport)));
+      if (config.geometry) issues.push(...(await geometryFindings(runtime.page, viewport)));
       // Slop heuristics describe a state like the other static checks.
       if (config.slopChecks !== false)
         issues.push(...(await runSlopChecks(runtime.page, { viewport })));
@@ -1015,11 +1023,11 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
         const beforeShot = join(
           outDir,
           "screenshots",
-          `${safe(id)}-before.png`,
+          `${safeName(id)}-before.png`,
         );
-        const midShot = join(outDir, "screenshots", `${safe(id)}-mid.png`);
-        const afterShot = join(outDir, "screenshots", `${safe(id)}-after.png`);
-        const trace = join(outDir, "traces", `${safe(id)}.zip`);
+        const midShot = join(outDir, "screenshots", `${safeName(id)}-mid.png`);
+        const afterShot = join(outDir, "screenshots", `${safeName(id)}-after.png`);
+        const trace = join(outDir, "traces", `${safeName(id)}.zip`);
         const beforeCaptured = await screenshotOrIssue(
           runtime,
           beforeShot,
@@ -1212,7 +1220,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
           );
         if (status === "error")
           issues.push({
-            issue_id: `vqa-functional-action-${safe(id)}`,
+            issue_id: `vqa-functional-action-${safeName(id)}`,
             type: "vqa-functional",
             title: "Interactive action failed",
             severity: "high",
@@ -1282,7 +1290,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
             );
             for (const edge of edges) {
               if (now() - started > config.bounds.max_runtime_ms) break;
-              const edgeId = `${safe(id)}-edge-${edge.kind}`;
+              const edgeId = `${safeName(id)}-edge-${edge.kind}`;
               const edgeBefore = join(
                 outDir,
                 "screenshots",
@@ -1328,7 +1336,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
               // before restoring, so a field cannot look clean only because
               // its overflow occurs outside the normal state graph.
               if (edge.kind === "overlong")
-                issues.push(...(await runLayoutChecks(runtime.page, viewport)));
+                issues.push(...(await runLayoutChecks(runtime.page, viewport, config)));
               evidence.push(
                 redact({
                   kind: "edge_input",
@@ -1375,8 +1383,9 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
             config,
           );
           issues.push(...(await runA11y(runtime.page)));
-          issues.push(...(await runLayoutChecks(runtime.page, viewport)));
+          issues.push(...(await runLayoutChecks(runtime.page, viewport, config)));
           issues.push(...(await runScrollChecks(runtime.page, viewport)));
+          if (config.geometry) issues.push(...(await geometryFindings(runtime.page, viewport)));
           if (config.slopChecks !== false)
             issues.push(...(await runSlopChecks(runtime.page, { viewport })));
         }
@@ -1388,7 +1397,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
               eventDelta.console.some((event) => event.type === "error")
               ? [
                   {
-                    issue_id: `vqa-runtime-step-${safe(id)}`,
+                    issue_id: `vqa-runtime-step-${safeName(id)}`,
                     type: "vqa-runtime",
                     title: "Runtime error during action",
                     severity: "high",
@@ -1516,7 +1525,7 @@ async function exploreViewport(config, viewport, budget, entryUrls) {
     // Teardown failures are evidence too: a lost trace cannot back a finding.
     try {
       await runtime.stop(
-        join(outDir, "traces", `run-${safe(viewport.name)}.zip`),
+        join(outDir, "traces", `run-${safeName(viewport.name)}.zip`),
       );
     } catch (error) {
       const target = walkResult ?? {
@@ -1594,16 +1603,22 @@ export async function explore(input = {}) {
     });
   }
 
+  // Named states and journeys narrow the run to what was named; the plain
+  // base-URL walk only happens when nothing was selected.
+  const selected =
+    Object.keys(config.stateDefs).length > 0 || config.journeys.length > 0;
   const entryUrls =
     config.mode === "changed"
       ? config.changedTargets.map(
           (target) => new URL(target, config.baseUrl).href,
         )
-      : [config.baseUrl];
+      : selected
+        ? []
+        : [config.baseUrl];
 
   const budget = { actions: 0, states: 0 };
   const walks = [];
-  for (const viewport of config.viewports) {
+  for (const viewport of entryUrls.length ? config.viewports : []) {
     // Reserve enough wall-clock budget for each declared viewport. A single
     // slow walk must not starve later viewport coverage.
     const remainingViewports = config.viewports.length - walks.length;
@@ -1656,7 +1671,12 @@ export async function explore(input = {}) {
     if (budget.actions >= config.bounds.max_total_actions) break;
   }
 
-  const covered = walks.map((walk) => walk.viewport);
+  if (Object.keys(config.stateDefs).length)
+    walks.push(...(await captureStates(config, { started, budget })));
+  if (config.journeys.length)
+    walks.push(...(await runJourneys(config, { started, budget })));
+
+  const covered = [...new Set(walks.map((walk) => walk.viewport))];
   const missing = config.viewports
     .map((viewport) => viewport.name)
     .filter((name) => !covered.includes(name));
@@ -1695,8 +1715,3 @@ export async function explore(input = {}) {
   return writeReport(result);
 }
 
-function safe(input) {
-  return String(input)
-    .replace(/[^a-zA-Z0-9._-]+/g, "_")
-    .slice(-100);
-}

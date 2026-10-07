@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.3.0 — 2026-10-07
+
+### Diff scope (`agent-run`)
+- Changed files are now everything since the branch left its base — commits (`git merge-base`), staged, unstaged and untracked files (not ignored ones); a rename counts with both paths, a deleted file counts. Before, commits and new files were not seen. Base: `--base REF` (older name `--git-ref`), `base:` in `.visual-qa.yml`, default `origin/HEAD` → `main` → `master`; no repository, no commit, an unresolvable base or none at all stops with exit 2 and a sentence. The `--out` folder is never a change. `agent-run.json` gains `merge_base`, `committed_files`, `untracked_files`, `deleted_files`, `renamed_files`.
+- `route_map` accepts `GLOBAL` (same as `FULL`) and `IMPORTERS`: the files that import a changed file (up to `import_depth`, default 3; `aliases: {"@": src}` for alias imports; `ignore` applies) stand in for it, so a changed component reaches the routes that use it. `route_map_mode: first` is opt-in; the default still applies every matching entry. A changed file nothing imports is a noop PASS that names it, with a warning (an entry point such as `main.tsx`, or a file loaded in a way the scan cannot follow); a chain longer than `import_depth` is warned about; a "no UI diff" noop lists the changed files it left out (a data file, an asset); importers that no entry reaches fail closed. Files no entry reaches are now listed as warnings.
+- Why each route is there: `agent-run` prints one line per route and keeps `route_reasons` / `full_reasons` / `unmapped_files` / `unrendered_files` / `depth_exhausted_files` in the report.
+- `server: {command, health, startup_timeout_ms}` in `.visual-qa.yml`: visual-qa starts the app after the routes are known, waits for `health`, and always stops the process group it started (also on errors, and on SIGINT/SIGTERM/SIGHUP/SIGQUIT/SIGUSR2, even while it is stopping). `health` must be an http(s) URL; without `--url`, its origin is the app. A server that exits, never answers, or an address where something already listens before the start (however slowly it answers) stops the run with exit 2 and a sentence.
+- Existing configs behave as before; without a base branch `agent-run` now stops (exit 2) where it used to diff against `HEAD`.
+### Geometry
+- New `visual-qa geometry --url URL` (flags in the README, section "Geometry"): seven measured checks —
+  `first-view`, `covered`, `stable`, `edges`, `text-fit`, `row-align`, `tap-size` — across a width sweep, each width
+  a fresh page. A finding has severity, selector, viewport, a number in px and one image with the box outlined; a
+  defect at 320–440 px is one finding with its range. `report.md` + `report.json` (`vqa-geometry-0.1`) + `images/`;
+  exit 0 clean, 1 findings, 2 not everything measured (call error, unreachable, page that does not load, trigger
+  that matches nothing or replaces the page, a page `covered` cannot walk to the end).
+- `tap-size` cuts each tap area at the boxes that clip it (fixed layers, `overflow:hidden`, scrollers) and compares
+  across the page; a link inside a sentence is exempt. `row-align` measures no table rows.
+- Nothing is cut silently: per kind and page the worst 100 findings are kept and the rest counted (`truncated` in
+  `report.json`, "Cut short" in `report.md`).
+- `--state NAME` measures named states. `run`/`explore --geometry` adds the checks that need no input to every
+  scanned state as `vqa-geometry` issues; off by default.
+- `src/geometry.mjs` exports `geometry`, `runGeometryChecks`, `geometryIssues`, `parseSweep`, `resolveChecks`; the
+  baseline's `settle` is shared. Example app with each defect and a twin without: `fixture/geometry-app.mjs`.
+
+### States, sign-in and journeys
+- Check an app in a named state, not only as an anonymous visitor: `.visual-qa.yml` gains `setup` (`setup(page, ctx)` hook), `storage_state`, `states` and `journeys`. `run`/`explore` take `--state NAME` and `--journey NAME` (repeatable) and `--config FILE`; `path@state` works on the CLI and in `route_map` for `agent-run`.
+- Every state and journey step leaves an image and the visible text beside it (`.txt`). A state goes through the accessibility, layout, scroll, placeholder-copy and runtime checks; a green journey step through accessibility, layout and runtime checks. Journey pages resolve `page.goto("/path")` against `--url`.
+- `expect_api` (alias `fail_api`) injects an HTTP error status or a timeout per URL glob; a value that injects nothing (`expect_api: 500`, an empty block) stops the run with exit 2. The injected failure is not a finding, also when its URL carries a token. An error state without a visible reason (new text in an alert, alertdialog, status, live region or open dialog, or the `reason` text) or without a way forward is (medium); both are judged against the same state loaded without the failure, so only what the failure added counts (digits are ignored, a clock is not new; the finding names `reason:` as the way out for plain-text errors).
+- New `visual-qa journeys` command (`--only a,b` or `--journey NAME`, repeatable) and `.mjs` journeys (`step` / `check`): the first red step fails the run with the step named and a stop image.
+- A broken setup, journey or `storage_state` file stops the run with exit 2 and names the file. Unknown keys in `.visual-qa.yml` now print a warning instead of being ignored silently.
+- The README no longer says authenticated areas are out of reach. Bundled example app: `fixture/app-server.mjs`, `fixture/example/`.
+- Existing configs and commands behave as before; `coverage.viewports_covered` lists each viewport once.
+
+### Baseline v2
+- `baseline capture|compare|diff` (`baseline-capture` stays as an alias). Per route × viewport:
+  `top`, `page` (only if the document scrolls) and `scroller-<n>` — every inner scroll area shown
+  whole, fixed/sticky chrome elsewhere hidden, everything restored afterwards.
+- Calm capture: reduced motion, animations and caret off, network idle, `fonts.ready`, layout
+  unchanged for 300 ms; `--clock`, `--locale`, `--timezone`; compare reuses the baseline's own
+  conditions and refuses different ones.
+- `compare` writes `report.md` + `report.json` and red diff images to `<out>/diff/`; exit 1 on
+  change, missing image or load error; new images are `new`; load failures never crash.
+  `diff DIR_A DIR_B` compares two folders without a browser. `--out` only removes earlier
+  baseline files, never a foreign folder.
+- Threshold (`--threshold-pct`, default 0.0005, measured; `--pixel-threshold`, default 0.05): a
+  single stray pixel is no longer a finding, a size change always is. The percentage is
+  measured against at most one 1440×900 screen, so a changed footer digit on a tall page and a
+  one-step label colour are found; the report lists what stayed below the threshold. Applies
+  to `--baseline-dir` in `run`/`explore`.
+- Only what you can see is a scroll area: scrollers hidden by `visibility:hidden`, `display:none`
+  or `content-visibility:hidden` are not parts, and `<body>` counts only when `<html>` is not
+  `visible` in both axes (`html,body{height:100%}` pages are a `page`, not a scroller). The
+  report names the threshold cap in px and lists the changed pixels first.
+- A scroller that cannot be photographed whole — no box when grown, a grown box shorter than nine
+  tenths of its content, removed by the page, or no picture within 5 s — is skipped and listed
+  under «Not captured» (manifest, compare report, CLI); it never fails the capture.
+- `threshold_pct` and `pixel_threshold` accept numbers only: an empty YAML value is an error,
+  not a silent 0.
+- `.visual-qa.yml` `baseline:` block (`routes`, `viewports`, `threshold_pct`, `clock`, `locale`,
+  `timezone`, `pixel_threshold`).
+- Behaviour change: `baseline-capture` (the alias) now replaces what an earlier capture left in `--out`
+  instead of adding to it, and refuses a folder that holds foreign files. `compareScreenshots` no
+  longer counts every differing pixel: it takes `thresholdPct` (default 0) and `pixelThreshold`
+  (default 0.05, was pixelmatch's 0.1; `threshold` still works as its older name).
+- Behaviour change: a tall inner scroll area is now severity `info` (new, last in report order,
+  never lowers a `PASS`); `--internal-scrollers-as-finding` keeps the old `medium` finding.
+
 ## 0.2.13 — 2026-09-20
 
 ### OmniRoute vision bus default

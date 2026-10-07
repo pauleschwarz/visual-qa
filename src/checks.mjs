@@ -3,12 +3,11 @@
 
 import { AxeBuilder } from "@axe-core/playwright";
 import { readFile } from "node:fs/promises";
-import { PNG } from "pngjs";
-import pixelmatch from "pixelmatch";
-import { redact } from "./config.mjs";
+import { compareImages, inPage, isChange } from "./baseline.mjs";
+import { DEFAULT_PIXEL_THRESHOLD, redact } from "./config.mjs";
 import { sameOrigin } from "./state.mjs";
 
-function issue(type, title, severity, detail, evidence = {}) {
+export function issue(type, title, severity, detail, evidence = {}) {
   return {
     issue_id: `vqa-${type}-${slug(title)}`,
     type: `vqa-${type}`,
@@ -74,12 +73,16 @@ export async function runA11y(page) {
   }
 }
 
-export async function runLayoutChecks(page, viewport) {
+export async function runLayoutChecks(
+  page,
+  viewport,
+  { internalScrollers: scrollerPolicy = "info" } = {},
+) {
   // A broken evaluate must never look like "zero findings": that silently
   // contributes a false PASS. Mirror runA11y and report the scan itself.
   let findings;
   try {
-    findings = await page.evaluate(() => {
+    findings = await inPage(page, () => {
       // Shared visibility gate for layout/touch/name probes. Zero-size rects
       // alone are not enough: visibility:hidden skip-links keep a layout box
       // and would otherwise look like tiny touch targets.
@@ -281,18 +284,14 @@ export async function runLayoutChecks(page, viewport) {
       // scroller is a separate browsing surface: it traps wheel/touch input,
       // hides page context, and often cuts through cards. Flag only substantial
       // containers so menus, comboboxes, textareas, and side rails stay valid.
-      const internalScrollers = [...document.querySelectorAll("body *")]
+      const internalScrollers = innerScrollers(24)
         .filter((el) => {
-          const cs = getComputedStyle(el);
-          if (!["auto", "scroll"].includes(cs.overflowY)) return false;
-          if (el.scrollHeight <= el.clientHeight + 24) return false;
           const r = el.getBoundingClientRect();
           const substantial = r.width >= window.innerWidth * 0.45;
           const tall = r.height >= Math.min(320, window.innerHeight * 0.45);
           const role = el.getAttribute("role");
           const exempt =
             ["listbox", "menu", "dialog", "navigation"].includes(role) ||
-            ["TEXTAREA", "SELECT"].includes(el.tagName) ||
             el.closest("[role=listbox],[role=menu],[role=dialog],nav,aside");
           return substantial && tall && !exempt;
         })
@@ -343,7 +342,8 @@ export async function runLayoutChecks(page, viewport) {
       issue(
         "visual",
         "Tall content trapped in an internal scroller",
-        "medium",
+        // App shells scroll inside panels on purpose; a finding only on opt-in.
+        scrollerPolicy === "finding" ? "medium" : "info",
         "A major content surface uses its own vertical scrollbar instead of the page scroll; verify that cards and programme context are not trapped inside an embedded viewport",
         { viewport, items: findings.internalScrollers },
       ),
@@ -743,28 +743,27 @@ export async function runRuntimeChecks(events = {}, stepIssues = []) {
   return out;
 }
 
-export function compareScreenshots(
+/**
+ * Did two screenshots change? `thresholdPct` is the share of pixels (percent) that may
+ * differ before it counts; 0 means any differing pixel. `pixelThreshold` (0–1) is how
+ * different two pixels must look; `threshold` is its older name. A size change always counts.
+ */
+export async function compareScreenshots(
   beforePath,
   afterPath,
-  { threshold = 0.1 } = {},
+  { thresholdPct = 0, pixelThreshold = DEFAULT_PIXEL_THRESHOLD, threshold = pixelThreshold } = {},
 ) {
-  return Promise.all([readFile(beforePath), readFile(afterPath)]).then(
-    ([before, after]) => {
-      const a = PNG.sync.read(before);
-      const b = PNG.sync.read(after);
-      if (a.width !== b.width || a.height !== b.height)
-        return { changed: true, ratio: 1, pixels: null };
-      const diff = new PNG({ width: a.width, height: a.height });
-      const pixels = pixelmatch(a.data, b.data, diff.data, a.width, a.height, {
-        threshold,
-      });
-      return {
-        changed: pixels > 0,
-        ratio: pixels / (a.width * a.height),
-        pixels,
-      };
-    },
-  );
+  const [before, after] = await Promise.all([
+    readFile(beforePath),
+    readFile(afterPath),
+  ]);
+  const result = compareImages(before, after, { diff: false, pixelThreshold: threshold });
+  if (result.sizeChanged) return { changed: true, ratio: 1, pixels: null };
+  return {
+    changed: isChange(result, thresholdPct),
+    ratio: result.pixels / result.total,
+    pixels: result.pixels,
+  };
 }
 
 export function dedupeIssues(issues) {
@@ -781,6 +780,7 @@ export function verdictFor({ issues, complete }) {
   if (!complete) return "COVERAGE_INCOMPLETE";
   if (issues.some((i) => ["critical", "high"].includes(i.severity)))
     return "FAIL";
-  if (issues.length) return "UNPROVEN";
+  // `info` notes what a reader should know; it is not a defect and cannot hold a PASS.
+  if (issues.some((i) => i.severity !== "info")) return "UNPROVEN";
   return "PASS";
 }

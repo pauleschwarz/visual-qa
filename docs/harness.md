@@ -91,20 +91,53 @@ processes, calls models, or publishes. It cannot make a non-PASS report pass.
 # trigger: ["src/components/**"]
 # ignore: ["**/*.test.tsx"]
 # route_map:
-#   "src/components/**": ["/"]
+#   "src/components/**": ["/", "/orders@orders-error"]   # path@state: a named state
 #   "app/pages/**": FULL
 
 visual-qa agent-run --url http://127.0.0.1:3000 \
   --baseline-url http://127.0.0.1:3001 \
   --out .qa-agent \
-  --git-ref HEAD
+  --base origin/main
 ```
 
+- `path@state` routes capture a state defined under `states:` (sign-in, injected
+  API failure; see README "States, sign-in and journeys"); plain routes are walked.
+  Unknown keys in the config are printed as warnings and listed in
+  `agent-run.json` as `config_warnings`.
+- Changed files = merge-base with the base branch → working tree, plus untracked
+  (`--base`, `base:`, default `origin/HEAD` → `main` → `master`; none resolvable → exit 2).
+  `route_map` values: a route list, `GLOBAL`/`FULL`, `IMPORTERS`; `route_map_mode: first`,
+  `aliases`, `import_depth`, `server: {command, health}` — README "Check only what you changed".
+  The report lists why each route is there (`route_reasons`, `full_reasons`).
 - No UI-path git diff → exit 0 noop PASS (no browser).
 - UI diff without matching `route_map` → fail-closed.
 - Never applies fixers; evidence + compare only. Coding agents may loop
   review→fix at most twice (`max_review_fix_loops` in `.visual-qa.yml`).
-- `baseline-capture` writes hierarchical `<route-key>/<viewport>.png` from a live URL.
+- `baseline capture` writes `<route-key>/<viewport>[.page|.scroller-<n>].png` plus
+  `baseline-manifest.json` from a live URL; `baseline compare` / `baseline diff` produce
+  `report.md`, `report.json` and `diff/*.png` (exit 0 / 1 / 2 — see README "Baselines").
+  `baseline-capture` is kept as an alias.
+
+## States, sign-in and journeys
+
+For apps behind a login, or error paths that need a failing server, name the
+state instead of hoping the walk finds it. Contract for agents:
+
+- Config in `.visual-qa.yml`: `setup`, `storage_state`, `states`, `journeys`
+  (full example and semantics: README "States, sign-in and journeys").
+- `visual-qa run|explore --state NAME … --journey NAME …` and
+  `visual-qa journeys --url URL [--only a,b | --journey NAME …]` run exactly what is named
+  (no base-URL walk), per viewport.
+- Evidence for the vision review and for you: `screenshots/appstate-*.png` with
+  the visible text in a `.txt` of the same name; `journeys/<name>/<viewport>/NN-*.png`
+  with `.txt`. Both are `state_scan` entries in `report.json`.
+- A red journey check is `FAIL` (exit `1`) with the step named in the issue
+  title and a `…-FAILED.png`. A broken setup/journey file is exit `2`, never a finding.
+- An injected failure (`expect_api`) is expected, so its 4xx/5xx is not a
+  finding; an error state with no new alert/alertdialog/status/dialog text (or `reason:` text)
+  or no new focusable control is (`medium`), judged against the same state loaded without the
+  failure (costs one more load per error state and viewport; `setup` runs again). Plain red
+  text without a role counts only through `reason:` in the state.
 
 ## DESIGN.md
 
@@ -214,6 +247,8 @@ const summary = summarizeReport(report);
   as unparsed.
 - Contrast fixes need axe to measure — unverifiable nodes are reported
   (`color-contrast-incomplete`), not auto-fixed.
-- Exploration is bounded BFS with semantic-state identity; deep
-  authenticated flows need an app-level login or a reachable session URL.
+- Exploration is bounded BFS with semantic-state identity. Authenticated
+  and mid-flow pages are reached by naming them (`setup` / `storage_state`,
+  `states`, `journeys`, see above); the plain walk only sees what a visitor
+  can reach by clicking.
 - Vision findings are capped at `medium`: they flag, they never gate.

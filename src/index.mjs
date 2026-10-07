@@ -2,8 +2,10 @@ export { BrowserRuntime, probeValueFor } from "./browser.mjs";
 export {
   classifyRisk,
   DEFAULT_BOUNDS,
+  DEFAULT_THRESHOLD_PCT,
   MODES,
   redact,
+  resolveBaselineConfig,
   resolveConfig,
 } from "./config.mjs";
 export {
@@ -33,9 +35,17 @@ export {
 } from "./report.mjs";
 export { run } from "./run.mjs";
 export { evaluateAgentGate, writeAgentGate } from "./agent-gate.mjs";
-export { agentRun } from "./agent-run.mjs";
+export {
+  agentRun,
+  loadVisualQaConfig,
+  parseVisualQaYaml,
+} from "./agent-run.mjs";
+export { resolveSessionInput, SetupError } from "./session.mjs";
 export {
   captureBaselines,
+  compareFolders,
+  compareImages,
+  compareToBaseline,
   resolveBaselinePath,
   routeKeyFromTarget,
 } from "./baseline.mjs";
@@ -74,3 +84,16 @@ export {
   sameOrigin,
   scrubVolatile,
 } from "./state.mjs";
+export {
+  DEFAULT_GEOMETRY_CHECKS,
+  GEOMETRY_CHECKS,
+  geometry,
+  geometryExitCode,
+  geometryFindings,
+  geometryIssues,
+  parseSelectorFlags,
+  parseSweep,
+  resolveChecks,
+  runGeometryChecks,
+  sweepWidths,
+} from "./geometry.mjs";

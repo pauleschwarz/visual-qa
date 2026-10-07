@@ -131,6 +131,9 @@ export class BrowserRuntime {
     stableGap = 30,
     navigationTimeout = 15_000,
     hoverTimeout = 400,
+    storageState = null,
+    locale = "en-US",
+    prepare = null,
   }) {
     this.baseUrl = baseUrl;
     this.viewport = viewport;
@@ -140,6 +143,11 @@ export class BrowserRuntime {
     this.stableGap = stableGap;
     this.navigationTimeout = navigationTimeout;
     this.hoverTimeout = hoverTimeout;
+    // Session hooks: a Playwright storage-state file for the context and an
+    // async (page, context) callback that runs before any navigation.
+    this.storageState = storageState;
+    this.locale = locale;
+    this.prepare = prepare;
     this.console = [];
     this.pageErrors = [];
     this.network = [];
@@ -157,11 +165,14 @@ export class BrowserRuntime {
       .launch({ args: ["--use-gl=angle", "--enable-gpu"] })
       .catch(() => chromium.launch());
     this.context = await this.browser.newContext({
+      // Relative targets (page.goto("/cart")) resolve against the URL under test.
+      ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
       viewport: { width: this.viewport.width, height: this.viewport.height },
       reducedMotion: "reduce",
       // Deterministic rendering: no locale/timezone drift between runs.
-      locale: "en-US",
+      locale: this.locale,
       timezoneId: "UTC",
+      ...(this.storageState ? { storageState: this.storageState } : {}),
     });
     if (this.trace) {
       await this.context.tracing
@@ -191,6 +202,7 @@ export class BrowserRuntime {
         document.head?.appendChild(style),
       );
     });
+    if (this.prepare) await this.prepare(this.page, this.context);
     return this;
   }
 
