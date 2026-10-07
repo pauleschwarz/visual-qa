@@ -26,6 +26,23 @@ function signalGroup(pid, signal) {
   }
 }
 
+/**
+ * Resolves once no process of the group is left. The started command is often a wrapper (`npm run dev`, a shell) that
+ * dies on SIGTERM at once while the real server still shuts down: waiting for the wrapper alone would cut that short.
+ * On Windows there is no group to ask; `taskkill /T` already took the tree.
+ */
+async function groupGone(pid) {
+  if (process.platform === "win32") return;
+  for (;;) {
+    try {
+      process.kill(-pid, 0);
+    } catch {
+      return;
+    }
+    await sleep(50);
+  }
+}
+
 /** One health request: the response, whatever its status, or null when nothing answers within 2 s. */
 async function ask(health) {
   try {
@@ -139,7 +156,7 @@ export async function withAppServer(server, fn, { cwd = process.cwd(), env = pro
     // The handlers stay until the group is dead: a second Ctrl-C or a hang-up during the
     // grace period must still take the server down, not leave it behind.
     signalGroup(child.pid, "SIGTERM");
-    await Promise.race([exited, sleep(GRACE_MS)]);
+    await Promise.race([exited.then(() => groupGone(child.pid)), sleep(GRACE_MS)]);
     killNow();
     release();
     child.stdout.destroy();

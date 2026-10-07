@@ -164,6 +164,7 @@ ${DEADMAN}createServer((req, res) => { res.statusCode = 500; res.end("booting");
   assert.ok(await gone(app.pids()));
 });
 
+/* The real server takes 300 ms to shut down behind a wrapper that dies on SIGTERM at once: the grace period is for the whole group. */
 test("server: gets SIGTERM first and may shut down cleanly before anything is forced", async () => {
   const port = await freePort();
   const app = appFiles(port);
@@ -173,7 +174,7 @@ test("server: gets SIGTERM first and may shut down cleanly before anything is fo
     `import { createServer } from "node:http";
 import { writeFileSync } from "node:fs";
 writeFileSync(${JSON.stringify(join(app.dir, "server.pid"))}, String(process.pid));
-${DEADMAN}process.on("SIGTERM", () => { writeFileSync(${JSON.stringify(marker)}, "bye"); process.exit(0); });
+${DEADMAN}process.on("SIGTERM", () => setTimeout(() => { writeFileSync(${JSON.stringify(marker)}, "bye"); process.exit(0); }, 300));
 createServer((req, res) => res.end("ok")).listen(${port}, "127.0.0.1");
 `,
   );
