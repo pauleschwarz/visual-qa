@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-10-07
 
 ### Diff scope (`agent-run`)
 - Changed files are now everything since the branch left its base — commits (`git merge-base`), staged, unstaged and untracked files (not ignored ones); a rename counts with both paths, a deleted file counts. Before, commits and new files were not seen. Base: `--base REF` (older name `--git-ref`), `base:` in `.visual-qa.yml`, default `origin/HEAD` → `main` → `master`; no repository, no commit, an unresolvable base or none at all stops with exit 2 and a sentence. The `--out` folder is never a change. `agent-run.json` gains `merge_base`, `committed_files`, `untracked_files`, `deleted_files`, `renamed_files`.
